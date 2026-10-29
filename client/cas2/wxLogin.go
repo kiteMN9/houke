@@ -113,7 +113,7 @@ outerLoop:
 				time.Sleep(1 * time.Second)
 				continue outerLoop
 			}
-			wxLocation = resp.Header().Get("Location")
+			wxLocation = resp2.Header().Get("Location")
 			//wxLocation,err := resp2.Location()
 			//https://open.weixin.qq.com/connect/qrconnect?appid=wxdf4bda39b1e560ab&redirect_uri=https%3A%2F%2Fcas2.ycit.edu.cn%2Fcas%2Ffederation%2FfederatedCallback%2Fopenweixin&response_type=code&scope=snsapi_login,snsapi_userinfo&state=XksYVW#wechat_redirect
 			//fmt.Println("wxLocation", wxLocation)
