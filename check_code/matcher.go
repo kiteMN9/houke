@@ -8,11 +8,11 @@ import (
 	"image/color"
 	"image/draw"
 	"image/png"
-	"log"
 	"math"
 	"path"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/disintegration/imaging"
@@ -21,7 +21,10 @@ import (
 // 缓存结构体
 type cachedImage struct {
 	img image.Image
-	dy  int
+	//maskPixels []pixelInfo
+	//dx         int
+	dy int
+	//name       string
 }
 
 // 全局缓存变量
@@ -31,7 +34,7 @@ var (
 	cacheInitError error
 	cacheMutex     sync.RWMutex
 	cacheReady     = make(chan struct{}) // 用于通知缓存已准备好
-	isCacheReady   = false               // 缓存就绪标志
+	isCacheReady   atomic.Bool           // 缓存就绪标志（初始化 goroutine 与识别并发读写）
 )
 
 // FindBestMatch 公开的识别函数，会检查缓存是否就绪
@@ -42,11 +45,13 @@ func FindBestMatch(data []byte) int {
 		return 0
 	}
 	// 检查缓存是否就绪，如果没有就绪则等待
-	if !isCacheReady {
+	if !isCacheReady.Load() {
 		select {
 		case <-cacheReady:
+			// 缓存已就绪，继续执行
 		case <-time.After(10 * time.Second):
-			log.Println("等待预缓存超时")
+			// 超时，返回默认值
+			fmt.Println("等待预缓存超时")
 			return 0
 		}
 	}
@@ -56,6 +61,7 @@ func FindBestMatch(data []byte) int {
 // 图像解码统一处理
 func decodeImage(data []byte) (image.Image, error) {
 	img, err := imaging.Decode(bytes.NewReader(data))
+	//img, _, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
@@ -70,6 +76,11 @@ type result struct {
 
 // FindBestMatchWithImages 直接接收图片对象
 func FindBestMatchWithImages(largeImg image.Image, maskPixels []pixelInfo, dx int) (int, int32, error) {
+	// // 确保 largeImg 是宽度更大的图片
+	// if smallImg.Bounds().Dx() > largeImg.Bounds().Dx() {
+	// 	largeImg, smallImg = smallImg, largeImg
+	// }
+
 	// 并行计算参数
 	bounds := largeImg.Bounds()
 	maxX := bounds.Dx() - dx
@@ -149,6 +160,8 @@ func FindBestMatchWithImages(largeImg image.Image, maskPixels []pixelInfo, dx in
 			bestX = res.x
 		}
 	}
+	//largeImg = nil
+	//largeNRGBA = nil
 
 	return bestX, minDiff, nil
 }
@@ -158,12 +171,16 @@ var embeddedFS embed.FS
 
 // initImageCache 并发初始化图片缓存
 func initImageCache() {
-	startTime := time.Now()
+	// log.Println("开始预加载图片缓存...")
+	//startTime := time.Now()
 
 	entries, err := embeddedFS.ReadDir("merged")
 	if err != nil {
+		cacheMutex.Lock()
 		cacheInitError = fmt.Errorf("读取嵌入目录失败: %v", err)
-		isCacheReady = true
+		cacheMutex.Unlock()
+
+		isCacheReady.Store(true)
 		close(cacheReady)
 		return
 	}
@@ -192,21 +209,27 @@ func initImageCache() {
 			filePath := path.Join("merged", filename)
 			data, readErr := embeddedFS.ReadFile(filePath)
 			if readErr != nil {
-				log.Printf("读取失败 %s: %v", filePath, readErr)
+				fmt.Printf("读取失败 %s: %v", filePath, readErr)
 				return
 			}
 
 			reader := bytes.NewReader(data)
 			img, decErr := png.Decode(reader)
 			if decErr != nil {
-				log.Printf("解码失败 %s: %v", filePath, decErr)
+				fmt.Printf("解码失败 %s: %v", filePath, decErr)
 				return
 			}
+
+			// 预处理图片的像素信息
+			//maskPixels, _, dy := lowerWhiteGetNonTransParentPixels(img)
 
 			tempMutex.Lock()
 			tempCache = append(tempCache, cachedImage{
 				img: img,
-				dy:  img.Bounds().Dy(),
+				//maskPixels: maskPixels,
+				//dx:         dx,
+				dy: img.Bounds().Dy(),
+				//name:       filename,
 			})
 			tempMutex.Unlock()
 		}(entry.Name())
@@ -217,32 +240,39 @@ func initImageCache() {
 
 	cacheMutex.Lock()
 	imageCache = tempCache
+	if len(tempCache) == 0 {
+		cacheInitError = fmt.Errorf("没有成功加载任何图片")
+	}
 	cacheMutex.Unlock()
 
-	if len(imageCache) == 0 {
-		cacheInitError = fmt.Errorf("没有成功加载任何图片")
-		log.Println("警告: 没有成功加载任何图片")
-	} else if len(imageCache) != 10 {
-		log.Printf("警告: 共加载 %d 张图片, 耗时 %v", len(imageCache), time.Since(startTime))
+	if len(tempCache) == 0 {
+		fmt.Println("警告: 没有成功加载任何图片")
+	} else if len(tempCache) != 10 {
+		fmt.Printf("警告: 共加载 %d 张图片", len(tempCache))
 	}
+	//fmt.Printf("共加载 %d 张图片, 耗时 %v", len(imageCache), time.Since(startTime))
 
-	isCacheReady = true
+	isCacheReady.Store(true)
 	close(cacheReady)
 }
 
 // getCachedImages 获取缓存的图片
 func getCachedImages() ([]cachedImage, error) {
-	if !isCacheReady {
+	if !isCacheReady.Load() {
 		return nil, fmt.Errorf("图片缓存尚未就绪")
 	}
+
+	cacheMutex.RLock()
+	defer cacheMutex.RUnlock()
 
 	if cacheInitError != nil {
 		return nil, cacheInitError
 	}
 
-	cacheMutex.RLock()
-	defer cacheMutex.RUnlock()
-	return imageCache, nil
+	// 返回副本，调用方在锁外遍历时不会再碰到内部切片被替换
+	cached := make([]cachedImage, len(imageCache))
+	copy(cached, imageCache)
+	return cached, nil
 }
 
 // PreloadCache 预加载缓存 - 应该在程序启动时调用
@@ -252,6 +282,25 @@ func PreloadCache() {
 	})
 }
 
+// IsCacheReady 检查缓存是否就绪
+//func IsCacheReady() bool {
+//	return isCacheReady
+//}
+
+// WaitForCacheReady 等待缓存就绪（带超时）
+//func WaitForCacheReady(timeout time.Duration) bool {
+//	if isCacheReady {
+//		return true
+//	}
+//
+//	select {
+//	case <-cacheReady:
+//		return true
+//	case <-time.After(timeout):
+//		return false
+//	}
+//}
+
 func getMatchedX(img image.Image) int {
 	// 获取输入图片的非透明像素坐标和颜色
 	maskPixels, dx, dy := lowerWhiteGetNonTransParentPixels(img)
@@ -259,13 +308,13 @@ func getMatchedX(img image.Image) int {
 	// 获取缓存的图片
 	cachedImages, err := getCachedImages()
 	if err != nil {
-		log.Printf("获取缓存图片失败: %v", err)
+		fmt.Printf("获取缓存图片失败: %v", err)
 		return 0
 	}
 
 	resultCh := make(chan result, len(cachedImages)+1)
 	var wg sync.WaitGroup
-
+	//now := time.Now()
 	for _, cached := range cachedImages {
 		// 验证高度一致
 		if cached.dy != dy {
@@ -304,7 +353,7 @@ func getMatchedX(img image.Image) int {
 			return bestX + 70
 		}
 	}
-
+	//fmt.Println(minDiff, bestX, time.Since(now))
 	return bestX + 70
 }
 
@@ -317,6 +366,8 @@ type pixelInfo struct {
 func lowerWhiteGetNonTransParentPixels(img image.Image) ([]pixelInfo, int, int) {
 	// 创建新图片容器（使用NRGBA以保留透明度）
 	bounds := img.Bounds()
+	// dstImg := image.NewNRGBA(bounds)
+	//var pixels []pixelInfo
 	pixels := make([]pixelInfo, 0, 2680)
 
 	rgbaImg, ok := img.(*image.NRGBA)
@@ -341,6 +392,8 @@ func lowerWhiteGetNonTransParentPixels(img image.Image) ([]pixelInfo, int, int) 
 
 			// 判断是否为纯白色且不透明
 			if r8 == 255 && g8 == 255 && b8 == 255 && a8 == 255 {
+				// 设置Alpha为0（完全透明）
+				// dstImg.Set(x, y, color.NRGBA{R: newR, G: newG, B: newB, A: 0})
 				continue
 			} else if a8 > 0 {
 				pixels = append(pixels, pixelInfo{

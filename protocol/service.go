@@ -1,0 +1,123 @@
+package protocol
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	baseCfg "school_sdk/protocol/config"
+	"school_sdk/utils"
+	"strconv"
+	"strings"
+	"time"
+
+	"resty.dev/v3"
+)
+
+func (a *APIClient) CheckSession(ctx context.Context) bool {
+	resp, err := a.Http.R().
+		SetRetryCount(0).
+		SetContext(ctx).
+		SetTimeout(11*time.Second).
+		SetQueryParam("dlztxxtj_id", "").
+		Get(baseCfg.LoginStatus)
+
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			log.Println("保持登录已取消")
+			return true
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			fmt.Println("请求超时:", resp.Duration())
+			return true
+		}
+		fmt.Println(err)
+	}
+
+	if !a.CheckLogout302(resp) && utils.UserIsLogin(a.cfg.Account, resp.String()) {
+		return true
+	}
+	fmt.Println("Login check:", resp.Status())
+	a.setLoggedIn(false)
+	return false
+}
+
+func (a *APIClient) CheckSession2(ctx context.Context) bool {
+	resp, err := a.Http.R().
+		SetRetryCount(0).
+		SetQueryParams(map[string]string{
+			"xt":        "jw",
+			"localeKey": "zh_CN",
+			"_":         strconv.FormatInt(time.Now().UnixMilli(), 10),
+			"gnmkdm":    "index",
+		}).
+		SetContext(ctx).
+		SetTimeout(10 * time.Second).
+		Get(baseCfg.StudentName) // /xtgl/index_cxGxDlztxx.html?dlztxxtj_id=
+
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			log.Println("保持登录已取消")
+			return true
+		}
+
+		fmt.Println(err)
+	}
+
+	if !a.CheckLogout302(resp) && utils.UserIsLogin(a.cfg.Account, resp.String()) {
+		// Ctrl里有关重定向是302，不关是200
+		return true
+	}
+
+	fmt.Println(resp.Status())
+	a.setLoggedIn(false)
+	return false
+}
+
+// LoginCheck false 触发 ReLogin
+func (a *APIClient) LoginCheck(resp *resty.Response) bool {
+	if resp == nil {
+		return true
+	}
+	if strings.Contains(resp.String(), "Sorry, the page you are looking for is currently unavailable.") || resp.StatusCode() >= 400 {
+		//if strings.Contains(resp.String(), "Sorry, the page you are looking for is currently unavailable.") {
+		fmt.Println("http状态码:", resp.Status())
+		fmt.Println(resp.String())
+		fmt.Print("程序暂停一会")
+		time.Sleep(4 * time.Second)
+		return true
+	}
+	if a.CheckLogout302(resp) {
+		return false
+	}
+	return utils.UserIsLogin(a.cfg.Account, resp.String())
+}
+
+func (a *APIClient) CheckLogout302(resp *resty.Response) bool {
+	if resp == nil {
+		return false // 登录状态ok
+	}
+	if resp.StatusCode() == http.StatusFound {
+		location := resp.Header().Get("Location")
+		if strings.Contains(location, "kickout=1") {
+			fmt.Println("kickout=1")
+			return true
+		}
+		if strings.Contains(location, baseCfg.LoginIndex) || strings.Contains(location, a.Http.BaseURL()) {
+			//println("Logout302")
+			return true // 被踢了
+		}
+
+		log.Println("CheckLogout302: StatusCode=302 header", resp.Header())
+		fmt.Println("意料之外的错误！ StatusCode=302", resp.Header())
+	}
+	return false
+}
+
+func (a *APIClient) cookie() {
+	_, header := a.Cookies()
+	if header != "" {
+		fmt.Println(header)
+	}
+}

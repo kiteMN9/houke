@@ -1,7 +1,7 @@
 package check_code
 
 import (
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
 	"log"
 	"math"
@@ -17,6 +17,7 @@ type TrackPoint struct {
 }
 
 func GetTrack(distance int, y int) []TrackPoint {
+	// rand.Seed(time.Now().UnixNano())
 	if distance < 70 {
 		fmt.Println("distance:", distance)
 		log.Println("distance:", distance)
@@ -25,6 +26,7 @@ func GetTrack(distance int, y int) []TrackPoint {
 	start := rand.Intn(1030-950+1) + 950
 	y1 := 0
 	current := 0.0
+	//track := make([]TrackPoint, 0)
 	var track []TrackPoint
 	count := 0
 	t1 := 0.0
@@ -85,6 +87,7 @@ func GetTrack(distance int, y int) []TrackPoint {
 	return track
 }
 
+// GetTrackJSON 获取JSON格式的轨迹数据
 //func GetTrackJSON(distance int, y int) ([]byte, error) {
 //	track := GetTrack(distance, y)
 //	return json.MarshalIndent(track, "", "  ")
@@ -101,7 +104,7 @@ func GetTrackByte(x, y int) []byte {
 	if err != nil {
 		return jsonData
 	}
-	//strTrack := string(jsonData)
+
 	// println(str_track)
 	return jsonData
 }

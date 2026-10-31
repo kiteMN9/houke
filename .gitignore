@@ -16,3 +16,10 @@
 /WXQrcode.png
 /qrcode.png
 /collect_jwxt.txt
+/school_sdk_windows_386.exe
+/school_sdk_windows_amd64.exe
+/accounts.json
+/model.onnx
+/kaptcha.json
+/models/
+/protocol/cas2/kap_img/

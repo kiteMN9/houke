@@ -1,38 +1,24 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"os"
-	"os/signal"
-	"school_sdk/client/config"
-	"syscall"
-	"time"
 
-	//_ "net/http/pprof"
-	"school_sdk/client"
+	"school_sdk/check_code/kaptcha"
 	"school_sdk/utils"
+	"school_sdk/web"
 )
 
-var version = "school_sdk_go 1.2.20"
+var version = "school_sdk_go 2.0.0"
 
 func main() {
-	var cfgFileName, wantFile, modeCode, route string
-
 	// 版本信息
 	verFlag := flag.Bool("V", false, version)
-	// 绑定命令行参数到变量
-	flag.StringVar(&cfgFileName, "c", "config.json", "配置文的件路径")
-	flag.StringVar(&wantFile, "want", "want.xlsx", "选课愿望单文件路径")
-	//// 也可以添加长格式别名 (可选)
-	//flag.StringVar(&cfgFileName, "config", "config.json", "Specify config file path (long format)")
 
-	flag.StringVar(&modeCode, "code", "", "模式代码建议5")
-
-	cas2 := flag.Bool("cas", false, "启用cas2登录方式")
-	cas2wx := flag.Bool("wx", false, "启用cas2微信登录")
-	flag.StringVar(&route, "route", "", "教务系统route")
+	webAddr := flag.String("webAddr", "127.0.0.1:8080", "WebUI 监听地址")
 
 	// 解析命令行参数
 	flag.Parse()
@@ -40,54 +26,36 @@ func main() {
 		fmt.Printf("%s\n", version)
 		os.Exit(0)
 	}
-	//go func() {
-	//	log.Println(http.ListenAndServe("localhost:6060", nil))
-	//}()
 	utils.Exit()
-	done := make(chan struct{})
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		select {
-		case <-done:
-			signal.Stop(sigCh)
-		case <-sigCh:
-			signal.Stop(sigCh)
-			fmt.Println()
-			os.Exit(0)
-		}
-	}()
-	log.Println("程序启动") // 写入文件和控制台
+
 	fmt.Println(version)
-	startTime := time.Now()
-	fCfg := config.ReadConfig(cfgFileName)
-	if wantFile != "want.xlsx" || fCfg.Want == "" {
-		fCfg.Want = wantFile
-		fCfg.WriteConfig()
-	}
-	duration, err := time.ParseDuration(fCfg.Timeout)
+	store, err := web.NewAccountStore("accounts.json")
 	if err != nil {
-		duration = 47 * time.Second
-		fCfg.Timeout = "47s"
-		fCfg.WriteConfig()
+		log.Fatalf("加载本地数据失败: %v", err)
 	}
-	apiClient := client.NewAPIClient(duration, fCfg, *cas2 || fCfg.CasLogin, *cas2wx, route)
-	//apiClient := client.NewClientWithCookieJar(cliConfig, fCfg.Account, jar)
-	fmt.Println("当前用户:", fCfg.Account)
 
-	if apiClient.Login() {
-		log.Println("登录总用时:", time.Since(startTime))
+	// 字符验证码识别模型由 WebUI 的「验证码模型」页配置（kaptcha.json）。
+	// 这里只尝试加载一次；没模型、模型坏了都只提示，不阻止 WebUI 启动。
+	mgr := store.Kaptcha()
+	if err := mgr.Reload(); err != nil {
+		if errors.Is(err, kaptcha.ErrNoModel) {
+			fmt.Println("字符验证码：未找到模型，可在 WebUI 的「验证码模型」页上传或指定路径")
+		} else {
+			log.Printf("字符验证码：加载模型失败，可在 WebUI 的「验证码模型」页检查: %v", err)
+		}
+	} else if st := mgr.Status(); st.Enabled {
+		fmt.Printf("字符验证码：自动识别已启用（%s，置信度下限 %.2f）\n", st.ModelPath, st.Settings.Threshold)
 	} else {
-		fmt.Println("登录失败")
-		time.Sleep(2 * time.Second)
-		os.Exit(0)
-	}
-	if fCfg.PerInfo {
-		client.PrintStudentInfo2(apiClient.GetJsonInfo())
+		fmt.Println("字符验证码：自动识别已关闭，遇到字符验证码时人工输入")
 	}
 
-	//apiClient.GetScore("2024", 2)
-	close(done)
-	//apiClient.GetScore(client.GetSuggestYearTerm())
-	apiClient.GetCourseCtl(modeCode)
+	srv, err := web.NewServer(store)
+	if err != nil {
+		log.Fatalf("启动 WebUI 失败: %v", err)
+	}
+	fmt.Printf("WebUI 已启动: http://%s\n", *webAddr)
+	if err := srv.Run(*webAddr); err != nil {
+		fmt.Println(err)
+		return
+	}
 }

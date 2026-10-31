@@ -17,3 +17,10 @@ func Is10PrivateIP(ipStr string) bool {
 	}
 	return tenNet.Contains(ip)
 }
+
+//func main() {
+//	fmt.Println(Is10PrivateIP("10.0.0.1"))       // true
+//	fmt.Println(Is10PrivateIP("10.255.255.255")) // true
+//	fmt.Println(Is10PrivateIP("192.168.1.1"))    // false
+//	fmt.Println(Is10PrivateIP("11.0.0.1"))       // false
+//}

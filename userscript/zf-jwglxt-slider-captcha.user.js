@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         正方教务系统 滑块验证码自动通过（纯 HTTP 版）
 // @namespace    school_sdk_go/userscript
-// @version      2.0.0
+// @version      2.1.0
 // @description  直接走验证码 HTTP 接口自动通过正方教务登录页的滑块验证，不产生任何鼠标事件、不移动鼠标（算法移植自 school_sdk_go/check_code）
 // @author       school_sdk_go
 // @match        *://*/jwglxt*
@@ -19,7 +19,7 @@
  * 流程（对应 client/login.go 的 captchaControl）：
  *   1. rtk          —— 页面上的 window.zfdun_captcha_config.rtk（拿不到就再请求一次 zfdun_captcha.js 解析 rtk:'...'）
  *   2. 取题         —— 优先复用页面上正在显示的那组图；否则 GET ?type=refresh 拿一组新的 si/mi/imtk/t
- *   3. 缺口定位     —— 用 NCC 在背景图里找拼图块的位置（见下面的算法说明）
+ *   3. 缺口定位     —— 先取像素（页面已显示的图直接读 <img>，0 次请求），再用 NCC 找拼图块的位置
  *   4. 造轨迹       —— 1:1 移植 check_code/gen_track.go 的“平滑插值+正弦抖动”轨迹
  *   5. 提交         —— POST ?type=verify，mt=base64(轨迹JSON)、extend=base64({appName,userAgent,appVersion})
  *   6. 判定         —— 返回 {vs:"verified", status:"success"} 即为通过（服务端已把会话标记为已验证）
@@ -34,12 +34,19 @@
  * 整图洗白、缺口处额外提亮），绝对差会被带偏 —— 实测 40 组真实样本 SAD 命中 0/40。
  * 改用对线性变换不变的归一化互相关(NCC)：正位置相关系数≈0.9999，次高峰≤0.78，40/40 命中。
  *
+ * 取图说明
+ * ----------------------------------------------------------------------------
+ * 页面上那两张图（背景 + 拼图块）浏览器本来就已经下载过一次了，脚本不再重复下载：
+ *   - 复用页面上正在显示的题时，直接把已有的 <img> 画到 canvas 取像素，0 次网络请求；
+ *   - 自己 refresh 换题时只下载一次，同一份 blob 既用于识别、也用于更新页面显示
+ *     （objectURL），不会再触发浏览器第二次请求；
+ *   - 同一 URL 的图片最多下载一次（blob 缓存），重试/重入都不会重复取图。
+ *
  * 轨迹说明
  * ----------------------------------------------------------------------------
- * check_code/gen_track.go 的时间戳是“从当前时刻往后排”的（最后一点落在未来 ~1.36s）。
- * 这里把整条轨迹平移到“提交之前已经拖完”，即最后一点 ≈ 当前时刻，
- * 与真人“拖完立刻抬手触发验证”的时间关系一致。
- * 另外轨迹坐标用的是滑块在页面上的真实位置（拿不到才退回 login.go 的 950~1030/480）。
+ * 时间戳与 check_code/gen_track.go 一致：从当前时刻往后排（最后一点落在未来 ~1.36s）。
+ * 实测服务端不看这个“未来”，轨迹生成完立刻提交即可，不需要 sleep 等它“回到过去”。
+ * 轨迹坐标用的是滑块在页面上的真实位置（拿不到才退回 login.go 的 950~1030/480）。
  *
  * 实测（对真实服务端，全程无鼠标事件）：
  *   - ?type=verify 连续 10/10 返回 {vs:"verified", status:"success"}
@@ -55,7 +62,7 @@
   /* ============================== 配置 ============================== */
   const CFG = {
     debug: true,             // 控制台日志 + 右下角状态提示
-    maxAttempts: 4,          // 一次自动通过最多尝试几轮（每轮会换一组新题）
+    maxAttempts: 2,          // 一次自动通过最多尝试几轮（每轮会换一组新题）
     retryDelay: 700,         // 两次尝试之间的间隔(ms)
     cooldownMs: 1200,        // 两次自动通过之间的最小间隔，避免连续触发
     minScore: 0.95,          // NCC 峰值下限，低于此值认为没找准
@@ -64,7 +71,6 @@
     syncPageImages: true,    // 自己 refresh 换了新题后，把页面上的图也换成同一组
     markVerifiedUI: true,    // 通过后把滑块 UI 改成“验证通过”，并把拼图挪到缺口位置
     autoClickLogin: false,   // 通过后自动点“登录”（账号密码需已填好）
-    useDomDragFallback: false,// 应急兜底：HTTP 始终失败时才用真实鼠标事件拖（默认关闭，避免打扰鼠标）
   };
 
   const TAG = '[滑块自动通过]';
@@ -133,6 +139,23 @@
     return resp.blob();
   }
 
+  /** 同一张图只下载一次：URL 里带着 imtk/t，同一个 URL 的内容是确定的 */
+  const blobCache = new Map();
+  const BLOB_CACHE_MAX = 8;
+
+  function fetchImageBlobCached(url) {
+    let p = blobCache.get(url);
+    if (!p) {
+      p = fetchImageBlob(url);
+      blobCache.set(url, p);
+      if (blobCache.size > BLOB_CACHE_MAX) {
+        const oldest = blobCache.keys().next().value;
+        if (oldest !== url) blobCache.delete(oldest);
+      }
+    }
+    return p;
+  }
+
   function decodeViaImg(blob) {
     return new Promise((resolve, reject) => {
       const url = URL.createObjectURL(blob);
@@ -156,10 +179,8 @@
     return decodeViaImg(blob);
   }
 
-  /** 取图像像素（自己抓的字节，画到 canvas 上不会污染，也不依赖页面上的 <img>） */
-  async function fetchPixels(url) {
-    const blob = await fetchImageBlob(url);
-    if (!blob) return null;
+  /** blob → 像素（自己抓的字节，画到 canvas 上不会污染） */
+  async function blobPixels(blob) {
     const bmp = await decodeBlob(blob);
     const w = bmp.naturalWidth || bmp.width;
     const h = bmp.naturalHeight || bmp.height;
@@ -172,6 +193,48 @@
     const img = ctx.getImageData(0, 0, w, h);
     if (typeof bmp.close === 'function') bmp.close();
     return { data: img.data, w: w, h: h };
+  }
+
+  /** 跨域污染 canvas 的标记：这种情况等多久都没用，必须马上回退到 fetch */
+  const TAINTED = { tainted: true };
+
+  /** 页面 <img> 上已经加载好的图 → 像素：一次网络请求都不发；跨域污染时返回 TAINTED */
+  function imgPixels(img) {
+    if (!img || !img.complete || !img.naturalWidth) return null;
+    try {
+      const cv = document.createElement('canvas');
+      cv.width = img.naturalWidth;
+      cv.height = img.naturalHeight;
+      const ctx = cv.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(img, 0, 0);
+      const d = ctx.getImageData(0, 0, cv.width, cv.height);
+      return { data: d.data, w: cv.width, h: cv.height };
+    } catch (e) {
+      return TAINTED; // SecurityError：跨域图污染了 canvas，调用方回退到 fetch
+    }
+  }
+
+  /** 等 <img> 加载完再取像素；加载失败 / 超时 / 跨域污染都返回 null（调用方回退到 fetch） */
+  async function imgPixelsAsync(img) {
+    if (!img) return null;
+    const first = imgPixels(img);
+    if (first === TAINTED) return null; // 污染是永久性的，不用等
+    if (first) return first;
+    if (img.complete && !img.naturalWidth) return null; // 已经加载失败，不用等
+    const r = await waitFor(() => imgPixels(img), 2000);
+    return r === TAINTED ? null : r;
+  }
+
+  /** 取图像像素：优先用页面已加载的 <img>（0 请求），否则下载一次（走 blob 缓存） */
+  async function fetchPixels(url) {
+    const blob = await fetchImageBlobCached(url);
+    if (!blob) {
+      blobCache.delete(url); // 失败不缓存，下次还能重试
+      return null;
+    }
+    const px = await blobPixels(blob);
+    if (!px) blobCache.delete(url);
+    return px;
   }
 
   /** POST ?type=verify（等价于 client/login.go 的 captchaVerify） */
@@ -258,12 +321,14 @@
     for (let i = 0; i < raw.length; i++) raw[i].d -= d0;
     const lastD = raw[raw.length - 1].d || distance;
     const k = distance / lastD;
-    const tEnd = Date.now();
-    const tStart = tEnd - raw[raw.length - 1].dt;
+
+    // 时间戳与 gen_track.go 一致：从“现在”往后排，末点会落在未来 ~1.36s。
+    // 服务端不看这个“未来”，所以生成完直接提交，不用 sleep 把它挪回过去。
+    const t0 = Date.now();
     return raw.map((p) => ({
       x: anchorX + Math.round(p.d * k),
       y: anchorY + p.dy,
-      t: Math.round(tStart + p.dt),
+      t: Math.round(t0 + p.dt),
     }));
   }
 
@@ -368,57 +433,94 @@
 
   /* ============================== 5. 页面配合 ============================== */
 
-  /** 页面上正在显示的那组图（有的话直接复用，界面就不会和实际答的题不一致） */
-  function pageImageUrls() {
+  /** 页面上的两张 <img>（不管有没有 src，用来取像素 / 同步显示） */
+  function pageImageEls() {
     const wrapper = document.querySelector('.captcha_wrapper');
     if (!wrapper) return null;
     const bg = wrapper.querySelector('.zfdun_bgimg_img');
     const jigsaw = wrapper.querySelector('.zfdun_bgimg_jigsaw');
-    const si = bg && bg.getAttribute('src');
-    const mi = jigsaw && jigsaw.getAttribute('src');
-    if (!si || !mi) return null;
-    return { si: si, mi: mi };
+    if (!bg || !jigsaw) return null;
+    return { bg: bg, piece: jigsaw };
   }
 
-  /** 自己换了题之后，把页面上的图也换成同一组，保证界面一致 */
-  function syncPageImages(siUrl, miUrl) {
+  /** 页面上正在显示的那组图（含 <img> 元素本身，便于直接取像素，不再重复下载） */
+  function pageImages() {
+    const els = pageImageEls();
+    if (!els) return null;
+    const si = els.bg.getAttribute('src');
+    const mi = els.piece.getAttribute('src');
+    if (!si || !mi) return null;
+    return { bg: els.bg, piece: els.piece, si: si, mi: mi };
+  }
+
+  /** 记录自己挂上去的 objectURL，用于换题时回收 */
+  let shownBlobUrls = [];
+
+  /**
+   * 自己换了题之后，把页面上的图也换成同一组，保证界面一致。
+   * 传了 blob 就用 objectURL —— 这两张图刚刚已经下载过了，浏览器不会再请求第二次。
+   */
+  function syncPageImages(siUrl, miUrl, blobSi, blobMi) {
     if (!CFG.syncPageImages) return;
-    const wrapper = document.querySelector('.captcha_wrapper');
-    if (!wrapper) return;
-    const bg = wrapper.querySelector('.zfdun_bgimg_img');
-    const jigsaw = wrapper.querySelector('.zfdun_bgimg_jigsaw');
-    if (bg && bg.src !== siUrl) bg.src = siUrl;
-    if (jigsaw && jigsaw.src !== miUrl) jigsaw.src = miUrl;
+    const dom = pageImageEls();
+    if (!dom) return;
+    let nextSi = siUrl;
+    let nextMi = miUrl;
+    if (blobSi && blobMi && typeof URL !== 'undefined' && URL.createObjectURL) {
+      const urls = [URL.createObjectURL(blobSi), URL.createObjectURL(blobMi)];
+      const olds = shownBlobUrls;
+      shownBlobUrls = urls;
+      setTimeout(() => {
+        olds.forEach((u) => {
+          try {
+            URL.revokeObjectURL(u);
+          } catch (e) {
+            /* 忽略 */
+          }
+        });
+      }, 1000);
+      nextSi = urls[0];
+      nextMi = urls[1];
+    }
+    if (dom.bg.getAttribute('src') !== nextSi) dom.bg.src = nextSi;
+    if (dom.piece.getAttribute('src') !== nextMi) dom.piece.src = nextMi;
   }
 
   /** 通过后把滑块 UI 改成“验证通过”，并把拼图挪到缺口位置（纯外观，服务端状态已经好了） */
-  function markVerifiedUI(gapX) {
+  function markVerifiedUI(gapX, imgW) {
     if (!CFG.markVerifiedUI) return;
-    const wrapper = document.querySelector('.captcha_wrapper');
-    if (!wrapper) return;
+    try {
+      const wrapper = document.querySelector('.captcha_wrapper');
+      if (!wrapper) return;
 
-    if (gapX != null) {
-      const bg = wrapper.querySelector('.zfdun_bgimg_img');
-      const jigsaw = wrapper.querySelector('.zfdun_bgimg_jigsaw');
-      let scale = 1;
-      if (bg) {
-        const r = bg.getBoundingClientRect();
-        if (r.width > 0 && bg.naturalWidth > 0) scale = r.width / bg.naturalWidth;
+      if (gapX != null) {
+        const bg = wrapper.querySelector('.zfdun_bgimg_img');
+        const jigsaw = wrapper.querySelector('.zfdun_bgimg_jigsaw');
+        let scale = 1;
+        if (bg) {
+          const r = bg.getBoundingClientRect();
+          // 挑战图像素宽度用刚才识别时那份（不依赖 <img> 是否已经 load 完）
+          const natW = bg.naturalWidth || imgW || 0;
+          if (r.width > 0 && natW > 0) scale = r.width / natW;
+        }
+        if (jigsaw) jigsaw.style.left = Math.round(gapX * scale) + 'px';
       }
-      if (jigsaw) jigsaw.style.left = Math.round(gapX * scale) + 'px';
-    }
-    const icon = wrapper.querySelector('.zfdun_slider_icon');
-    if (icon) {
-      icon.classList.remove('zfdun_slider_icon_normal');
-      icon.classList.remove('zfdun_slider_icon_moving');
-      icon.classList.add('zfdun_slider_icon_success');
-    }
-    const p = wrapper.querySelector('.zfdun_slider_bar p');
-    if (p) p.textContent = '验证通过';
-    const btn = wrapper.querySelector('.zfdun_slider_bar_btn');
-    if (btn) {
-      btn.classList.remove('zfdun_slider_bar_btn_fail');
-      btn.style.backgroundColor = '#52CCBA';
+      const icon = wrapper.querySelector('.zfdun_slider_icon');
+      if (icon) {
+        icon.classList.remove('zfdun_slider_icon_normal');
+        icon.classList.remove('zfdun_slider_icon_moving');
+        icon.classList.add('zfdun_slider_icon_success');
+      }
+      const p = wrapper.querySelector('.zfdun_slider_bar p');
+      if (p) p.textContent = '验证通过';
+      const btn = wrapper.querySelector('.zfdun_slider_bar_btn');
+      if (btn) {
+        btn.classList.remove('zfdun_slider_bar_btn_fail');
+        btn.style.backgroundColor = '#52CCBA';
+      }
+    } catch (e) {
+      // 纯外观，画错了也不能影响已经通过的验证
+      log('改 UI 时出错了（不影响验证结果）:', e && e.message);
     }
   }
 
@@ -444,41 +546,60 @@
       for (let attempt = 1; attempt <= CFG.maxAttempts; attempt++) {
         let siUrl = null;
         let miUrl = null;
+        const dom = pageImages();
 
         // (1) 取题：优先用页面上正在显示的那组，失败/重试则自己 refresh
-        if (CFG.reusePageChallenge && attempt === 1) {
-          const dom = pageImageUrls();
-          if (dom) {
-            siUrl = dom.si;
-            miUrl = dom.mi;
-            log('复用页面上正在显示的这组题');
-          }
+        if (CFG.reusePageChallenge && attempt === 1 && dom) {
+          siUrl = dom.si;
+          miUrl = dom.mi;
         }
-        if (!siUrl || !miUrl) {
-          const cap = await refreshChallenge(conf, rtk);
-          if (cap.vs === 'verified') {
-            onSuccess(null);
-            return;
+
+        // (2) 取像素：页面已经显示的就是这组题时，直接读 <img>，一次网络请求都不发
+        let bg = null;
+        let piece = null;
+        if (dom && siUrl === dom.si && miUrl === dom.mi) {
+          bg = await imgPixelsAsync(dom.bg);
+          piece = await imgPixelsAsync(dom.piece);
+          if (bg && piece) log('复用页面上已加载的这组题（未额外下载图片）');
+        }
+        if (!bg || !piece) {
+          if (!siUrl || !miUrl) {
+            const cap = await refreshChallenge(conf, rtk);
+            if (cap.vs === 'verified') {
+              onSuccess(null);
+              return;
+            }
+            if (cap.msg) log('refresh msg:', cap.msg);
+            if (!cap.si || !cap.mi) {
+              lastErr = cap.msg || 'refresh 没返回图片';
+              await sleep(CFG.retryDelay);
+              continue;
+            }
+            siUrl = imageUrl(conf, cap.si, cap.imtk, cap.t);
+            miUrl = imageUrl(conf, cap.mi, cap.imtk, cap.t);
           }
-          if (cap.msg) log('refresh msg:', cap.msg);
-          if (!cap.si || !cap.mi) {
-            lastErr = cap.msg || 'refresh 没返回图片';
+          // 只下载一次：同一份 blob 既用来识别，也用来更新页面上的图
+          const blobSi = await fetchImageBlobCached(siUrl);
+          const blobMi = await fetchImageBlobCached(miUrl);
+          if (!blobSi || !blobMi) {
+            lastErr = '取图失败';
             await sleep(CFG.retryDelay);
             continue;
           }
-          siUrl = imageUrl(conf, cap.si, cap.imtk, cap.t);
-          miUrl = imageUrl(conf, cap.mi, cap.imtk, cap.t);
-          syncPageImages(siUrl, miUrl);
+          bg = await blobPixels(blobSi);
+          piece = await blobPixels(blobMi);
+          if (!bg || !piece) {
+            lastErr = '图片解码失败';
+            await sleep(CFG.retryDelay);
+            continue;
+          }
+          // 页面显示的不是这组题才换（且用刚下好的 blob，不会再触发一次下载）
+          if (!dom || dom.si !== siUrl || dom.mi !== miUrl) {
+            syncPageImages(siUrl, miUrl, blobSi, blobMi);
+          }
         }
 
-        // (2) 取像素 → 定位缺口
-        const bg = await fetchPixels(siUrl);
-        const piece = await fetchPixels(miUrl);
-        if (!bg || !piece) {
-          lastErr = '取图失败';
-          await sleep(CFG.retryDelay);
-          continue;
-        }
+        // (3) 定位缺口
         if (bg.h !== piece.h) {
           lastErr = `图片高度不一致(${bg.h}/${piece.h})`;
           await sleep(CFG.retryDelay);
@@ -502,12 +623,12 @@
           continue;
         }
 
-        // (3) 造轨迹并提交
+        // (4) 造轨迹并提交（轨迹生成完立刻提交，不等 t）
         const anchor = anchorOf();
         const track = genTrack(res.x, anchor.x, anchor.y);
         const ver = await verifyTrack(conf, rtk, track);
         if (ver.vs === 'verified' || ver.status === 'success') {
-          onSuccess(res.x);
+          onSuccess(res.x, bg.w);
           return;
         }
         lastErr = ver.msg || ver.status || '未知错误';
@@ -516,10 +637,7 @@
 
       warn(`尝试 ${CFG.maxAttempts} 轮仍未通过：${lastErr}`);
       banner('未通过：' + lastErr);
-      if (CFG.useDomDragFallback) {
-        log('改用鼠标拖动兜底（CFG.useDomDragFallback 已开启）');
-        await dragFallback();
-      }
+
     } catch (e) {
       console.error(TAG, e);
     } finally {
@@ -527,9 +645,9 @@
     }
   }
 
-  function onSuccess(gapX) {
+  function onSuccess(gapX, imgW) {
     solved = true;
-    markVerifiedUI(gapX);
+    markVerifiedUI(gapX, imgW);
     banner('滑块已自动通过 ✓');
     log(gapX == null ? '服务端已是 verified，无需再验证' : `验证通过，缺口 x=${gapX}`);
     if (CFG.autoClickLogin) {
@@ -538,63 +656,6 @@
         if (btn) btn.click();
       }, 300);
     }
-  }
-
-  /* ============ 7. 应急兜底：真实鼠标事件拖动（默认关闭） ============ */
-  async function dragFallback() {
-    const wrapper = document.querySelector('.captcha_wrapper');
-    if (!wrapper) return;
-    const conf = getConf();
-    const cap = await refreshChallenge(conf, conf.rtk);
-    if (!cap.si || !cap.mi) return;
-    const siUrl = imageUrl(conf, cap.si, cap.imtk, cap.t);
-    const miUrl = imageUrl(conf, cap.mi, cap.imtk, cap.t);
-    syncPageImages(siUrl, miUrl);
-    const bg = await fetchPixels(siUrl);
-    const piece = await fetchPixels(miUrl);
-    if (!bg || !piece) return;
-    const res = matchByNCC(bg.data, bg.w, bg.h, buildMask(piece.data, piece.w, piece.h), piece.w);
-    if (res.score < CFG.minScore) return;
-
-    const btn = wrapper.querySelector('.zfdun_slider_bar_btn');
-    if (!btn) return;
-    const r = btn.getBoundingClientRect();
-    const startClientX = r.left + r.width / 2;
-    const startClientY = r.top + r.height / 2;
-    let scale = 1;
-    const bgImg = wrapper.querySelector('.zfdun_bgimg_img');
-    if (bgImg) {
-      const br = bgImg.getBoundingClientRect();
-      if (br.width > 0 && bgImg.naturalWidth > 0) scale = br.width / bgImg.naturalWidth;
-    }
-    const distance = Math.round(res.x * scale);
-    const track = genTrack(res.x, Math.round(startClientX + window.scrollX), Math.round(startClientY + window.scrollY));
-    const rel = track.map((p) => p.x - track[0].x);
-    const k = distance / (rel[rel.length - 1] || distance);
-
-    const fire = (target, type, clientX, clientY) =>
-      target.dispatchEvent(
-        new MouseEvent(type, {
-          bubbles: true,
-          cancelable: true,
-          view: window,
-          clientX: Math.round(clientX),
-          clientY: Math.round(clientY),
-          button: 0,
-          buttons: type === 'mouseup' ? 0 : 1,
-        })
-      );
-
-    fire(btn, 'mousedown', startClientX, startClientY);
-    const wall = performance.now();
-    for (let i = 1; i < track.length; i++) {
-      const wait = track[i].t - track[0].t - (performance.now() - wall);
-      if (wait > 0) await sleep(wait);
-      fire(window, 'mousemove', startClientX + rel[i] * k, startClientY + (track[i].y - track[0].y));
-    }
-    fire(window, 'mousemove', startClientX + distance, startClientY);
-    fire(window, 'mouseup', startClientX + distance, startClientY);
-    if (await waitFor(() => wrapper.querySelector('.zfdun_slider_icon_success'), 2500)) onSuccess(res.x);
   }
 
   function waitFor(fn, timeout) {
@@ -637,7 +698,7 @@
 
   /* ============================== 9. 启动 ============================== */
   function boot() {
-    log('已加载 v2.0.0（纯 HTTP 模式，全程不会产生鼠标事件）');
+    log('已加载 v2.1.0（纯 HTTP 模式，全程不会产生鼠标事件；图片不重复下载）');
 
     // 等滑块控件渲染出来
     let tries = 0;
@@ -663,14 +724,22 @@
       true
     );
 
-    // 题过期 / 服务端又要求验证时（例如点了登录被拦），自动补一次
+    // 题过期 / 服务端又要求验证时（例如点了登录被拦），自动补一次。
+    // 注意：observer 挂在整棵文档上，页面自身的重绘也会触发回调，而 #tips 上的提示
+    // 文字会一直留在那里 —— 不去重的话就会反复 solve、反复取图，所以这里做一次去重。
+    let lastTips = '';
+    let lastTipsAt = 0;
     const obs = new MutationObserver(() => {
       if (busy) return;
       const tips = document.getElementById('tips');
-      if (tips && /请先滑动图片|请拖动滑块|滑块/.test(tips.textContent || '')) {
-        solved = false;
-        solve('tips');
-      }
+      const txt = (tips && tips.textContent) || '';
+      if (!/请先滑动图片|请拖动滑块|滑块/.test(txt)) return;
+      const now = Date.now();
+      if (txt === lastTips && now - lastTipsAt < 3000) return; // 同一段提示的重复重绘
+      lastTips = txt;
+      lastTipsAt = now;
+      solved = false;
+      solve('tips');
     });
     obs.observe(document.documentElement, { subtree: true, childList: true, characterData: true });
   }

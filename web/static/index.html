@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>School SDK 控制台</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+    <aside class="sidebar" id="sidebar">
+        <div class="sidebar-inner">
+            <div class="sidebar-header">
+                <div class="sidebar-title">
+                    <h1>🎓 School SDK</h1>
+                    <button type="button" class="btn-collapse" id="btn-collapse"
+                            title="折叠侧边栏" aria-label="折叠侧边栏">
+                        <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"
+                             width="16" height="16" fill="none" stroke="currentColor"
+                             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="3" y="4" width="18" height="16" rx="2"></rect>
+                            <line x1="9" y1="4" x2="9" y2="20"></line>
+                            <polyline points="16 9 13 12 16 15"></polyline>
+                        </svg>
+                    </button>
+                </div>
+                <button type="button" class="btn-new" id="btn-new">+ 新建账号</button>
+                <button type="button" class="btn-wechat" id="btn-wechat"
+                        title="不需要先建账号：扫码成功后自动绑定或新建账号">微信扫码登录</button>
+                <button type="button" class="btn-settings" id="btn-kaptcha"
+                        title="配置字符验证码识别模型（全局，所有账号共用）">🧠 验证码模型</button>
+            </div>
+            <ul id="account-list"></ul>
+            <div class="sidebar-empty" id="sidebar-empty" hidden>暂无账号</div>
+        </div>
+    </aside>
+
+    <button type="button" class="btn-expand" id="btn-expand"
+            title="展开侧边栏" aria-label="展开侧边栏" hidden>
+        <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24"
+             width="18" height="18" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="3" y1="6" x2="21" y2="6"></line>
+            <line x1="3" y1="12" x2="21" y2="12"></line>
+            <line x1="3" y1="18" x2="21" y2="18"></line>
+        </svg>
+    </button>
+
+    <main class="main">
+        <div class="empty-state" id="empty-state">请选择账号，或点左侧「微信扫码登录」直接扫码</div>
+
+        <div id="panel" hidden>
+            <header class="panel-header">
+                <div>
+                    <h2 id="acc-name"></h2>
+                    <div class="meta">
+                        <span id="acc-url"></span>
+                        <span id="acc-user"></span>
+                        <span id="acc-mode"></span>
+                    </div>
+                </div>
+                <div class="actions">
+                    <span class="badge" id="login-state">未登录</span>
+                    <button type="button" class="btn primary" id="btn-login">登录</button>
+                    <button type="button" class="btn" id="btn-logout" hidden>登出</button>
+                    <button type="button" class="btn" id="btn-ping" title="探测会话是否有效；失效时自动重新登录">Ping</button>
+                </div>
+            </header>
+
+            <!-- 长任务（登录 / 初始化）运行态：跨页签常驻，刷新页面后自动重新接管 -->
+            <section class="task-panel" id="task-panel" hidden aria-live="polite">
+                <div class="task-head">
+                    <span class="task-spinner spinner dark" id="task-spinner" hidden aria-hidden="true"></span>
+                    <span class="task-title" id="task-title">任务</span>
+                    <span class="task-stage" id="task-stage"></span>
+                    <span class="task-meta" id="task-meta"></span>
+                    <button type="button" class="btn btn-mini danger" id="task-cancel" hidden>取消</button>
+                </div>
+                <details class="task-log" id="task-log-wrap">
+                    <summary id="task-log-summary">执行日志</summary>
+                    <ol class="task-events" id="task-events"></ol>
+                </details>
+            </section>
+
+            <nav class="tabs">
+                <button type="button" data-tab="init" class="active">⚙️ 初始化</button>
+                <button type="button" data-tab="courses">📚 课程浏览</button>
+                <button type="button" data-tab="chosen">✅ 已选课程</button>
+                <button type="button" data-tab="score">📊 考试成绩</button>
+                <button type="button" data-tab="auto">🎯 自动选课</button>
+                <button type="button" data-tab="tools">🧰 其他工具</button>
+            </nav>
+
+            <section class="tab-content active" id="tab-init">
+                <div class="card">
+                    <h3>初始化</h3>
+                    <p class="muted" style="margin:0 0 12px">
+                        登录后需要先拉取选课参数。切换选课轮次或页签后，可点击「重新初始化」刷新。
+                    </p>
+                    <div class="row">
+                        <button type="button" class="btn primary" id="btn-init">初始化</button>
+                        <button type="button" class="btn" id="btn-reinit">重新初始化</button>
+                    </div>
+                </div>
+                <div class="card">
+                    <h3>选课页签</h3>
+                    <div id="tabs-container">
+                        <p class="muted">初始化后显示可用的选课页签。</p>
+                    </div>
+                </div>
+            </section>
+
+            <section class="tab-content" id="tab-courses">
+                <div class="card">
+                    <h3>课程列表</h3>
+                    <div class="row" style="margin-bottom:12px">
+                        <button type="button" class="btn primary" id="btn-fetch-courses">获取课程列表</button>
+                        <button type="button" class="btn" id="btn-refresh-courses">强制刷新</button>
+                        <button type="button" class="btn danger" id="btn-clear-courses">清空缓存</button>
+                        <span id="course-count" class="muted"></span>
+                    </div>
+                    <div id="courses-container">
+                        <p class="muted">打开本页会自动加载已缓存的课程；缓存为空时点击「获取课程列表」从学校拉取。未加载详情的教学班可点击「详情」展开教师 / 时间 / 容量。</p>
+                    </div>
+                </div>
+            </section>
+
+            <section class="tab-content" id="tab-chosen">
+                <div class="card">
+                    <h3>已选课程查询</h3>
+                    <div class="row" style="margin-bottom:12px">
+                        <label for="chosen-xnm">学年</label>
+                        <input type="text" id="chosen-xnm" placeholder="2024" style="width:100px">
+                        <label for="chosen-xqm">学期</label>
+                        <select id="chosen-xqm">
+                            <option value="3">第一学期 (3)</option>
+                            <option value="12">第二学期 (12)</option>
+                            <option value="16">第三学期 (16)</option>
+                        </select>
+                        <button type="button" class="btn primary" id="btn-fetch-chosen">查询</button>
+                    </div>
+                    <div id="chosen-container">
+                        <p class="muted">输入学年学期后查询已选课程。</p>
+                    </div>
+                </div>
+            </section>
+
+            <section class="tab-content" id="tab-score">
+                <div class="card">
+                    <h3>考试成绩查询</h3>
+                    <div class="row" style="margin-bottom:12px">
+                        <label for="score-xnm">学年</label>
+                        <input type="text" id="score-xnm" placeholder="2024" style="width:100px">
+                        <label for="score-xqm">学期</label>
+                        <select id="score-xqm">
+                            <option value="3">第一学期 (3)</option>
+                            <option value="12">第二学期 (12)</option>
+                            <option value="16">第三学期 (16)</option>
+                        </select>
+                        <button type="button" class="btn primary" id="btn-fetch-score">查询</button>
+                        <span id="score-summary" class="muted"></span>
+                    </div>
+                    <div id="score-container">
+                        <p class="muted">输入学年学期后查询考试成绩。</p>
+                    </div>
+                </div>
+            </section>
+
+            <section class="tab-content" id="tab-auto">
+                <div class="card">
+                    <h3>愿望清单</h3>
+                    <p class="muted" style="margin:0 0 12px">
+                        每行一项，任意一项命中即可。清单会随账号保存，登录、初始化、重启 WebUI 后都还在；也作为自动选课的默认条件。
+                    </p>
+                    <div class="field">
+                        <label for="wish-classes">课程名（包含匹配）</label>
+                        <textarea id="wish-classes" rows="3" placeholder="高等数学"
+                                  style="width:100%;box-sizing:border-box"></textarea>
+                    </div>
+                    <div class="field">
+                        <label for="wish-teachers">教师（包含匹配）</label>
+                        <textarea id="wish-teachers" rows="2" placeholder="裴如意"
+                                  style="width:100%;box-sizing:border-box"></textarea>
+                    </div>
+                    <div class="field">
+                        <label for="wish-types">课程类型（包含匹配）</label>
+                        <textarea id="wish-types" rows="2" placeholder="通识选修"
+                                  style="width:100%;box-sizing:border-box"></textarea>
+                    </div>
+                    <div class="row">
+                        <button type="button" class="btn primary" id="btn-save-wish">保存愿望清单</button>
+                        <span id="wish-hint" class="muted"></span>
+                    </div>
+                </div>
+                <div class="card">
+                    <h3>自动选课</h3>
+                    <p class="muted" style="margin:0 0 12px">
+                        按愿望清单反复尝试，并周期性重新查询课程列表（已选人数、新放出来的名额、新开的教学班），直到选上、取消、轮次用尽或到达运行上限。进度与结果会显示在右侧任务面板。
+                    </p>
+                    <div class="row" style="margin-bottom:8px">
+                        <label for="auto-interval">间隔（秒）</label>
+                        <input type="number" id="auto-interval" min="0.5" step="0.5" value="1.5" style="width:90px">
+                        <label for="auto-refresh">刷新（秒）</label>
+                        <input type="number" id="auto-refresh" min="0" step="5" value="30" style="width:90px"
+                               title="每隔多少秒重新拉一次课程列表：已选人数、新放出来的名额、新开的教学班都会进队列；0 用默认 30 秒">
+                        <label for="auto-rounds">最多轮次</label>
+                        <input type="number" id="auto-rounds" min="0" step="1" value="0" style="width:90px">
+                        <span class="muted">0 = 不限</span>
+                        <label style="display:flex;align-items:center;gap:6px">
+                            <input type="checkbox" id="auto-once"> 只试一次
+                        </label>
+                    </div>
+                    <div class="row" style="margin-bottom:8px">
+                        <label for="auto-limit-mode">运行上限</label>
+                        <select id="auto-limit-mode" style="width:150px">
+                            <option value="default">默认（24 小时）</option>
+                            <option value="duration">按时长</option>
+                            <option value="endAt">到指定时间</option>
+                        </select>
+                        <span id="auto-limit-duration-wrap" hidden style="display:flex;align-items:center;gap:6px">
+                            <input type="number" id="auto-limit-hours" min="0.1" step="0.5" value="24" style="width:90px">
+                            <span class="muted">小时</span>
+                        </span>
+                        <span id="auto-limit-endat-wrap" hidden>
+                            <input type="datetime-local" id="auto-limit-endat">
+                        </span>
+                    </div>
+                    <p id="auto-limit-hint" class="muted" style="margin:0 0 12px">
+                        自动选课是超长任务：默认最长跑 24 小时，也可以指定小时数或结束时间；蹲名额不用一直盯着页面。
+                    </p>
+                    <div class="row">
+                        <button type="button" class="btn primary" id="btn-auto-start">开始自动选课</button>
+                        <button type="button" class="btn" id="btn-auto-cancel">取消</button>
+                        <span id="auto-hint" class="muted"></span>
+                    </div>
+                </div>
+            </section>
+
+            <section class="tab-content" id="tab-tools">
+                <div class="card">
+                    <h3>个人信息</h3>
+                    <p class="muted" style="margin:0 0 12px">
+                        从学校教务系统读取当前账号的学籍信息。查询要求已登录，不会在后台静默重登。
+                    </p>
+                    <div class="row" style="margin-bottom:12px">
+                        <button type="button" class="btn primary" id="btn-tools-info">获取个人信息</button>
+                        <button type="button" class="btn" id="btn-tools-info-copy" disabled>复制 JSON</button>
+                        <span id="tools-info-hint" class="muted"></span>
+                    </div>
+                    <div id="tools-info-container">
+                        <p class="muted">点击「获取个人信息」后显示姓名、学号、学院、专业等字段。</p>
+                    </div>
+                </div>
+                <div class="card">
+                    <h3>大头照</h3>
+                    <p class="muted" style="margin:0 0 12px">
+                        读取教务系统里的学生证件照原图；学校未上传照片时会给出提示。
+                    </p>
+                    <div class="row" style="margin-bottom:12px">
+                        <button type="button" class="btn primary" id="btn-tools-photo">获取大头照</button>
+                        <button type="button" class="btn" id="btn-tools-photo-download" disabled>下载</button>
+                        <span id="tools-photo-hint" class="muted"></span>
+                    </div>
+                    <div class="photo-container" id="tools-photo-container">
+                        <p class="muted">尚未加载。</p>
+                    </div>
+                </div>
+                <div class="card">
+                    <h3>当前 Cookie</h3>
+                    <p class="muted" style="margin:0 0 12px">
+                        当前账号会话的 Cookie，可直接复制为请求头。Cookie 等同于登录凭证，请勿分享给他人。
+                    </p>
+                    <div class="row" style="margin-bottom:12px">
+                        <button type="button" class="btn primary" id="btn-tools-cookies">刷新 Cookie</button>
+                        <button type="button" class="btn" id="btn-tools-cookies-copy" disabled>复制请求头</button>
+                        <span id="tools-cookies-hint" class="muted"></span>
+                    </div>
+                    <div id="tools-cookies-container">
+                        <p class="muted">打开本页会自动读取当前 Cookie。</p>
+                    </div>
+                </div>
+                <div class="card">
+                    <h3>会话诊断</h3>
+                    <p class="muted" style="margin:0 0 12px">
+                        账号、登录态、页签、课程缓存和会话产物的只读快照，不含密码与 JWT 明文。排查问题时可直接复制给作者。
+                    </p>
+                    <div class="row" style="margin-bottom:12px">
+                        <button type="button" class="btn primary" id="btn-tools-debug">刷新诊断</button>
+                        <button type="button" class="btn" id="btn-tools-debug-copy" disabled>复制 JSON</button>
+                        <span id="tools-debug-hint" class="muted"></span>
+                    </div>
+                    <div id="tools-debug-container">
+                        <p class="muted">打开本页会自动生成诊断快照。</p>
+                    </div>
+                </div>
+            </section>
+        </div>
+
+        <section id="kaptcha-page" class="settings-page" hidden>
+            <header class="panel-header settings-header">
+                <div class="settings-title">
+                    <button type="button" class="btn-back" id="btn-kaptcha-back"
+                            title="返回账号" aria-label="返回账号">←</button>
+                    <div>
+                        <h2>🧠 验证码模型</h2>
+                        <div class="meta">字符验证码自动识别 · 全局配置，所有账号共用同一份模型</div>
+                    </div>
+                </div>
+                <div class="actions">
+                    <span id="kaptcha-badge" class="badge">读取中…</span>
+                </div>
+            </header>
+            <div class="settings-body">
+                <div class="card">
+                    <h3>当前状态</h3>
+                    <div id="kaptcha-status">
+                        <p class="muted">正在读取配置…</p>
+                    </div>
+                    <div id="kaptcha-error" class="notice" hidden></div>
+                </div>
+
+                <div class="card">
+                    <h3>识别配置</h3>
+                    <div class="settings-grid">
+                        <div class="field checkbox">
+                            <input type="checkbox" id="kaptcha-enabled">
+                            <label for="kaptcha-enabled">启用自动识别（关闭后字符验证码一律人工输入）</label>
+                        </div>
+                        <div class="field">
+                            <label for="kaptcha-model-path">模型路径</label>
+                            <input type="text" id="kaptcha-model-path"
+                                   placeholder="留空自动查找 model.onnx">
+                            <span class="muted">可填绝对路径；留空时依次在程序目录、当前目录及其 models/ 下查找。</span>
+                        </div>
+                        <div class="field">
+                            <label for="kaptcha-threshold">置信度阈值</label>
+                            <input type="number" id="kaptcha-threshold" min="0.01" max="1" step="0.01" value="0.9">
+                            <span class="muted">6 个字符概率的乘积；低于阈值就转人工输入。默认 0.9。</span>
+                        </div>
+                        <div class="field">
+                            <label for="kaptcha-workers">推理并行度</label>
+                            <input type="number" id="kaptcha-workers" min="0" max="64" step="1" value="0">
+                            <span class="muted">0 = 按 CPU 核数自动决定。</span>
+                        </div>
+                    </div>
+                    <div class="row" style="margin-top:16px">
+                        <button type="button" class="btn primary" id="btn-kaptcha-save">保存并应用</button>
+                        <button type="button" class="btn" id="btn-kaptcha-reload">重新加载模型</button>
+                        <span id="kaptcha-save-hint" class="muted"></span>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>替换模型</h3>
+                    <p class="muted" style="margin:0 0 12px">
+                        上传 .onnx 文件（不超过 64 MB），会保存到配置文件旁的 models/ 并自动启用。
+                    </p>
+                    <div class="row">
+                        <button type="button" class="btn" id="btn-kaptcha-upload">上传 .onnx 模型</button>
+                        <input type="file" id="kaptcha-upload-file" accept=".onnx" hidden>
+                        <span id="kaptcha-upload-hint" class="muted"></span>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>测试识别</h3>
+                    <p class="muted" style="margin:0 0 12px">
+                        选一张验证码图片，用当前模型识别一次；只在本机推理，不会提交到学校。
+                    </p>
+                    <div class="row">
+                        <button type="button" class="btn" id="btn-kaptcha-test">选择图片测试</button>
+                        <input type="file" id="kaptcha-test-file" accept="image/*" hidden>
+                        <span id="kaptcha-test-hint" class="muted"></span>
+                    </div>
+                    <div id="kaptcha-test-preview" style="margin-top:12px"></div>
+                    <div id="kaptcha-test-result" style="margin-top:12px"></div>
+                </div>
+
+                <p class="muted">
+                    模型文件不随仓库分发（约 11 MB）。保存或上传后对所有账号立即生效，无需重启。
+                </p>
+            </div>
+        </section>
+    </main>
+</div>
+
+<dialog id="dlg-account" aria-labelledby="dlg-title">
+    <form id="form-account" method="dialog">
+        <div class="dialog-header" id="dlg-title">新建账号</div>
+        <div class="dialog-body">
+            <div class="field">
+                <label for="acc-name-input">账号名称 *</label>
+                <input type="text" id="acc-name-input" name="name" required placeholder="例如：我的账号">
+            </div>
+            <div class="field">
+                <label for="acc-baseUrl">教务系统地址 *</label>
+                <input type="text" id="acc-baseUrl" name="baseUrl" required value="https://jwglxt.ycit.edu.cn/">
+            </div>
+            <div class="field">
+                <label for="acc-username">学号 / 用户名 *</label>
+                <input type="text" id="acc-username" name="username" required autocomplete="off">
+            </div>
+            <div class="field" id="field-password">
+                <label for="acc-password">
+                    密码
+                    <span id="pass-hint" class="muted" style="font-size:11px"></span>
+                </label>
+                <div class="input-eye">
+                    <input type="password" id="acc-password" name="password" autocomplete="new-password">
+                    <button type="button" class="eye-btn" data-target="password"
+                            title="显示密码" aria-label="显示密码">
+                        <svg class="icon-on" aria-hidden="true" focusable="false"
+                             viewBox="0 0 24 24" width="16" height="16" fill="none"
+                             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                            <circle cx="12" cy="12" r="3"></circle>
+                        </svg>
+                        <svg class="icon-off" aria-hidden="true" focusable="false"
+                             viewBox="0 0 24 24" width="16" height="16" fill="none"
+                             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+                            <line x1="1" y1="1" x2="23" y2="23"></line>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            <div class="field">
+                <label for="acc-loginMode">登录方式</label>
+                <select id="acc-loginMode" name="loginMode">
+                    <option value="password">账号密码（教务系统）</option>
+                    <option value="cas">统一身份认证（CAS 密码）</option>
+                </select>
+                <span class="muted" style="font-size:11px">
+                    微信扫码不在这里选：它不需要账号，直接点侧边栏的「微信扫码登录」，
+                    扫完按 ticket 里的身份自动绑定或新建账号。
+                </span>
+            </div>
+            <div class="field" id="field-cas-pass" hidden>
+                <label for="acc-casPassword">
+                    门户密码
+                    <span id="caspass-hint" class="muted" style="font-size:11px"></span>
+                </label>
+                <div class="input-eye">
+                    <input type="password" id="acc-casPassword" name="casPassword" autocomplete="new-password">
+                    <button type="button" class="eye-btn" data-target="casPassword"
+                            title="显示密码" aria-label="显示密码">
+                        <svg class="icon-on" aria-hidden="true" focusable="false"
+                             viewBox="0 0 24 24" width="16" height="16" fill="none"
+                             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                            <circle cx="12" cy="12" r="3"></circle>
+                        </svg>
+                        <svg class="icon-off" aria-hidden="true" focusable="false"
+                             viewBox="0 0 24 24" width="16" height="16" fill="none"
+                             stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+                            <line x1="1" y1="1" x2="23" y2="23"></line>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            <div class="field">
+                <label for="acc-userAgent">User-Agent</label>
+                <input type="text" id="acc-userAgent" name="userAgent"
+                       value="Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:157.0) Gecko/20100101 Firefox/157.0">
+                <span class="muted" style="font-size:11px">
+                    需形如 <code>名称/版本</code>（至少含一个「/」）才能被后端解析，否则自动回落到默认 UA。
+                </span>
+            </div>
+            <div class="field">
+                <label for="acc-timeout">请求超时</label>
+                <input type="text" id="acc-timeout" name="timeout" value="43s">
+            </div>
+            <div class="field">
+                <label for="acc-loginTimeout">
+                    登录超时
+                    <span class="muted" style="font-size:11px">（Go duration，如 10m / 90s）</span>
+                </label>
+                <input type="text" id="acc-loginTimeout" name="loginTimeout" value="10m" placeholder="10m">
+                <span class="muted" style="font-size:11px">
+                    一次登录 / 初始化的最长等待时间，含人工输入验证码的时间；超时后任务自动结束。
+                </span>
+            </div>
+            <div class="field checkbox">
+                <input type="checkbox" id="acc-hedging" name="hedging">
+                <label for="acc-hedging">启用请求对冲（hedging）</label>
+            </div>
+            <div class="field" id="field-hedging-delay" hidden>
+                <label for="acc-hedgingDelay">
+                    对冲延迟
+                    <span class="muted" style="font-size:11px">（Go duration，如 21s / 800ms）</span>
+                </label>
+                <input type="text" id="acc-hedgingDelay" name="hedgingDelay" value="21s" placeholder="21s">
+            </div>
+            <div class="field">
+                <label for="acc-routes">
+                    Route 列表
+                    <span class="muted" style="font-size:11px">（每行一个，留空使用内置默认）</span>
+                </label>
+                <textarea id="acc-routes" name="routes" rows="3" spellcheck="false"
+                          placeholder="c80e782f5a3340e86274809ce311b6b4"></textarea>
+            </div>
+        </div>
+        <div class="dialog-footer">
+            <button type="button" class="btn danger" id="dlg-delete" hidden>删除账号</button>
+            <button type="button" class="btn" id="dlg-cancel">取消</button>
+            <button type="submit" class="btn primary" id="dlg-submit">创建</button>
+        </div>
+    </form>
+</dialog>
+
+<dialog id="dlg-input" aria-labelledby="dlg-input-title">
+    <form id="form-input" method="dialog">
+        <div class="dialog-header" id="dlg-input-title">需要输入</div>
+        <div class="dialog-body">
+            <p id="input-prompt" class="muted" style="margin:0"></p>
+
+            <div id="input-image-wrap" class="captcha-wrap" hidden>
+                <img id="input-image" alt="验证码" class="captcha-img">
+            </div>
+
+            <div class="field">
+                <label for="input-value" id="input-value-label">输入内容</label>
+                <input type="text" id="input-value" name="value"
+                       autocomplete="off" autocapitalize="off" spellcheck="false">
+            </div>
+        </div>
+        <div class="dialog-footer">
+            <button type="button" class="btn" id="dlg-input-cancel">取消登录</button>
+            <button type="submit" class="btn primary" id="dlg-input-submit">提交</button>
+        </div>
+    </form>
+</dialog>
+
+<dialog id="dlg-qr" aria-labelledby="dlg-qr-title">
+    <div class="dialog-header" id="dlg-qr-title">微信扫码登录</div>
+    <div class="dialog-body">
+        <div class="qr-wrap">
+            <img id="qr-image" class="qr-img" alt="微信登录二维码">
+        </div>
+        <p id="qr-hint" class="muted" style="margin:0;text-align:center">
+            请使用微信「扫一扫」扫描本窗口里的二维码，并在手机上确认登录。二维码只在这个
+            窗口有效（扫的是网页里这一张图，不是另一个页面），扫码期间请不要关闭窗口。
+        </p>
+        <p id="qr-status" class="qr-status"></p>
+    </div>
+    <div class="dialog-footer">
+        <button type="button" class="btn" id="dlg-qr-cancel">取消登录</button>
+    </div>
+</dialog>
+
+<div id="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

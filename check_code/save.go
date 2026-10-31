@@ -20,10 +20,10 @@ func SaveImgStream(data []byte, path, msg string) {
 		fmt.Println("err:", err)
 		return
 	}
-	SaveImg(img, path, msg)
+	SavePngImg(img, path, msg)
 }
 
-func SaveImg(img image.Image, path, msg string) {
+func SavePngImg(img image.Image, path, msg string) {
 	if msg == "" {
 		msg = fmt.Sprint(time.Now().UnixMilli())
 	}
