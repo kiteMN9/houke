@@ -14,6 +14,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 
 	"school_sdk/protocol"
 	"school_sdk/protocol/config"
@@ -69,6 +70,11 @@ type Engine struct {
 
 	settings config.Settings
 	kind     LoginKind
+
+	// autoRelogin 控制"业务请求发现登录失效时，是否自动重登一次再重试"。
+	// 默认开启；关闭后 authorize 直接返回 false，调用方拿到 ErrUnauthorized，
+	// 由 Web 提示用户手动登录。用 atomic 是因为它会在运行中由 WebUI 热切换。
+	autoRelogin atomic.Bool
 }
 
 // New 构造一个账号的引擎。
@@ -106,12 +112,16 @@ func New(settings config.Settings, sess *config.Session, kind LoginKind, opts Op
 		cli.SetQRHandler(opts.OnQRCode)
 	}
 
-	return &Engine{
+	eng := &Engine{
 		client:   cli,
 		session:  newSession(cli),
 		settings: settings,
 		kind:     kind,
-	}, nil
+	}
+	// 默认开启：保持"发现掉线就重登一次"的既有行为；需要关闭的账号
+	// 在 WebUI 里显式关掉（见 Account.autoReloginEnabled）。
+	eng.autoRelogin.Store(true)
+	return eng, nil
 }
 
 // LoginKind 返回构造时选定的登录方式。
@@ -186,9 +196,18 @@ func (e *Engine) Tabs() []protocol.TabInfo {
 	return e.session.Tabs()
 }
 
+// Window 返回当前选课时间窗（未初始化时为零值）。
+func (e *Engine) Window() protocol.WindowInfo {
+	return e.session.Window()
+}
+
 // SelectTab 切换页签并重新拉取该页签的参数。
+// 和课程查询一样：会话失效时按开关重登一次再重试一次。
 func (e *Engine) SelectTab(ctx context.Context, idx int) error {
-	return e.session.SelectTab(ctx, idx)
+	_, err := retryOnUnauthorized(ctx, e, func() (struct{}, error) {
+		return struct{}{}, e.session.SelectTab(ctx, idx)
+	})
+	return err
 }
 
 // Reset 清空初始化状态与课程缓存（登出 / force 刷新时调用）。
@@ -208,11 +227,30 @@ func (e *Engine) CourseCacheLen() int {
 	return e.session.CourseCacheLen()
 }
 
-// authorize 确保会话可用：已登录直接放行，否则尝试重登一次。
+// SetAutoRelogin 热切换"会话失效时是否自动重登一次"。
+// 只影响之后发生的 authorize；已经建立的会话与正在跑的任务不受影响。
+func (e *Engine) SetAutoRelogin(v bool) {
+	if e == nil {
+		return
+	}
+	e.autoRelogin.Store(v)
+}
+
+// AutoRelogin 返回当前自动重登开关。
+func (e *Engine) AutoRelogin() bool {
+	return e != nil && e.autoRelogin.Load()
+}
+
+// authorize 确保会话可用：已登录直接放行；允许自动重登时尝试重登一次。
 // 重登策略属于引擎（上层），protocol 只负责把"登录已失效"报回来。
 func (e *Engine) authorize(ctx context.Context) bool {
 	if e.client.LoggedIn() {
 		return true
+	}
+	// 开关关闭：把"未登录"原样交回调用方，由 Web 提示手动登录，
+	// 不在业务请求里偷偷跑一次可能弹验证码的登录。
+	if !e.AutoRelogin() {
+		return false
 	}
 	// 微信扫码必须由用户显式发起：业务请求失败时静默弹一张二维码，
 	// 既没人扫，也会把正在展示的登录界面顶掉。这里只把未登录报回去。
@@ -337,21 +375,37 @@ func (e *Engine) Selected(ctx context.Context, xkxnm, xkxqm string) ([]protocol.
 // ---------- 成绩 ----------
 
 // WebGetScore 查询指定学期的成绩。
+// 成绩接口原先直接调 protocol，不经过 engine 的重试；这里补上同样的
+// "会话失效按开关重登一次再重试一次"，与课程/已选课程保持一致。
 func (e *Engine) WebGetScore(ctx context.Context, xnm, xqm string) ([]protocol.Score, error) {
-	return e.client.WebGetScore(ctx, xnm, xqm)
+	return retryOnUnauthorized(ctx, e, func() ([]protocol.Score, error) {
+		return e.client.WebGetScore(ctx, xnm, xqm)
+	})
 }
 
 // ---------- 其他工具 ----------
 
-// UserInfo 查询当前账号的个人信息。不做静默重登，登录态失效时返回
+// UserInfo 查询当前账号的个人信息。
+// 登录态失效时按 AutoRelogin 开关决定是否重登一次；关闭时返回
 // protocol.ErrUnauthorized，由 Web 层提示用户重新登录。
 func (e *Engine) UserInfo(ctx context.Context) (protocol.UserInfo, error) {
-	return e.client.WebGetUserInfo(ctx)
+	return retryOnUnauthorized(ctx, e, func() (protocol.UserInfo, error) {
+		return e.client.WebGetUserInfo(ctx)
+	})
 }
 
 // UserPhoto 下载当前账号的学生大头照，返回图片字节与 MIME 类型。
+// 重登策略与 UserInfo 相同。
 func (e *Engine) UserPhoto(ctx context.Context) ([]byte, string, error) {
-	return e.client.WebGetUserPhoto(ctx)
+	type photo struct {
+		body        []byte
+		contentType string
+	}
+	r, err := retryOnUnauthorized(ctx, e, func() (photo, error) {
+		body, contentType, err := e.client.WebGetUserPhoto(ctx)
+		return photo{body: body, contentType: contentType}, err
+	})
+	return r.body, r.contentType, err
 }
 
 // Cookies 返回当前会话 Cookie 快照和拼好的请求头，不会发起网络请求。

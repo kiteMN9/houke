@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+
+	"resty.dev/v3"
 )
 
 // =========================================================================
@@ -12,7 +14,11 @@ import (
 // 谁改变了登录态，就由谁记账：
 //   - 登录成功 / 失败：LoginWithContext（Login / ReLogin 都走它）
 //   - 显式登出：Logout
-//   - 会话探测掉线：Ping
+//   - 会话探测掉线：Ping / CheckSession
+//   - 业务响应里发现"未登录"：markSessionExpired（初始化、课程、成绩…）
+//
+// 最后一条最容易被漏掉：服务器说会话失效时，如果只有发请求的那次调用知道，
+// /status 还会一直报 loggedIn=true，前端只能看到一条错误、徽标却停在"已登录"。
 //
 // 上层（WebUI / CLI）只读 a.LoggedIn()，不要再各存一份 loggedIn：
 // 那种写法一旦漏掉某条同步链路（登录超时、被踢下线、保活重新登录…），
@@ -45,6 +51,27 @@ func (a *APIClient) TestSetLoggedIn(v bool) {
 		return
 	}
 	a.isLoggedIn.Store(v)
+}
+
+// markSessionExpired 把"服务器明确说当前会话未登录"记进登录态。
+//
+// 登录态的事实来源是服务器响应，不只是登录 / 登出 / 探测三个主动动作：
+// 初始化、课程、成绩等请求都会在响应里暴露会话已经失效；这里不记，
+// Web 的 /status 就会在错误发生之后仍然报 loggedIn=true。
+//
+// resp 带响应时间时用它和最近一次登录成功比较：早于登录成功的响应是旧会话
+// 的迟到回包（例如重登期间还在飞的请求），不能拿它把新会话标成未登录。
+func (a *APIClient) markSessionExpired(resp *resty.Response) {
+	if a == nil {
+		return
+	}
+	if resp != nil {
+		if last := a.lastLoginSuccess.Load(); last != 0 && !resp.ReceivedAt().IsZero() &&
+			resp.ReceivedAt().UnixNano() < last {
+			return
+		}
+	}
+	a.setLoggedIn(false)
 }
 
 // =========================================================================
@@ -142,6 +169,7 @@ func (a *APIClient) loginLocked(ctx context.Context) bool {
 	a.setLoggedIn(ok)
 	if ok {
 		a.login.lastSuccess = time.Now()
+		a.lastLoginSuccess.Store(a.login.lastSuccess.UnixNano())
 		a.reportLoginStage(LoginPhaseDone, 0, "")
 	}
 	return ok

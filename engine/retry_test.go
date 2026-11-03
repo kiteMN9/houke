@@ -30,6 +30,12 @@ func TestGetCourseListRetriesOnceOnUnauthorized(t *testing.T) {
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
+		// 登录页请求回 302 到首页：protocol 据此判定"已经是登录态"，
+		// 让 engine 的重登一次立刻成功，不用在测试里跑完整登录流程。
+		if r.URL.Path == "/xtgl/login_slogin.html" {
+			http.Redirect(w, r, "/xtgl/index_initMenu.html", http.StatusFound)
+			return
+		}
 		_, _ = io.WriteString(w, unauthorizedPage)
 	}))
 	defer srv.Close()
@@ -41,8 +47,32 @@ func TestGetCourseListRetriesOnceOnUnauthorized(t *testing.T) {
 	if !errors.Is(err, protocol.ErrUnauthorized) {
 		t.Fatalf("错误 = %v，期望 ErrUnauthorized", err)
 	}
-	if got := hits.Load(); got != 2 {
-		t.Fatalf("engine 应只重试一次（首轮 + 重试 = 2 次请求），实际 %d 次", got)
+	// 首轮请求把登录态记成 false → authorize 真的重登一次 → 再重试一次。
+	// 3 次 = 首轮 + 登录页 + 重试；仍然是"只重试一次"，不会无限重登。
+	if got := hits.Load(); got != 3 {
+		t.Fatalf("engine 应只重试一次（首轮 + 重登 + 重试 = 3 次请求），实际 %d 次", got)
+	}
+}
+
+// 关闭自动重登后，业务请求发现 401 只把错误交回上层，不再偷偷登录、也不重试。
+func TestAutoReloginOffDoesNotRetry(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		_, _ = io.WriteString(w, unauthorizedPage)
+	}))
+	defer srv.Close()
+
+	eng := newEngineForServer(t, srv)
+	eng.SetAutoRelogin(false)
+	eng.TestSetLoggedIn(true)
+
+	_, err := eng.GetCourseList(context.Background())
+	if !errors.Is(err, protocol.ErrUnauthorized) {
+		t.Fatalf("错误 = %v，期望 ErrUnauthorized", err)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("关闭自动重登后不应重试/重登，实际 %d 次请求", got)
 	}
 }
 

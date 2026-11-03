@@ -50,6 +50,20 @@ function toast(msg, kind = 'info') {
  * API
  * ========================================================================= */
 
+// apiErrorFrom 把后端的错误响应变成 Error：error 是给人看的文案，
+// code 是给代码用的稳定语义（unauthorized / login_failed / no_permission…）。
+function apiErrorFrom(res, data, path) {
+    const msg = (data && data.error) || res.statusText || ('HTTP ' + res.status);
+    const err = new Error(msg);
+    err.status = res.status;
+    err.code = (data && data.code) || '';
+    // 会话失效只有一个出口：所有 API 调用都经过这里，调用方不必各自处理 401。
+    if (err.code === 'unauthorized') {
+        notifyUnauthorized(path, err);
+    }
+    return err;
+}
+
 const API = {
     async req(method, path, body, signal) {
         const opts = { method, headers: {} };
@@ -62,15 +76,7 @@ const API = {
         const text = await res.text();
         let data = null;
         try { data = text ? JSON.parse(text) : null; } catch { data = text; }
-        if (!res.ok) {
-            const msg = (data && data.error) || res.statusText || ('HTTP ' + res.status);
-            // 把状态码和业务 code 挂到 Error 上：调用方要区分“无功能权限”
-            // 之类的语义错误，不能只靠错误文案。
-            const err = new Error(msg);
-            err.status = res.status;
-            err.code = (data && data.code) || '';
-            throw err;
-        }
+        if (!res.ok) throw apiErrorFrom(res, data, path);
         return data;
     },
 
@@ -81,11 +87,7 @@ const API = {
             const text = await res.text();
             let data = null;
             try { data = text ? JSON.parse(text) : null; } catch { data = null; }
-            const msg = (data && data.error) || res.statusText || ('HTTP ' + res.status);
-            const err = new Error(msg);
-            err.status = res.status;
-            err.code = (data && data.code) || '';
-            throw err;
+            throw apiErrorFrom(res, data, path);
         }
         return {
             blob: await res.blob(),
@@ -101,13 +103,7 @@ const API = {
         const text = await res.text();
         let data = null;
         try { data = text ? JSON.parse(text) : null; } catch { data = text; }
-        if (!res.ok) {
-            const msg = (data && data.error) || res.statusText || ('HTTP ' + res.status);
-            const err = new Error(msg);
-            err.status = res.status;
-            err.code = (data && data.code) || '';
-            throw err;
-        }
+        if (!res.ok) throw apiErrorFrom(res, data, path);
         return data;
     },
 
@@ -116,6 +112,8 @@ const API = {
     getAccount:     (id)          => API.req('GET',    '/accounts/' + id),
     updateAccount:  (id, a)       => API.req('PUT',    '/accounts/' + id, a),
     deleteAccount:  (id)          => API.req('DELETE', '/accounts/' + id),
+    setAutoRelogin: (id, enabled) => API.req('PUT',    '/accounts/' + id + '/auto-relogin', { enabled }),
+    setAutoNotify:  (id, enabled) => API.req('PUT',    '/accounts/' + id + '/auto-notify', { enabled }),
 
     status:         (id)          => API.req('GET',    `/accounts/${id}/status`),
     pendingInput:     (id)        => API.req('GET',  `/accounts/${id}/login/pending`),
@@ -164,6 +162,11 @@ const API = {
     wechatStart:    ()            => API.req('POST',   '/wechat/login'),
     wechatStatus:   ()            => API.req('GET',    '/wechat/status'),
     wechatCancel:   ()            => API.req('POST',   '/wechat/cancel'),
+
+    // 服务端配置（全局）：目前是 SMTP 邮件通知
+    server:         ()            => API.req('GET',    '/server'),
+    saveServer:     (s)           => API.req('PUT',    '/server', s),
+    testSMTP:       (s)           => API.req('POST',   '/server/smtp/test', s),
 
     // 字符验证码模型（全局）
     kaptcha:        ()            => API.req('GET',    '/kaptcha'),
@@ -518,7 +521,7 @@ Task.renderBar = function () {
         (running ? '进行中' : ' · ' + (TASK_STATUS_TEXT[snap.status] || snap.status || ''));
 
     // 阶段：优先用本地计时推进，避免每秒拉一次接口
-    let stageText = snap.stageText || '';
+    const stageText = snap.stageText || '';
     let stageMs = snap.stageMs || 0;
     let elapsedMs = snap.elapsedMs || 0;
     if (running && Task.base) {
@@ -599,6 +602,12 @@ async function loadAccounts() {
         state.accounts = [];
     }
     renderAccountList();
+    // 列表刷新后把当前账号对象换成新的（编辑账号后 autoRelogin 等字段会变）
+    if (state.currentId) {
+        state.current = state.accounts.find(a => String(a.id) === String(state.currentId)) || null;
+        renderAutoRelogin();
+        renderAutoNotify();
+    }
 }
 
 function renderAccountList() {
@@ -641,7 +650,7 @@ function highlightAccount(id) {
 function showPanel(show) {
     $('#panel').hidden = !show;
     $('#empty-state').hidden = show;
-    if (show) $('#kaptcha-page').hidden = true;
+    if (show) $('#server-page').hidden = true;
 }
 
 async function selectAccount(id) {
@@ -652,6 +661,8 @@ async function selectAccount(id) {
     }
     state.currentId = String(id);
     state.current = state.accounts.find(a => String(a.id) === state.currentId) || null;
+    renderAutoRelogin();
+    renderAutoNotify();
     state.status = null;
     state.tabs = [];
     state.courses = [];
@@ -682,6 +693,8 @@ async function selectAccount(id) {
         $('#acc-url').textContent  = state.current.baseUrl || '';
         $('#acc-user').textContent = state.current.username || '';
         $('#acc-mode').textContent = '';
+        $('#acc-window').textContent = '';
+        $('#acc-window').title = '';
     }
 
     renderTabs();
@@ -710,25 +723,37 @@ async function selectAccount(id) {
 }
 
 /* =========================================================================
- * 验证码模型配置页（全局，不依赖当前账号）
+ * 服务端配置页（全局，不依赖当前账号）
+ *
+ * 「验证码模型」和「邮件通知」是同一张页面的两个子页：它们都是进程级配置，
+ * 和账号无关，因此共用一套导航、状态徽标与加载入口。
  * ========================================================================= */
 
 let kaptchaPreviewURL = null;
 
-function showKaptchaPage() {
+const serverState = {
+    tab: 'kaptcha',
+    kaptcha: null,
+    server: null,
+    kaptchaError: false,
+    serverError: false,
+};
+
+function showServerPage() {
     $('#panel').hidden = true;
     $('#empty-state').hidden = true;
-    $('#kaptcha-page').hidden = false;
+    $('#server-page').hidden = false;
     $$('#account-list li').forEach(li => li.classList.remove('active'));
-    loadKaptchaStatus(true).catch(() => {});
+    selectServerTab(serverState.tab);
+    loadServerStatus(true).catch(() => {});
 }
 
-function hideKaptchaPage() {
-    $('#kaptcha-page').hidden = true;
+function hideServerPage() {
+    $('#server-page').hidden = true;
 }
 
-async function backFromKaptcha() {
-    hideKaptchaPage();
+async function backFromServer() {
+    hideServerPage();
     if (state.currentId) {
         await selectAccount(state.currentId);
         return;
@@ -740,10 +765,57 @@ async function backFromKaptcha() {
     showPanel(false);
 }
 
-function setKaptchaBadge(kind, text) {
-    const b = $('#kaptcha-badge');
+// selectServerTab 切换「验证码模型 / 邮件通知」，只影响界面显示。
+function selectServerTab(tab) {
+    if (tab !== 'smtp' && tab !== 'kaptcha') tab = 'kaptcha';
+    serverState.tab = tab;
+    $$('#server-tabs button').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.serverTab === tab);
+    });
+    $$('#server-page .server-panel').forEach(panel => {
+        panel.hidden = panel.dataset.serverPanel !== tab;
+    });
+    updateServerBadge();
+}
+
+// setServerBadge 直接改顶部徽标（读取失败等一次性状态用）。
+function setServerBadge(kind, text) {
+    const b = $('#server-badge');
+    if (!b) return;
     b.className = 'badge' + (kind ? ' ' + kind : '');
     b.textContent = text;
+}
+
+// updateServerBadge 按当前子页选择要显示的摘要。
+function updateServerBadge() {
+    if (serverState.tab === 'smtp') {
+        if (serverState.serverError) return setServerBadge('err', '读取失败');
+        const st = serverState.server;
+        if (!st) return setServerBadge('wait', '读取中…');
+        if (!st.smtp || !st.smtp.enabled) return setServerBadge('', '邮件通知已关闭');
+        if (st.smtpReady) return setServerBadge('ok', 'SMTP 已启用');
+        return setServerBadge('err', 'SMTP 配置不完整');
+    }
+    if (serverState.kaptchaError) return setServerBadge('err', '读取失败');
+    const st = serverState.kaptcha;
+    if (!st) return setServerBadge('wait', '读取中…');
+    const s = st.settings || {};
+    if (st.enabled) return setServerBadge('ok', '自动识别已启用');
+    if (s.enabled && !st.loaded) return setServerBadge('err', '模型未加载');
+    if (!s.enabled) return setServerBadge('', '自动识别已关闭');
+    setServerBadge('wait', '未启用');
+}
+
+// loadServerStatus 并行拉两份配置：两个接口都很轻，一次取齐后切子页不再闪。
+async function loadServerStatus(withSpinner) {
+    if (withSpinner) {
+        $('#kaptcha-status').innerHTML = '<p class="muted">正在读取配置…</p>';
+        $('#smtp-status').innerHTML = '<p class="muted">正在读取配置…</p>';
+    }
+    await Promise.allSettled([
+        loadKaptchaStatus(false),
+        loadServerSettings(false),
+    ]);
 }
 
 function formatBytes(n) {
@@ -759,16 +831,12 @@ function formatTime(ms) {
 }
 
 function renderKaptchaStatus(st) {
-    state.kaptcha = st;
-    const s = (st && st.settings) || {};
-    const enabled = !!(st && st.enabled);
-    const loaded = !!(st && st.loaded);
-    const err = (st && st.error) || '';
+    serverState.kaptcha = st;
+    serverState.kaptchaError = false;
+    updateServerBadge();
 
-    if (enabled) setKaptchaBadge('ok', '自动识别已启用');
-    else if (s.enabled && !loaded) setKaptchaBadge('err', '模型未加载');
-    else if (!s.enabled) setKaptchaBadge('', '已关闭');
-    else setKaptchaBadge('wait', '未启用');
+    const s = (st && st.settings) || {};
+    const err = (st && st.error) || '';
 
     $('#kaptcha-enabled').checked = !!s.enabled;
     $('#kaptcha-model-path').value = s.modelPath || '';
@@ -805,7 +873,8 @@ async function loadKaptchaStatus(withSpinner) {
     try {
         renderKaptchaStatus(await API.kaptcha());
     } catch (e) {
-        setKaptchaBadge('err', '读取失败');
+        serverState.kaptchaError = true;
+        updateServerBadge();
         $('#kaptcha-status').innerHTML =
             `<p class="notice">读取验证码配置失败：${esc(e.message)}</p>`;
         toast('读取验证码配置失败: ' + e.message, 'err');
@@ -927,6 +996,158 @@ async function testKaptcha() {
     } finally {
         input.value = '';
     }
+}
+
+/* =========================================================================
+ * 服务端配置：SMTP 邮件通知
+ * ========================================================================= */
+
+function splitRecipients(value) {
+    return String(value || '')
+        .split(/[\r\n,;，；]+/)
+        .map(s => s.trim())
+        .filter(Boolean);
+}
+
+function collectSMTPSettings() {
+    return {
+        enabled: $('#smtp-enabled').checked,
+        notifyAutoChoose: $('#smtp-notify-auto').checked,
+        host: $('#smtp-host').value.trim(),
+        port: Math.floor(Number($('#smtp-port').value) || 0),
+        from: $('#smtp-from').value.trim(),
+        username: $('#smtp-username').value.trim(),
+        password: $('#smtp-password').value,
+        to: splitRecipients($('#smtp-to').value),
+    };
+}
+
+function renderServerSettings(view) {
+    serverState.server = view;
+    serverState.serverError = false;
+    const s = (view && view.smtp) || {};
+
+    $('#smtp-enabled').checked = !!s.enabled;
+    $('#smtp-notify-auto').checked = !!s.notifyAutoChoose;
+    $('#smtp-host').value = s.host || '';
+    $('#smtp-port').value = s.port || 587;
+    $('#smtp-from').value = s.from || '';
+    $('#smtp-username').value = s.username || '';
+    $('#smtp-to').value = (s.to || []).join('\n');
+    $('#smtp-password').value = '';
+    $('#smtp-password').placeholder = s.hasPassword ? '已保存，留空不修改' : '未设置';
+    $('#smtp-password-hint').textContent = s.hasPassword
+        ? '已保存授权码；留空表示不修改。'
+        : '密码只保存在服务端，不会返回给浏览器。';
+
+    const legacy = $('#smtp-legacy-hint');
+    if (view && view.legacyImported) {
+        legacy.innerHTML = '已从旧版 <code>' + esc(view.legacyFile || 'SMTP.json') +
+            '</code> 导入配置；点「保存配置」后写入 <code>' +
+            esc(view.settingsFile || 'server.json') + '</code>。';
+        legacy.hidden = false;
+    } else {
+        legacy.hidden = true;
+        legacy.textContent = '';
+    }
+
+    let stateBadge = '<span class="badge">未启用</span>';
+    if (s.enabled) {
+        stateBadge = view.smtpReady
+            ? '<span class="badge ok">配置完整</span>'
+            : '<span class="badge err">配置不完整</span>';
+    }
+    const recipients = (s.to || []).length ? esc((s.to || []).join('、')) : '—';
+    $('#smtp-status').innerHTML =
+        '<div class="kv-grid">' +
+            '<div class="kv"><span>状态</span><b>' + stateBadge + '</b></div>' +
+            '<div class="kv"><span>配置文件</span><b class="mono">' +
+                esc(view.settingsFile || '—') + '</b></div>' +
+            '<div class="kv"><span>收件人</span><b>' + recipients + '</b></div>' +
+            '<div class="kv"><span>自动选课通知</span><b>' +
+                (s.notifyAutoChoose ? '开启' : '关闭') + '</b></div>' +
+            '<div class="kv"><span>授权码</span><b>' +
+                (s.hasPassword ? '已保存' : '未设置') + '</b></div>' +
+        '</div>';
+
+    const errBox = $('#smtp-error');
+    if (s.enabled && view.smtpError) {
+        errBox.textContent = '要启用邮件通知，还需要：' + view.smtpError;
+        errBox.hidden = false;
+    } else {
+        errBox.hidden = true;
+        errBox.textContent = '';
+    }
+    updateServerBadge();
+}
+
+async function loadServerSettings(withSpinner) {
+    if (withSpinner) {
+        $('#smtp-status').innerHTML = '<p class="muted">正在读取配置…</p>';
+    }
+    try {
+        renderServerSettings(await API.server());
+    } catch (e) {
+        serverState.serverError = true;
+        updateServerBadge();
+        $('#smtp-status').innerHTML =
+            '<p class="notice">读取服务端配置失败：' + esc(e.message) + '</p>';
+        if (withSpinner) toast('读取服务端配置失败: ' + e.message, 'err');
+    }
+}
+
+async function saveSMTPSettings() {
+    const btn = $('#btn-smtp-save');
+    const hint = $('#smtp-save-hint');
+    const orig = btn.textContent;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> 保存中...';
+    hint.textContent = '';
+    try {
+        const view = await API.saveServer({ smtp: collectSMTPSettings() });
+        renderServerSettings(view);
+        toast(view.smtpReady ? 'SMTP 配置已保存，配置完整 ✅'
+                             : 'SMTP 配置已保存（通知未启用或信息不完整）',
+              view.smtpReady ? 'ok' : 'warn');
+    } catch (e) {
+        // 校验失败时保留用户刚填的内容，只把原因显示出来；不要用旧配置覆盖表单。
+        hint.textContent = e.message;
+        toast('保存 SMTP 配置失败: ' + e.message, 'err');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = orig;
+    }
+}
+
+async function testSMTPSettings() {
+    const btn = $('#btn-smtp-test');
+    const hint = $('#smtp-save-hint');
+    const orig = btn.textContent;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner dark"></span> 发送中...';
+    hint.textContent = '正在连接 SMTP 服务器，可能需要几秒…';
+    try {
+        const r = await API.testSMTP({ smtp: collectSMTPSettings() });
+        const to = (r && r.to) || [];
+        hint.textContent = '';
+        toast(to.length ? '测试邮件已发送到 ' + to.join('、') : '测试邮件已发送', 'ok');
+    } catch (e) {
+        hint.textContent = e.message;
+        toast('测试邮件发送失败: ' + e.message, 'err');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = orig;
+    }
+}
+
+function toggleSMTPPassword() {
+    const input = $('#smtp-password');
+    const btn = $('#smtp-eye');
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    btn.classList.toggle('visible', show);
+    btn.title = show ? '隐藏密码' : '显示密码';
+    btn.setAttribute('aria-label', btn.title);
 }
 
 /* =========================================================================
@@ -1159,6 +1380,40 @@ function invalidateStatus() {
     statusGen++;
 }
 
+// notifyUnauthorized 是所有"会话失效"的统一处理：
+// 后端用 code=unauthorized 表示"这次请求证明登录态已经失效"（初始化、课程、
+// 成绩、工具页…都走同一个错误出口）。这里一次性把徽标切到未登录、作废旧状态
+// 请求、提示一次，再拉权威快照——否则每个 catch 各写一遍，漏一个入口就会
+// 出现"弹了错误但登录状态没刷新"。
+let unauthorizedToastAt = 0;
+
+// isUnauthorized 给调用方判断"这条错误已经由 notifyUnauthorized 统一提示过"，
+// 避免同一次失效又弹一条"初始化失败/查询失败"的红字。
+function isUnauthorized(err) {
+    return !!(err && err.code === 'unauthorized');
+}
+
+function notifyUnauthorized(path, err) {
+    // 请求可能是切账号前发出的：旧账号的失效不能算到新账号头上。
+    const m = /^\/accounts\/([^/]+)(?:\/|$)/.exec(path || '');
+    if (m && state.currentId && String(m[1]) !== String(state.currentId)) return;
+
+    const wasLoggedIn = !!(state.status && state.status.loggedIn);
+    if (state.status) state.status.loggedIn = false;
+    invalidateStatus();
+    renderStatus();
+
+    // 同一轮失效会有多个并发请求返回 401，只提示第一条。
+    const now = Date.now();
+    if (wasLoggedIn && now - unauthorizedToastAt > 3000) {
+        unauthorizedToastAt = now;
+        toast((err && err.message) || '登录已失效，请重新登录', 'warn');
+    }
+    // 后端已经按"服务器说未登录"更新登录态；拉一次快照让页签/任务面板
+    // 也落到一致状态（如果期间刚好完成重登，这里会把徽标改回已登录）。
+    refreshStatus({ quiet: true }).catch(() => {});
+}
+
 // applyTaskFrame 应用一帧推送快照。
 function applyTaskFrame(frame) {
     const t = frame.task || null;
@@ -1216,6 +1471,25 @@ function maybePromptPending(pending) {
     }
 }
 
+// renderAutoRelogin 让头部开关跟当前账号同步。
+// 老账号 / 老数据没有 autoRelogin 字段时按开启处理（与后端一致）。
+function renderAutoRelogin() {
+    const el = $('#chk-auto-relogin');
+    if (!el) return;
+    el.checked = !state.current || state.current.autoRelogin !== false;
+    el.disabled = !state.currentId;
+}
+
+// renderAutoNotify 让「完成后发送邮件通知」跟当前账号同步。
+// 老账号 / 老数据没有 autoNotify 字段时按开启处理（与后端一致）；
+// 服务端 SMTP 总开关不在这个勾选框里。
+function renderAutoNotify() {
+    const el = $('#chk-auto-notify');
+    if (!el) return;
+    el.checked = !state.current || state.current.autoNotify !== false;
+    el.disabled = !state.currentId;
+}
+
 function renderStatus() {
     const st = state.status || {};
     const badge = $('#login-state');
@@ -1251,6 +1525,13 @@ function renderStatus() {
     else setLoginBtnIdle(btnLogin);
 
     $('#acc-mode').textContent = st.modeName ? ('页签：' + st.modeName) : '';
+
+    // 选课时间窗由 /status 的 window 带回来（初始化完成或切页签后更新）。
+    // 头部只显示结束时间；开始时间放进 title，窄屏下不必把 meta 撑成两行。
+    const win = st.window || {};
+    const accWindow = $('#acc-window');
+    accWindow.textContent = win.xkjssj ? ('选课结束：' + win.xkjssj) : '';
+    accWindow.title = win.xkkssj ? ('选课开始：' + win.xkkssj) : '';
 
     // 二维码弹窗里的阶段文案/倒计时跟着任务快照/进度帧刷新（运行中约每秒一帧）
     syncQRStatus();
@@ -1592,7 +1873,7 @@ async function fetchCourseList() {
         if (state.currentId !== id) return;
         state.courses = list;
     } catch (e) {
-        if (state.currentId === id) toast('获取课程失败: ' + e.message, 'err');
+        if (state.currentId === id && !isUnauthorized(e)) toast('获取课程失败: ' + e.message, 'err');
     } finally {
         state.coursesLoading = false;
         btn.disabled = false;
@@ -1617,18 +1898,12 @@ async function loadCourseDetail(kchId) {
             state.courses = list;
         }
     } catch (e) {
-        toast('加载详情失败: ' + e.message, 'err');
+        if (!isUnauthorized(e)) toast('加载详情失败: ' + e.message, 'err');
     } finally {
         state.loadingKch.delete(kchId);
         renderCourses();
     }
 }
-
-// // CSS.escape 的兼容封装（kchId 一般无特殊字符，但稳妥起见）
-// function cssEscape(s) {
-//     if (window.CSS && CSS.escape) return CSS.escape(s);
-//     return String(s).replace(/["\\]/g, '\\$&');
-// }
 
 /* =========================================================================
  * 选课按钮：选课 / 退课 双态
@@ -1668,7 +1943,7 @@ async function doQuit(kchId, jxbId, btn) {
             setChooseBtnState(btn, true);
         }
     } catch (e) {
-        toast('退课出错: ' + e.message, 'err');
+        if (!isUnauthorized(e)) toast('退课出错: ' + e.message, 'err');
         setChooseBtnState(btn, true);
     }
 }
@@ -1690,7 +1965,7 @@ async function doChoose(kchId, jxbId, btn) {
         toast('选课结果: ' + (msg || ('flag=' + flag)), flag === '0' ? 'warn' : 'err');
         setChooseBtnState(btn, false);
     } catch (e) {
-        toast('选课出错: ' + e.message, 'err');
+        if (!isUnauthorized(e)) toast('选课出错: ' + e.message, 'err');
         setChooseBtnState(btn, false);
     }
 }
@@ -1747,7 +2022,9 @@ async function pingAccount() {
 
     state.queryBusy[queryBusyKey(id, 'ping')] = true;
     syncQueryButton($('#btn-ping'), 'ping', 'Ping');
-    let relogin = false;
+    // 只要 Ping 判定"未登录"（无论是否自动重登），都要重拉一次权威状态：
+    // Ping 已经改了 client 的登录态，界面不能停在旧徽标上。
+    let needRefresh = false;
     try {
         const r = await API.ping(id);
         // 期间切了账号：这份探测结果和它的 toast 都只属于旧账号
@@ -1758,11 +2035,12 @@ async function pingAccount() {
             return;
         }
         if (r && r.relogin) {
-            relogin = true;
+            needRefresh = true;
             toast(`Ping · ${r.latencyMs} ms · ${r.message || '会话已失效'}，正在自动重新登录`, 'warn');
             return;
         }
         if (r && r.ok) {
+            needRefresh = true;
             // hint 是后端给"不能自动重登"的账号（微信扫码）留的说明：
             // 这种账号只能在界面上重新扫码，点一下侧栏的微信入口。
             const hint = (r.hint && `（${r.hint}）`) || '';
@@ -1777,7 +2055,7 @@ async function pingAccount() {
         // 刷新失败/变慢都不能拖着按钮一直转圈。
         delete state.queryBusy[queryBusyKey(id, 'ping')];
         syncQueryButton($('#btn-ping'), 'ping', 'Ping');
-        if (relogin && state.currentId === id) {
+        if (needRefresh && state.currentId === id) {
             invalidateStatus();
             refreshStatus({ quiet: true }).catch(() => {});
         }
@@ -1887,7 +2165,7 @@ async function fetchChosen() {
         if (state.currentId !== id) return;
         if (e && e.code === 'no_permission') {
             renderNoPermission('chosen');
-        } else {
+        } else if (!isUnauthorized(e)) {
             toast('查询失败: ' + e.message, 'err');
         }
     } finally {
@@ -1957,7 +2235,7 @@ async function fetchScore() {
         if (state.currentId !== id) return;
         if (e && e.code === 'no_permission') {
             renderNoPermission('score');
-        } else {
+        } else if (!isUnauthorized(e)) {
             toast('查询失败: ' + e.message, 'err');
         }
     } finally {
@@ -2161,12 +2439,6 @@ function renderToolsInfo(info) {
         '<pre class="code-block">' + esc(raw) + '</pre></details>';
 }
 
-function handleToolsUnauthorized(e) {
-    toast((e && e.message) || '尚未登录，请先登录', 'warn');
-    invalidateStatus();
-    refreshStatus({ quiet: true }).catch(() => {});
-}
-
 async function fetchToolsInfo() {
     const id = state.currentId;
     if (!id || toolsBusy.info) return;
@@ -2187,9 +2459,9 @@ async function fetchToolsInfo() {
             state.tools.info = null;
             $('#btn-tools-info-copy').disabled = true;
             renderNoPermission('tools-info');
-        } else if (e && e.status === 401) {
+        } else if (isUnauthorized(e)) {
+            // 登录态切换与提示已经由 API.req 统一处理，这里只更新局部文案。
             $('#tools-info-hint').textContent = e.message || '尚未登录';
-            handleToolsUnauthorized(e);
         } else {
             $('#tools-info-hint').textContent = (e && e.message) || '获取失败';
             toast('获取个人信息失败: ' + ((e && e.message) || e), 'err');
@@ -2226,9 +2498,8 @@ async function fetchToolsPhoto() {
         $('#btn-tools-photo-download').disabled = true;
         if (e && e.code === 'no_permission') {
             renderNoPermission('tools-photo');
-        } else if (e && e.status === 401) {
+        } else if (isUnauthorized(e)) {
             $('#tools-photo-hint').textContent = e.message || '尚未登录';
-            handleToolsUnauthorized(e);
         } else {
             $('#tools-photo-hint').textContent = (e && e.message) || '获取失败';
             toast('获取大头照失败: ' + ((e && e.message) || e), 'err');
@@ -2425,12 +2696,11 @@ function renderInitButtons() {
 }
 
 // reportTaskResult 按任务最终快照给一次提示（用于初始化这种"后台跑完"的场景）。
-// toastKey 保证同一次任务只提示一次，避免重复轮询时刷屏。
+// lastTaskToast 保证同一次任务只提示一次，避免重复轮询时刷屏。
 let lastTaskToast = { id: 0, status: '' };
 
 function reportTaskResult(t) {
     if (!t || !t.kind) return;
-    const key = t.id + ':' + (t.status || '');
     if (lastTaskToast.id === t.id && lastTaskToast.status === t.status) return;
     lastTaskToast = { id: t.id, status: t.status || '' };
 
@@ -2464,7 +2734,11 @@ async function doInit(force) {
         // 刷新页面后这条 promise 消失也不影响：新页面会重新接管任务。
         result = await API.init(id, force);
     } catch (e) {
-        if (state.currentId === id) toast('初始化请求失败: ' + e.message, 'err');
+        // 会话失效已经由 API.req 统一提示并把徽标切成未登录；
+        // 这里再弹一条"初始化请求失败"只会让同一次失效出现两条红字。
+        if (state.currentId === id && !isUnauthorized(e)) {
+            toast('初始化请求失败: ' + e.message, 'err');
+        }
     } finally {
         if (state.currentId === id) {
             // 初始化（可能顺带登录）刚结束：作废过程中的旧状态请求再拉一次
@@ -3032,9 +3306,15 @@ function bindEvents() {
     $('#btn-collapse').onclick = () => setSidebarCollapsed(true);
     $('#btn-expand').onclick   = () => setSidebarCollapsed(false);
 
-    // 验证码模型配置页（全局）
-    $('#btn-kaptcha').onclick = showKaptchaPage;
-    $('#btn-kaptcha-back').onclick = backFromKaptcha;
+    // 服务端配置页（全局）：验证码模型 / 邮件通知
+    $('#btn-server').onclick = showServerPage;
+    $('#btn-server-back').onclick = backFromServer;
+    $$('#server-tabs button').forEach(btn => {
+        btn.onclick = () => selectServerTab(btn.dataset.serverTab);
+    });
+    $('#smtp-eye').onclick = toggleSMTPPassword;
+    $('#btn-smtp-save').onclick = saveSMTPSettings;
+    $('#btn-smtp-test').onclick = testSMTPSettings;
     $('#btn-kaptcha-save').onclick = saveKaptcha;
     $('#btn-kaptcha-reload').onclick = reloadKaptcha;
     $('#btn-kaptcha-upload').onclick = () => $('#kaptcha-upload-file').click();
@@ -3198,6 +3478,7 @@ function bindEvents() {
                 loggedIn: false,
                 initialized: false,
                 modeName: '',
+                window: null,
             });
             state.modeName = '';
             state.tabs = [];
@@ -3217,6 +3498,61 @@ function bindEvents() {
     };
 
     $('#btn-ping').onclick = pingAccount;
+
+    // 自动选课结果邮件开关：账号级，随账号保存，不重建运行态；
+    // 服务端配置里的「自动选课结果通知」仍是总开关。
+    $('#chk-auto-notify').onchange = async (e) => {
+        const id = state.currentId;
+        if (!id) {
+            e.target.checked = !e.target.checked;
+            return;
+        }
+        const enabled = e.target.checked;
+        e.target.disabled = true;
+        try {
+            const r = await API.setAutoNotify(id, enabled);
+            const value = !!(r && r.autoNotify);
+            const acc = state.accounts.find(a => String(a.id) === String(id));
+            if (acc) acc.autoNotify = value;
+            if (state.current && String(state.current.id) === String(id)) {
+                state.current.autoNotify = value;
+            }
+            if (state.currentId === id) e.target.checked = value;
+            toast(value ? '已开启自动选课邮件通知' : '已关闭自动选课邮件通知', 'ok');
+        } catch (err) {
+            if (state.currentId === id) e.target.checked = !enabled;
+            toast('切换自动选课邮件通知失败: ' + err.message, 'err');
+        } finally {
+            if (state.currentId === id) e.target.disabled = false;
+        }
+    };
+
+    // 自动重登开关：即时生效，不重建运行态（后端会热更新当前 engine）
+    $('#chk-auto-relogin').onchange = async (e) => {
+        const id = state.currentId;
+        if (!id) {
+            e.target.checked = !e.target.checked;
+            return;
+        }
+        const enabled = e.target.checked;
+        e.target.disabled = true;
+        try {
+            const r = await API.setAutoRelogin(id, enabled);
+            const value = !!(r && r.autoRelogin);
+            const acc = state.accounts.find(a => String(a.id) === String(id));
+            if (acc) acc.autoRelogin = value;
+            if (state.current && String(state.current.id) === String(id)) {
+                state.current.autoRelogin = value;
+            }
+            if (state.currentId === id) e.target.checked = value;
+            toast(value ? '已开启自动重登' : '已关闭自动重登', 'ok');
+        } catch (err) {
+            if (state.currentId === id) e.target.checked = !enabled;
+            toast('切换自动重登失败: ' + err.message, 'err');
+        } finally {
+            if (state.currentId === id) e.target.disabled = false;
+        }
+    };
 
     $('#btn-init').onclick = () => {
         if (state.initializing) {
@@ -3262,7 +3598,7 @@ function bindEvents() {
             state.loadingKch.clear();
             renderCourses();
         } catch (e) {
-            toast('强制刷新失败: ' + e.message, 'err');
+            if (!isUnauthorized(e)) toast('强制刷新失败: ' + e.message, 'err');
         } finally {
             btn.disabled = false;
             btn.textContent = orig;

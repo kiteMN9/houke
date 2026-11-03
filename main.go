@@ -12,7 +12,7 @@ import (
 	"school_sdk/web"
 )
 
-var version = "school_sdk_go 2.0.0"
+var version = "school_sdk_go 2.1.0"
 
 func main() {
 	// 版本信息
@@ -34,14 +34,14 @@ func main() {
 		log.Fatalf("加载本地数据失败: %v", err)
 	}
 
-	// 字符验证码识别模型由 WebUI 的「验证码模型」页配置（kaptcha.json）。
+	// 字符验证码识别模型由 WebUI 的「服务端配置 → 验证码模型」页配置（kaptcha.json）。
 	// 这里只尝试加载一次；没模型、模型坏了都只提示，不阻止 WebUI 启动。
 	mgr := store.Kaptcha()
 	if err := mgr.Reload(); err != nil {
 		if errors.Is(err, kaptcha.ErrNoModel) {
-			fmt.Println("字符验证码：未找到模型，可在 WebUI 的「验证码模型」页上传或指定路径")
+			fmt.Println("字符验证码：未找到模型，可在 WebUI 的「服务端配置 → 验证码模型」页上传或指定路径")
 		} else {
-			log.Printf("字符验证码：加载模型失败，可在 WebUI 的「验证码模型」页检查: %v", err)
+			log.Printf("字符验证码：加载模型失败，可在 WebUI 的「服务端配置 → 验证码模型」页检查: %v", err)
 		}
 	} else if st := mgr.Status(); st.Enabled {
 		fmt.Printf("字符验证码：自动识别已启用（%s，置信度下限 %.2f）\n", st.ModelPath, st.Settings.Threshold)

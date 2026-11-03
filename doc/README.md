@@ -11,7 +11,7 @@
 |---|---|---|
 | [../README.md](../README.md) | 项目定位、能力矩阵、快速开始、目录结构、开发约定、安全提示 | 所有人，第一站 |
 | [architecture.md](architecture.md) | 分层与依赖方向、各包职责、核心类型所有权、一次选课的数据流、并发模型、扩展点 | 要改代码的人 |
-| [configuration.md](configuration.md) | 命令行参数、运行时文件、`accounts.json` 全字段、默认值、baseURL/UA 规则、环境变量 | 要部署或排查配置的人 |
+| [configuration.md](configuration.md) | 命令行参数、运行时文件（含 `server.json` / SMTP）、`accounts.json` 全字段、默认值、baseURL/UA 规则、环境变量 | 要部署或排查配置的人 |
 | [http-api.md](http-api.md) | Web API 全表、SSE 帧协议与事件类型、自动选课语义、前端结构 | 写前端 / 调接口的人 |
 | [wechat-login-webui.md](wechat-login-webui.md) | 微信扫码登录协议状态机与 Web 呈现（TUI 部分已删除，仅供参考） | 要接扫码登录或排查二维码问题的人 |
 | [kaptcha.md](kaptcha.md) | 字符验证码自动识别：模型放置/上传、WebUI 配置页、置信度门限、回退规则、实测准确率 | 要部署或换成自己模型的人 |

@@ -1,10 +1,19 @@
-name: workflow.yml
+name: CI Build
+
 on:
   push:
+    branches: [ "**" ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
-    name: "构建应用"
+    name: "测试与构建"
     runs-on: ubuntu-latest
 
     steps:
@@ -17,6 +26,12 @@ jobs:
           go-version: "stable"
           cache: true
           cache-dependency-path: go.sum
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./... -count=1
 
       - name: Build for Windows amd64
         run: GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -trimpath -v -o dist/school_sdk_go-windows-amd64-${{ github.ref_name }}.exe .
@@ -36,4 +51,5 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
-          path:  dist/*
+          path: dist/*
+          if-no-files-found: error

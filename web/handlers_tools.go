@@ -26,7 +26,7 @@ func (s *Server) toolsInfo(c *gin.Context) {
 		return
 	}
 	if !rt.engine.LoggedIn() {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "尚未登录，请先登录"})
+		writeUnauthorized(c, "尚未登录，请先登录")
 		return
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
@@ -47,7 +47,7 @@ func (s *Server) toolsPhoto(c *gin.Context) {
 		return
 	}
 	if !rt.engine.LoggedIn() {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "尚未登录，请先登录"})
+		writeUnauthorized(c, "尚未登录，请先登录")
 		return
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
@@ -101,6 +101,7 @@ type toolsDebugAccount struct {
 
 type toolsDebugEngine struct {
 	LoggedIn       bool               `json:"loggedIn"`
+	AutoRelogin    bool               `json:"autoRelogin"`
 	Inited         bool               `json:"inited"`
 	ModeName       string             `json:"modeName"`
 	LoginKind      string             `json:"loginKind"`
@@ -166,6 +167,7 @@ func (s *Server) toolsDebug(c *gin.Context) {
 		},
 		"engine": toolsDebugEngine{
 			LoggedIn:       rt.engine.LoggedIn(),
+			AutoRelogin:    rt.engine.AutoRelogin(),
 			Inited:         rt.engine.Inited(),
 			ModeName:       rt.engine.ModeName(),
 			LoginKind:      loginKindName(rt.engine.LoginKind()),

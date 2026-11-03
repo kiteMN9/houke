@@ -23,3 +23,7 @@
 /kaptcha.json
 /models/
 /protocol/cas2/kap_img/
+/build_amd64.bat
+/build_i386.bat
+/server.json
+/.idea/

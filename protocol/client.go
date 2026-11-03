@@ -56,8 +56,13 @@ type APIClient struct {
 	lastRequestTime time.Time
 
 	// 登录态由 client 自己维护（见 loginState.go）：登录成功 / 登出 /
-	// 会话探测失效都会更新它，上层只读，不再各存一份。
+	// 会话探测失效 / 业务响应里发现"未登录"都会更新它，上层只读，不再各存一份。
 	isLoggedIn atomic.Bool
+
+	// lastLoginSuccess 是最近一次登录成功的 UnixNano（0 表示还没成功过）。
+	// 只用于判断"服务端说未登录"的响应是不是旧会话的迟到回包：早于最近一次
+	// 登录成功的响应不能把新会话标成未登录。
+	lastLoginSuccess atomic.Int64
 
 	// 选课参数过期信号（见 paramRefresh.go）：列表/详情接口遇到“加密串错误”
 	// 这类“刷新网页重试”的提示时置位。上层据此重抓首页参数再重试；

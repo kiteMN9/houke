@@ -1,7 +1,11 @@
 package web
 
 import (
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"school_sdk/protocol"
@@ -60,5 +64,49 @@ func TestShouldRelogin(t *testing.T) {
 func TestShouldReloginNil(t *testing.T) {
 	if shouldRelogin(nil, false) {
 		t.Error("shouldRelogin(nil) = true, want false")
+	}
+}
+
+// Ping 探到掉线时，开关关闭不应起后台重登。
+func TestPingDoesNotReloginWhenDisabled(t *testing.T) {
+	var hits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		_, _ = io.WriteString(w, `<html><body><div id="tips">请先登录</div></body></html>`)
+	}))
+	defer upstream.Close()
+
+	store := newTestStore(t)
+	off := false
+	acc, err := store.Create(&Account{
+		Name:        "n",
+		Username:    "u",
+		BaseURL:     upstream.URL + "/",
+		AutoRelogin: &off,
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	rt, err := store.runtime(acc.ID)
+	if err != nil {
+		t.Fatalf("runtime: %v", err)
+	}
+	rt.engine.TestSetLoggedIn(true)
+
+	srv := mustNewServer(t, store)
+	rec := httptest.NewRecorder()
+	srv.router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/accounts/"+acc.ID+"/ping", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ping status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"relogin":false`) {
+		t.Fatalf("关闭自动重登后 ping 仍返回 relogin=true: %s", body)
+	}
+	if !strings.Contains(body, "自动重登") {
+		t.Fatalf("关闭自动重登后 hint 未说明原因: %s", body)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("ping 只应探测 1 次，实际 %d 次", got)
 	}
 }

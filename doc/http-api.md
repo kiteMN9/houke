@@ -10,12 +10,40 @@
 | 项 | 约定 |
 |---|---|
 | 认证 | **无**。没有 token、没有 session cookie、没有 CSRF 校验。默认只监听 `127.0.0.1`（`main.go:21`） |
-| 错误形状 | `{"error": "中文原因"}`，HTTP 状态码携带语义（400 / 401 / 404 / 409 / 500 / 504） |
+| 错误形状 | `{"error":"中文原因","code":"unauthorized"}`；HTTP 状态码给粗分类，`code` 给稳定语义（见 §1.1）。参数校验类错误可以没有 `code` |
 | 账号 ID | 16 位十六进制，新建时由 `newID()` 生成（`web/store.go:83`） |
 | `runtime` 错误 | 所有 handler 第一步 `s.store.runtime(id)`，**任何**失败都回 404 —— 包括"账号存在但配置非法" |
 | 一次性查询超时 | 30s（课程/成绩/选课/退课），`ping` 20s，`tabs/:index` 30s |
 | 长任务超时 | 登录 / 初始化 = 账号的 `loginTimeout`（默认 10m）；自动选课 = 请求预算（默认 24h） |
 | 断连中断 | 一次性查询绑 `c.Request.Context()`，浏览器断开即取消；长任务不绑（见 §4） |
+
+### 1.1 错误码与会话失效
+
+`code` 是前端分支的依据，不要求前端匹配中文文案。目前会出现的值：
+
+| code | 典型状态码 | 含义 | 前端动作 |
+|---|---|---|---|
+| `unauthorized` | 401 | 未登录，或请求过程中发现会话已失效 | 徽标切"未登录"、作废旧状态请求、提示一次、重拉 `/status` |
+| `login_failed` | 401 | 登录动作失败（密码错、流程失败） | 只展示"登录失败"，**不**当成会话失效 |
+| `no_permission` | 403 | 学校返回"无功能权限"页 | 在结果区说明原因，不弹红色错误 |
+| `busy` | 409 | 同账号已有登录 / 初始化 / 自动选课在跑 | 提示等待或取消 |
+| `session_reset` | 409 | 初始化期间登出 / 重登，本次结果作废 | 提示重新初始化 |
+| `cancelled` | 408 | 一次性请求被取消 | 按取消处理，不提示失败 |
+| `timeout` | 504 | 请求或长任务超时 | 展示超时文案 |
+| `internal` | 500 | 其他服务器错误 | 展示 `error` |
+
+**会话失效只有一个出口。** protocol 在**任何**响应里发现"服务器已经不认这个会话"
+（302 到登录页、页面里没有当前账号、登录页 `#tips`）时，会立刻把 client 的登录态
+记成 `false`（`protocol/loginState.go:markSessionExpired`）。因此 `/status` 和 SSE
+帧不会在错误发生之后继续报 `loggedIn:true`；Web 层统一回 `401 + code=unauthorized`，
+前端 `API.req` 只在这一个地方处理（`web/static/app.js:notifyUnauthorized`）。
+
+登录失败同样用 401，但 code 是 `login_failed`——两种语义必须分开，否则输错密码
+会被界面显示成"登录已失效"。
+
+**自动重登是账号级开关**（`autoRelogin`，默认开）。开启时，业务请求 / 初始化发现
+会话失效会重登一次并重试一次；关闭时只返回 `401 + unauthorized`，不偷偷跑登录，
+由界面提示手动登录。开关通过 `PUT /accounts/:id/auto-relogin` 热切换。
 
 ---
 
@@ -29,6 +57,8 @@
 | GET | `/accounts/:id` | — | `Account` | **含明文密码** |
 | PUT | `/accounts/:id` | `Account` 部分字段 | 更新后的 `Account` | 空字符串 = 不修改；`loginMode` 显式传则覆盖；`casLogin` 仅旧前端兼容；`hedging` **无条件覆盖**；`routes` 传 `null` 会保留 |
 | DELETE | `/accounts/:id` | — | `{"status":"ok"}` | 先取消正在跑的登录/初始化/自动选课，再删运行态与任务状态 |
+| PUT | `/accounts/:id/auto-relogin` | `{"enabled":bool}` | `{"status":"ok","autoRelogin":bool}` | 热切换"会话失效时是否自动重登一次"；**不重建运行态**，不丢登录态。与 `PUT /accounts` 分开，后者会重建运行态 |
+| PUT | `/accounts/:id/auto-notify` | `{"enabled":bool}` | `{"status":"ok","autoNotify":bool}` | 热切换该账号"自动选课结束时是否发结果邮件"；**不重建运行态**。服务端 `smtp.notifyAutoChoose` 仍是总开关 |
 
 `Account` 字段见 [configuration.md](configuration.md#3-accountsjson)。
 
@@ -50,16 +80,19 @@
 
 | 方法 | 路径 | 请求 | 响应 | 备注 |
 |---|---|---|---|---|
-| POST | `/accounts/:id/login` | — | 200 `{"status":"ok"}` / 200 `{"status":"cancelled"}` / 401 失败 / 409 已有任务 / 504 超时 | **长任务**，最长 `loginTimeout`；`loginMode=wechat` 时生成二维码 |
+| POST | `/accounts/:id/login` | — | 200 `{"status":"ok"}` / 200 `{"status":"cancelled"}` / 401 `code=login_failed` / 409 `code=busy` / 504 `code=timeout` | **长任务**，最长 `loginTimeout`；`loginMode=wechat` 时生成二维码 |
 | POST | `/accounts/:id/login/cancel` | — | `{"status":"ok"\|"noop"}` | 取消正在跑的登录 |
 | GET | `/accounts/:id/login/pending` | — | `{"pending":false}` 或 `{"pending":true,"kind":"captcha"\|"password","prompt":"…","ageMs":123,"imageBase64":"…"}` | 前端轮询兜底；正常走 SSE |
 | GET | `/accounts/:id/login/qr` | `?rev=N`（可选） | 200 `image/png` / 400 rev 非法 / 404 无二维码或 rev 已过期 | `Cache-Control: no-store`；不传 rev 取当前图。二维码只存内存，登录结束即清空 |
 | POST | `/accounts/:id/login/input` | `{"value":"..."}` | `{"status":"ok"}` | 无待输入 → 409；`kind=="password"` 时**顺手把新密码写进 accounts.json**（`handlers_login.go:315`） |
 | POST | `/accounts/:id/cas/jwt/clear` | — | `{"status":"ok"}` | 清 `ticketJWT` 并丢弃运行态（下次登录会重新走门户） |
 | POST | `/accounts/:id/logout` | — | `{"status":"ok"}` | `Logout()` + `Reset()`（清登录态与初始化参数） |
-| GET | `/accounts/:id/status` | — | `{"loggedIn":bool,"initialized":bool,"modeName":"…","task":{…},"pending":{…},"qr":{…}}` | 首屏与兜底轮询；不被初始化阻塞；`qr` 无二维码时为 `null`；`qr` 含 `rev`/`createdAt`/`expiresAt`/`pageUrl`，`pageUrl` 仅用于排查（扫码必须在同一窗口，见 wechat-login-webui.md §9.7） |
+| GET | `/accounts/:id/status` | — | `{"loggedIn":bool,"initialized":bool,"modeName":"…","window":{"xkkssj":"…","xkjssj":"…"},"task":{…},"pending":{…},"qr":{…}}` | 首屏与兜底轮询；不被初始化阻塞；`qr` 无二维码时为 `null`；`qr` 含 `rev`/`createdAt`/`expiresAt`/`pageUrl`，`pageUrl` 仅用于排查（扫码必须在同一窗口，见 wechat-login-webui.md §9.7） |
 | GET | `/accounts/:id/events` | — | `text/event-stream`，见 §6 | SSE |
-| GET | `/accounts/:id/ping` | — | `{"ok":bool,"loggedIn":bool,"status":200,"latencyMs":42,"message":"…","relogin":bool,"hint":"…"}` | ≤20s；判定掉线且无任务在跑时，**后台起一次可见重登**并立即返回 `relogin:true`；`loginMode=wechat` 不后台重登，返回 `relogin:false` 并在 `hint` 里说明需要手动扫码 |
+| GET | `/accounts/:id/ping` | — | `{"ok":bool,"loggedIn":bool,"status":200,"latencyMs":42,"message":"…","relogin":bool,"hint":"…"}` | ≤20s；判定掉线、无任务在跑且 `autoRelogin=true` 时，**后台起一次可见重登**并立即返回 `relogin:true`；开关关闭或 `loginMode=wechat` 时返回 `relogin:false`，在 `hint` 里说明原因 |
+
+`window` 来自选课列表前置页的 hidden input（`xkkssj` 选课开始、`xkjssj` 选课结束）；
+未初始化时两项均为空串，初始化完成、切换页签或重新初始化后随 `/status` 刷新。
 
 ### 3.1 无账号扫码登录（`/wechat`）
 
@@ -91,7 +124,7 @@
 
 | 方法 | 路径 | 请求 | 响应 | 备注 |
 |---|---|---|---|---|
-| POST | `/accounts/:id/init` | `?force=1` 强制重抓 | `{"status":"ok","modeName":"…"}` / `{"status":"cancelled"}` / 409 / 504 / 500 | **长任务**；抓 `GetIndexParams` + `GetCourseListPre` |
+| POST | `/accounts/:id/init` | `?force=1` 强制重抓 | `{"status":"ok","modeName":"…"}` / `{"status":"cancelled"}` / 401 `code=unauthorized`（初始化时发现会话失效且未开启自动重登）/ 409 `code=busy` 或 `session_reset` / 504 `code=timeout` / 500 | **长任务**；抓 `GetIndexParams` + `GetCourseListPre`。未登录时是否先自动登录、初始化中失效是否重登一次，都看账号的 `autoRelogin` |
 | POST | `/accounts/:id/init/cancel` | — | `{"status":"ok"\|"noop"}` | |
 | GET | `/accounts/:id/tabs` | — | `[]protocol.TabInfo` | 未初始化时为空 |
 | POST | `/accounts/:id/tabs/:index` | — | `{"status":"ok","modeName":"…"}` | 切换页签 → 重抓该页签参数 + 清课程缓存 |
@@ -150,7 +183,47 @@ HTTP 200 + 一张“无功能权限”的 HTML 错误页，不是 JSON，也不�
 
 ---
 
-## 5. 验证码模型（全局）
+## 5. 服务端配置与验证码模型（全局）
+
+### 5.1 服务端配置（`/server`）
+
+实现 `web/handlers_server.go` + `web/server_settings.go`，不依赖当前选中的账号；
+配置保存在 `server.json`（见 [configuration.md](configuration.md#22-serverjson服务端配置)）。
+
+| 方法 | 路径 | 请求 | 响应 | 备注 |
+|---|---|---|---|---|
+| GET | `/server` | — | `serverView` | 当前 SMTP 配置 + 配置是否完整（不测试连接）；**不返回密码**，只返回 `hasPassword` |
+| PUT | `/server` | `{"smtp":{...}}`，字段可省略 | `serverView` | 空密码 = 保持原密码；启用时必须能发信；保存成功才生效 |
+| POST | `/server/smtp/test` | 可空，或同上 `{"smtp":{...}}` | `{"ok":true,"to":[...]}` | 用页面当前表单 / 已保存配置发测试邮件；密码留空沿用已保存值 |
+
+`serverView` 示例：
+
+```json
+{
+  "settingsFile": "server.json",
+  "smtp": {
+    "enabled": true,
+    "host": "smtp.qq.com",
+    "port": 587,
+    "username": "...",
+    "from": "...",
+    "to": ["..."],
+    "notifyAutoChoose": true,
+    "hasPassword": true
+  },
+  "smtpReady": true,
+  "smtpError": ""
+}
+```
+
+`legacyImported` / `legacyFile` 只在第一次启动从旧 `SMTP.json` 导入、尚未保存时出现。
+发送失败返回 502，参数/配置错误返回 400；两者都带 `error` 文案。
+
+自动选课结束时，服务端按 `smtp.enabled && smtp.notifyAutoChoose && 账号.autoNotify`
+在后台发结果邮件（成功、超时、重试用尽、登录失效）；用户主动取消不发，账号级
+`autoNotify=false` 也不发。发送失败只写 `logs/` 日志，不影响任务结果。
+
+### 5.2 验证码模型（`/kaptcha`）
 
 模型只有一份，所有账号共用；配置说明见 [kaptcha.md](kaptcha.md) §4。实现
 `web/handlers_kaptcha.go`，不依赖当前选中的账号。
@@ -239,8 +312,8 @@ data: {"type":"snapshot","id":42,"rev":7,"loggedIn":true,"pending":null,"qr":nul
 
 | 文件 | 规模 | 说明 |
 |---|---|---|
-| `index.html` | 556 行 | 侧栏账号列表 + 「🧠 验证码模型」全局配置页 + 顶部徽标 + 常驻任务面板 + 6 个页签（初始化 / 课程 / 已选 / 成绩 / 自动选课 / 其他工具）+ 三个 `<dialog>`（账号表单、验证码/密码输入、微信二维码） |
-| `app.js` | 3323 行 | `API.req` 统一封装 fetch；`Task` 负责 SSE 渲染与本地计时；验证码配置页用 `API.upload` 走 multipart；无框架、无构建步骤 |
-| `style.css` | 1120 行 | 手写样式 |
+| `index.html` | 664 行 | 侧栏账号列表 + 「⚙️ 服务端配置」全局页（验证码模型 / 邮件通知两个子页） + 顶部徽标 + 常驻任务面板 + 6 个页签（初始化 / 课程 / 已选 / 成绩 / 自动选课 / 其他工具）+ 三个 `<dialog>`（账号表单、验证码/密码输入、微信二维码） |
+| `app.js` | 3635 行 | `API.req` 统一封装 fetch；`Task` 负责 SSE 渲染与本地计时；验证码配置页 / SMTP 表单用 `API.upload` 与 `API.req`；无框架、无构建步骤 |
+| `style.css` | 1208 行 | 手写样式 |
 
 改造前端后**必须重新 `go build`**（`go:embed` 在编译期打包），直接改 `static/` 不会热更新。

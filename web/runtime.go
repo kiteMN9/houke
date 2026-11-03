@@ -336,6 +336,8 @@ func buildRuntime(s *AccountStore, id string, a *Account) (*accountRuntime, erro
 		return nil, fmt.Errorf("账号 %q 构造客户端失败: %w", a.Name, err)
 	}
 	rt.engine = eng
+	// 自动重登是账号级策略：构造时注入一次，之后由 PUT /auto-relogin 即时更新。
+	eng.SetAutoRelogin(a.autoReloginEnabled())
 	// 愿望清单是账号级配置：构造时注入一次，之后由 PUT /wish 即时更新。
 	eng.SetWish(a.wish())
 

@@ -6,6 +6,52 @@ import (
 	baseCfg "school_sdk/protocol/config"
 )
 
+// 自动重登默认开启：老账号没有 autoRelogin 字段时不能被当成"关闭"。
+// 只有显式写入 false 才关闭；显式 true 原样保留。
+func TestNormalizeAutoRelogin(t *testing.T) {
+	a := &Account{}
+	a.normalize()
+	if !a.autoReloginEnabled() {
+		t.Error("未设置 autoRelogin 时应默认开启")
+	}
+
+	off := false
+	b := &Account{AutoRelogin: &off}
+	b.normalize()
+	if b.autoReloginEnabled() {
+		t.Error("显式关闭后 autoReloginEnabled() = true")
+	}
+
+	on := true
+	c := &Account{AutoRelogin: &on}
+	c.normalize()
+	if !c.autoReloginEnabled() {
+		t.Error("显式开启后 autoReloginEnabled() = false")
+	}
+}
+
+func TestNormalizeAutoNotify(t *testing.T) {
+	a := &Account{}
+	a.normalize()
+	if !a.autoNotifyEnabled() {
+		t.Error("未设置 autoNotify 时应默认开启")
+	}
+
+	off := false
+	b := &Account{AutoNotify: &off}
+	b.normalize()
+	if b.autoNotifyEnabled() {
+		t.Error("显式关闭后 autoNotifyEnabled() = true")
+	}
+
+	on := true
+	c := &Account{AutoNotify: &on}
+	c.normalize()
+	if !c.autoNotifyEnabled() {
+		t.Error("显式开启后 autoNotifyEnabled() = false")
+	}
+}
+
 func TestAccountNormalizeOnCreate(t *testing.T) {
 	s := newTestStore(t)
 

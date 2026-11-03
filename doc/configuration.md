@@ -15,7 +15,7 @@
 
 程序只剩一个宿主：启动即拉起 WebUI。账号、教务地址、登录方式、超时等全部来自
 `accounts.json`（在 WebUI 里维护），不再有命令行覆盖项。字符验证码的模型路径、
-置信度门限、启用开关也不在命令行，统一在 WebUI 的「🧠 验证码模型」页配置，
+置信度门限、启用开关也不在命令行，统一在 WebUI 的「⚙️ 服务端配置」→「🧠 验证码模型」子页配置，
 保存在 `kaptcha.json`（见 §2.1）。
 
 ```powershell
@@ -36,6 +36,8 @@ go run . -webAddr 0.0.0.0:9000 # 换监听地址
 | `logs/*.log` | `utils/logger.go`，按启动时间命名 | 自动建目录 | ❌ `.gitignore:10` |
 | `fail/fail_<x>_<ms>.png` | 登录失败时的验证码样本（`protocol/login.go:257`） | 自动建目录 | ❌ `.gitignore:82` |
 | `kaptcha.json` | `check_code/kaptcha.Manager`（读一次，保存时重写） | 用默认设置：启用、阈值 0.90、自动找模型 | ❌ `.gitignore:102` |
+| `server.json` | `web/server_settings.go`（读一次，保存时重写） | 用默认设置：邮件通知关闭；若存在旧版 `SMTP.json` 则导入 | ❌ `.gitignore:105` |
+| `SMTP.json` | 旧版 1.x 邮件配置；2.x 只读导入，不再写 | 不导入，使用默认设置 | ❌ `.gitignore:39` |
 | `models/` | 配置页上传模型的存放目录（`web/handlers_kaptcha.go`） | 不上传就没有；首次上传自动建 | ❌ `.gitignore:103` |
 | `model.onnx` | `check_code/kaptcha` 的 `ResolveModelPath`（只读） | 自动识别不可用，改为人工输入 | ❌ `.gitignore:100` |
 
@@ -45,7 +47,7 @@ go run . -webAddr 0.0.0.0:9000 # 换监听地址
 
 ### 2.1 `kaptcha.json`（字符验证码模型配置）
 
-启动时读一次；之后由 WebUI 的「🧠 验证码模型」页维护，保存即热切换，不用重启。
+启动时读一次；之后由 WebUI 的「⚙️ 服务端配置」→「🧠 验证码模型」子页维护，保存即热切换，不用重启。
 手动改这个文件不会被运行中的进程自动感知，需要重启才会生效（WebUI 保存会用内存里的
 设置覆盖文件，不会重读手改内容）。
 
@@ -58,6 +60,42 @@ go run . -webAddr 0.0.0.0:9000 # 换监听地址
 
 写盘用 `.tmp` + `os.Rename`，0644；保存失败时旧配置和旧模型保持不变。
 文件存在但 JSON 损坏时，启动会打印错误并暂用默认设置，配置页保存一次即可覆盖成合法配置。
+
+### 2.2 `server.json`（服务端配置）
+
+由 WebUI「⚙️ 服务端配置」→「✉️ 邮件通知」维护，保存即热更新，不用重启。
+文件结构：
+
+```json
+{
+  "smtp": {
+    "enabled": true,
+    "host": "smtp.qq.com",
+    "port": 587,
+    "username": "you@qq.com",
+    "from": "you@qq.com",
+    "password": "<授权码>",
+    "to": ["notify@example.com"],
+    "notifyAutoChoose": true
+  }
+}
+```
+
+| 字段 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `smtp.enabled` | bool | `false` | 是否启用邮件通知；关闭后仍保留其他字段 |
+| `smtp.host` | string | 空 | SMTP 主机名，不带协议和端口 |
+| `smtp.port` | number | `587` | 465 按隐式 TLS，其他端口尝试 STARTTLS |
+| `smtp.username` | string | 空 | 登录名；空 = 使用 `from` |
+| `smtp.from` | string | 空 | 发件人邮箱，同时用于 SMTP 认证 |
+| `smtp.password` | string | 空 | 授权码 / 密码；**只写不读**，`GET /api/server` 只返回 `hasPassword` |
+| `smtp.to` | []string | 空 | 收件人；页面按行/逗号/分号输入，后端 trim + 去重 |
+| `smtp.notifyAutoChoose` | bool | `true` | 自动选课结果通知的总开关；成功/超时/未选上/登录失效时发给 `to`，用户取消不发。账号还要自己的 `autoNotify=true` 才会发 |
+
+写盘用 `.tmp` + `os.Rename`，并按 `0600` 创建（Windows 上权限位不生效，但仍按最小权限语义写）。
+文件损坏时不阻止 WebUI 启动：打印错误并暂用默认设置，页面保存一次即可覆盖。
+第一次启动若没有 `server.json`，会只读导入同目录的旧版 `SMTP.json`（`host/port/from/to/password/enable`），
+并在页面提示「尚未保存」；点一次保存后以 `server.json` 为准，旧文件不再读写。
 
 > `want.xlsx` 的解析能力（`config.ReadExcel`）还留在协议层，但当前没有调用方：
 > WebUI 的愿望清单存在 `accounts.json` 的 `wantClasses/wantTeachers/wantTypes` 里。
@@ -82,6 +120,8 @@ go run . -webAddr 0.0.0.0:9000 # 换监听地址
 | `userAgent` | string | `FireFoxUA` | 必须含 `/`，否则回落默认（见 §6） |
 | `timeout` | string | `"43s"` | 单请求超时，Go duration 字符串，< 4s 会在客户端被抬到 4s |
 | `loginTimeout` | string | `"10m"` | 登录/初始化长任务的最长等待时间 |
+| `autoRelogin` | bool | `true` | 会话失效时是否自动重登一次；关闭后点具体功能遇到失效只提示手动登录（初始化也不会预登录） |
+| `autoNotify` | bool | `true` | 自动选课结束时是否给该账号发结果邮件；服务端 `smtp.notifyAutoChoose` 仍是总开关，这里只能再关闭。WebUI 自动选课页可热切换 |
 | `want` | string | `want.xlsx` | 旧愿望清单路径，兼容保留；当前无调用方 |
 | `hedging` | bool | `false` | 是否启用请求对冲（同一请求延迟后重发） |
 | `hedgingDelay` | string | `"21s"` | 对冲间隔，仅 `hedging=true` 时生效 |
@@ -110,6 +150,8 @@ go run . -webAddr 0.0.0.0:9000 # 换监听地址
     "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:157.0) Gecko/20100101 Firefox/157.0",
     "timeout": "43s",
     "loginTimeout": "10m",
+    "autoRelogin": true,
+    "autoNotify": true,
     "hedging": false,
     "hedgingDelay": "21s",
     "routes": [],
@@ -129,6 +171,8 @@ go run . -webAddr 0.0.0.0:9000 # 换监听地址
 | `userAgent` 不含 `/` | 回落 `DefaultUA` |
 | `baseUrl` 是登录页 / 带 query | `NormalizeBaseURL` 收敛成 `scheme://host[/prefix]/` |
 | 愿望清单有空行、重复、首尾空白 | 去重 + trim；全空则写回 `nil`（JSON 里省略） |
+| 缺少 `autoRelogin`（老账号） | 按 `true` 写回；显式 `false` 原样保留 |
+| 缺少 `autoNotify`（老账号） | 按 `true` 写回；显式 `false` 原样保留 |
 
 ---
 
@@ -142,6 +186,8 @@ go run . -webAddr 0.0.0.0:9000 # 换监听地址
 | 愿望清单路径 | `want.xlsx` | `:22` |
 | User-Agent | `FireFoxUA`（Firefox 157 / Win10） | `config/useragent.go:8,13` |
 | 登录任务超时 | `10m` | `web/account.go:16` |
+| 自动重登 | `true` | `web/account.go`（`Account.autoReloginEnabled`） |
+| 自动选课邮件通知 | `true` | `web/account.go`（`Account.autoNotifyEnabled`） |
 | 自动选课轮间隔 | `1.5s` | `engine/plan.go:17` |
 | 自动选课候选刷新 | `30s` | `engine/plan.go:25` |
 | 自动选课超时 | `24h` | `web/handlers_auto.go:47` |
@@ -215,6 +261,7 @@ resty 的拼接方式是 `TrimRight(baseURL,"/") + "/path"`，所以目录部署
 | 位置 | 内容 | 风险 |
 |---|---|---|
 | `accounts.json` | 教务密码、CAS 密码、JWT 全明文，0644 | 同机任何用户可读 |
+| `server.json` | SMTP 授权码全明文，按 0600 写入；API 不回显密码 | Unix 上仅文件所有者可读；Windows 上权限位不生效 |
 | `GET /api/accounts*` | 把密码回给前端（脱敏代码被注释） | 本机可用；局域网暴露即泄漏 |
 | `html/`、`账号集/`、`doc/*.png` | 抓包样本 / 截图，含真实姓名与学号 | 未纳管，**不要外发** |
 

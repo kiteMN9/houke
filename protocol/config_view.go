@@ -40,6 +40,26 @@ func ModeNameOf(cfg *APIConfig) string {
 	return cfg.Tabs.modeName
 }
 
+// WindowInfo 是选课时间窗的只读视图。
+//
+// SelectionWindow 的字段全是小写（协议内部状态），engine/web 不能直接读；
+// 字段名保持协议原始拼写，方便和抓包、日志里的 hidden input 对照。
+type WindowInfo struct {
+	Xkkssj string `json:"xkkssj"` // 选课开始时间
+	Xkjssj string `json:"xkjssj"` // 选课结束时间
+}
+
+// WindowOf 返回配置里的选课时间窗；未初始化或页面没给时间时返回零值。
+func WindowOf(cfg *APIConfig) WindowInfo {
+	if cfg == nil {
+		return WindowInfo{}
+	}
+	return WindowInfo{
+		Xkkssj: cfg.Window.xkkssj,
+		Xkjssj: cfg.Window.xkjssj,
+	}
+}
+
 // CurrentTabOf 返回配置当前选中的页签，以及是否找得到。
 //
 // 为什么不能只看 ModeNameOf：重抓首页参数后 modeName 会被页面地址栏里的默认

@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/antchfx/htmlquery"
-	"golang.org/x/net/html"
 )
 
 // IndexOptions 控制一次 index 参数抓取的行为。
@@ -89,6 +88,7 @@ func (a *APIClient) GetIndexParams(ctx context.Context, cfg *APIConfig, opts Ind
 
 		if !a.CheckLogout302(resp) && utils.UserIsLogin(a.cfg.Account, resp.String()) {
 		} else {
+			a.markSessionExpired(resp)
 			return &StageError{Op: "index", Message: "登录已失效", Err: ErrUnauthorized}
 		}
 		if resp.IsStatusFailure() {
@@ -164,62 +164,6 @@ func (a *APIClient) GetIndexParams(ctx context.Context, cfg *APIConfig, opts Ind
 		}
 		return nil
 	}
-}
-
-func parseYzbIndexHtml(cfg *APIConfig, docNode *html.Node) bool {
-	cfg.Index.xkkz_id = getXpathValue(docNode, "firstXkkzId")
-	cfg.Index.xkkz_xh = getXpathValue(docNode, "firstXkkzXh")
-	cfg.Index.kklxdm = getXpathValue(docNode, "firstKklxdm")
-	cfg.Tabs.Kklxmc = getXpathValue(docNode, "firstKklxmc")
-	cfg.Index.njdm_id = getXpathValue(docNode, "firstNjdmId")
-	cfg.Index.zyh_id = getXpathValue(docNode, "firstZyhId")
-	//cfg.Index.njdm_id_list0 = cfg.Index.njdm_id
-	cfg.Index.bh_id = getXpathValue(docNode, "bh_id")   // 班号
-	cfg.Index.xkxnm = getXpathValue(docNode, "xkxnm")   // 学年
-	cfg.Index.xkxqm = getXpathValue(docNode, "xkxqm")   // 学期
-	cfg.Index.xqh_id = getXpathValue(docNode, "xqh_id") // 校区号
-	cfg.Index.jg_id = getXpathValue(docNode, "jg_id_1")
-	cfg.Index.xz = getXpathValue(docNode, "xz") // 学制
-	cfg.Index.zyfx_id = getXpathValue(docNode, "zyfx_id")
-	cfg.Index.ccdm = getXpathValue(docNode, "ccdm")
-	cfg.Index.xbm = getXpathValue(docNode, "xbm")   // 性别码 男1 女2
-	cfg.Index.mzm = getXpathValue(docNode, "mzm")   // 民族码
-	cfg.Index.xsbj = getXpathValue(docNode, "xsbj") // 学生标记
-	cfg.Index.xslbdm = getXpathValue(docNode, "xslbdm")
-	cfg.Index.xszxzt = getXpathValue(docNode, "xszxzt")
-	cfg.Index.xxdm = getXpathValue(docNode, "xxdm") // 学校代码
-	cfg.Window.zxfs = getXpathValue(docNode, "zxfs")
-	cfg.Index.tkzgcs_qt = getXpathValue(docNode, "tkzgcs_qt")
-	cfg.Index.currentsj = getXpathValue(docNode, "currentsj") // 当前时间
-
-	// 解析总学分最低
-	minCreditNode := htmlquery.FindOne(docNode, `//h5[contains(., "总学分最低")]/font[@color='red'][1]`)
-	if minCreditNode != nil {
-		cfg.Window.minCredit = htmlquery.InnerText(minCreditNode)
-	}
-	// 解析总学分最高
-	maxCreditNode := htmlquery.FindOne(docNode, `//h5[contains(., "总学分最低")]/font[@color='red'][2]`)
-	if maxCreditNode != nil {
-		cfg.Window.maxCredit = htmlquery.InnerText(maxCreditNode)
-	}
-	// 解析本学期已选学分
-	selectedCreditNode := htmlquery.FindOne(docNode, `//font[@id='yxxfs']`)
-	if selectedCreditNode != nil {
-		cfg.Window.selectedCredit = htmlquery.InnerText(selectedCreditNode)
-	}
-	if cfg.Index.xkkz_id == "" && cfg.Index.kklxdm == "" && cfg.Index.xkkz_xh == "" && cfg.Index.xkxnm == "" {
-		fmt.Println("❌ Step 1 index failed")
-		return true
-	}
-	if cfg.Index.xkkz_xh != "" {
-		fmt.Println("正方 V9")
-	}
-	fmt.Println("Step 1 index finished")
-	fmt.Println("\n\r将要选 \033[1;36m", cfg.Tabs.Kklxmc, "\033[0m !!")
-	log.Println("将要选", cfg.Tabs.Kklxmc, "!!")
-	parseKklxdmXkkz__(cfg, docNode)
-	cfg.Tabs.modeName = cfg.Tabs.Kklxmc
-	return false
 }
 
 // GetCourseListPre 页签获取
@@ -308,56 +252,6 @@ func (a *APIClient) GetCourseListPre(ctx context.Context, cfg *APIConfig, save b
 	// 本学期本类型课程选课最高门次要求为 bxqzgxkmc ，不可选
 }
 
-func getXpathValue(docNode *html.Node, name string) string {
-	if docNode == nil || name == "" {
-		return ""
-	}
-	escapedName := html.EscapeString(name)
-	// 使用单个XPath同时匹配name或id
-	xpath := `//*[@id="` + escapedName + `" or @name="` + escapedName + `"]`
-	if node := htmlquery.FindOne(docNode, xpath); node != nil {
-		return htmlquery.SelectAttr(node, "value")
-	}
-	return ""
-}
-
-func parseListPreHtml(cfg *APIConfig, docNode *html.Node) {
-	cfg.Index.bklx_id = getXpathValue(docNode, "bklx_id")
-	cfg.Index.rwlx = getXpathValue(docNode, "rwlx")
-	cfg.Index.xkly = getXpathValue(docNode, "xkly")
-	cfg.Index.xklc = getXpathValue(docNode, "xklc")     // 选课轮次
-	cfg.Index.xklcmc = getXpathValue(docNode, "xklcmc") // 选课轮次
-	cfg.Index.sfkknj = getXpathValue(docNode, "sfkknj")
-	cfg.Index.rlkz = getXpathValue(docNode, "rlkz")
-	cfg.Index.cdrlkz = getXpathValue(docNode, "cdrlkz")
-	cfg.Index.kkbk = getXpathValue(docNode, "kkbk")
-	cfg.Index.kkbkdj = getXpathValue(docNode, "kkbkdj")
-	cfg.Index.jxbzcxskg = getXpathValue(docNode, "jxbzcxskg")
-	cfg.Index.xkxskcgskg = getXpathValue(docNode, "xkxskcgskg")
-	cfg.Index.sfkcfx = getXpathValue(docNode, "sfkcfx")
-	cfg.Index.sfkkjyxdxnxq = getXpathValue(docNode, "sfkkjyxdxnxq")
-	cfg.Index.gnjkxdnj = getXpathValue(docNode, "gnjkxdnj")
-	cfg.Index.sfkkzy = getXpathValue(docNode, "sfkkzy")
-	cfg.Index.kzybkxy = getXpathValue(docNode, "kzybkxy")
-	cfg.Index.sfznkx = getXpathValue(docNode, "sfznkx")
-	cfg.Index.zdkxms = getXpathValue(docNode, "zdkxms")
-	cfg.Index.sfkxq = getXpathValue(docNode, "sfkxq")
-	cfg.Index.bbhzxjxb = getXpathValue(docNode, "bbhzxjxb")
-	cfg.Index.rlzlkz = getXpathValue(docNode, "rlzlkz")
-	cfg.Index.sfkxk = getXpathValue(docNode, "sfkxk")    // 是否可选课
-	cfg.Index.sfktk = getXpathValue(docNode, "sfktk")    // 是否可退课
-	cfg.Index.jdlx = getXpathValue(docNode, "jdlx")      // 体育课多志愿开关
-	cfg.Window.syts = getXpathValue(docNode, "syts")     // 距选课结束还剩{0}天
-	cfg.Window.syxs = getXpathValue(docNode, "syxs")     // 距选课结束还剩{0}小时
-	cfg.Window.xkkssj = getXpathValue(docNode, "xkkssj") // 选课开始时间
-	cfg.Window.xkjssj = getXpathValue(docNode, "xkjssj") // 选课结束时间
-	if cfg.Index.bklx_id == "" && cfg.Index.rwlx == "" && cfg.Index.xkly == "" && cfg.Window.syxs == "" {
-		fmt.Println("❌ Step 2 params failed")
-		return
-	}
-	fmt.Println("Step 2 params finished")
-}
-
 // GetCourseList 拿到课程号全集
 func (a *APIClient) GetCourseList(ctx context.Context, cfg *APIConfig) ([]CourseListDic, error) {
 	// 搜索课程，主页面的查询
@@ -365,15 +259,15 @@ func (a *APIClient) GetCourseList(ctx context.Context, cfg *APIConfig) ([]Course
 		log.Println("========搜索课程 getCourseList()========")
 		fmt.Println("搜索课程")
 	}
-	var result GetCourseListResult
+	var result CourseListResult
 	for {
 		formData := map[string]string{ // 25
-			"bbhzxjxb":     cfg.Index.bbhzxjxb,
+			"bbhzxjxb":     cfg.Window.bbhzxjxb,
 			"bh_id":        cfg.Index.bh_id,
-			"bklx_id":      cfg.Index.bklx_id,
-			"rwlx":         cfg.Index.rwlx, // 校选是2 专选是1 没有这两个会蹦出来选不了的课，主修课：✓ 选修课：✗
-			"xkly":         cfg.Index.xkly, // 1 选择无限制是0，主修课：✓ 选修课：✗
-			"sfkkjyxdxnxq": cfg.Index.sfkkjyxdxnxq,
+			"bklx_id":      cfg.Window.bklx_id,
+			"rwlx":         cfg.Window.rwlx, // 校选是2 专选是1 没有这两个会蹦出来选不了的课，主修课：✓ 选修课：✗
+			"xkly":         cfg.Window.xkly, // 1 选择无限制是0，主修课：✓ 选修课：✗
+			"sfkkjyxdxnxq": cfg.Window.sfkkjyxdxnxq,
 			"xqh_id":       cfg.Index.xqh_id,
 			"jg_id":        cfg.Index.jg_id,
 			"zyh_id":       cfg.Index.zyh_id,
@@ -387,23 +281,23 @@ func (a *APIClient) GetCourseList(ctx context.Context, cfg *APIConfig) ([]Course
 			"xz":       cfg.Index.xz,
 			"ccdm":     cfg.Index.ccdm,
 			"xsbj":     cfg.Index.xsbj,
-			"sfkknj":   cfg.Index.sfkknj,
-			"gnjkxdnj": cfg.Index.gnjkxdnj,
-			"sfkkzy":   cfg.Index.sfkkzy,
-			"kzybkxy":  cfg.Index.kzybkxy,
-			"sfznkx":   cfg.Index.sfznkx,
-			"zdkxms":   cfg.Index.zdkxms,
-			"sfkxq":    cfg.Index.sfkxq,
-			"sfkcfx":   cfg.Index.sfkcfx,
-			"kkbk":     cfg.Index.kkbk,
-			"kkbkdj":   cfg.Index.kkbkdj,
+			"sfkknj":   cfg.Window.sfkknj,
+			"gnjkxdnj": cfg.Window.gnjkxdnj,
+			"sfkkzy":   cfg.Window.sfkkzy,
+			"kzybkxy":  cfg.Window.kzybkxy,
+			"sfznkx":   cfg.Window.sfznkx,
+			"zdkxms":   cfg.Window.zdkxms,
+			"sfkxq":    cfg.Window.sfkxq,
+			"sfkcfx":   cfg.Window.sfkcfx,
+			"kkbk":     cfg.Window.kkbk,
+			"kkbkdj":   cfg.Window.kkbkdj,
 			// 	sfkgbcx: 0
 			// 	sfrxtgkcxd: 0
 			// 	tykczgxdcs: 0
 			"xkxnm":  cfg.Index.xkxnm,  // 当前学期年份, 如2021-2022 即2021，必须
 			"xkxqm":  cfg.Index.xkxqm,  // 3 12 16
 			"kklxdm": cfg.Index.kklxdm, // 01为主修课 10为选修课，校选10 专选01，英语进阶06，必须
-			"rlkz":   cfg.Index.rlkz,
+			"rlkz":   cfg.Window.rlkz,
 			// 	xkzgbj: 0
 			"kspage": "1",
 			"jspage": "222", // 页号，一页显示的数量，必须
@@ -509,10 +403,10 @@ func (a *APIClient) GetCourseDetail(ctx context.Context, cfg *APIConfig, kch_id 
 	var result []CourseDetail
 	for {
 		formData := map[string]string{
-			"rwlx":         cfg.Index.rwlx, // 校选是2 专选是1 没有这两个会蹦出来选不了的课，主修课：✓ 选修课：✗
-			"xkly":         cfg.Index.xkly, // 1 选择无限制是0，主修课：✓ 选修课：✗
-			"bklx_id":      cfg.Index.bklx_id,
-			"sfkkjyxdxnxq": cfg.Index.sfkkjyxdxnxq,
+			"rwlx":         cfg.Window.rwlx, // 校选是2 专选是1 没有这两个会蹦出来选不了的课，主修课：✓ 选修课：✗
+			"xkly":         cfg.Window.xkly, // 1 选择无限制是0，主修课：✓ 选修课：✗
+			"bklx_id":      cfg.Window.bklx_id,
+			"sfkkjyxdxnxq": cfg.Window.sfkkjyxdxnxq,
 
 			"xqh_id": cfg.Index.xqh_id,
 			"jg_id":  cfg.Index.jg_id,
@@ -528,17 +422,17 @@ func (a *APIClient) GetCourseDetail(ctx context.Context, cfg *APIConfig, kch_id 
 			"xz":       cfg.Index.xz,
 			"ccdm":     cfg.Index.ccdm,
 			"xsbj":     cfg.Index.xsbj,
-			"sfkknj":   cfg.Index.sfkknj,
-			"gnjkxdnj": cfg.Index.gnjkxdnj,
-			"sfkkzy":   cfg.Index.sfkkzy,
-			"kzybkxy":  cfg.Index.kzybkxy,
-			"sfznkx":   cfg.Index.sfznkx,
-			"zdkxms":   cfg.Index.zdkxms,
-			"sfkxq":    cfg.Index.sfkxq,
-			"sfkcfx":   cfg.Index.sfkcfx,
-			"bbhzxjxb": cfg.Index.bbhzxjxb,
-			"kkbk":     cfg.Index.kkbk,
-			"kkbkdj":   cfg.Index.kkbkdj,
+			"sfkknj":   cfg.Window.sfkknj,
+			"gnjkxdnj": cfg.Window.gnjkxdnj,
+			"sfkkzy":   cfg.Window.sfkkzy,
+			"kzybkxy":  cfg.Window.kzybkxy,
+			"sfznkx":   cfg.Window.sfznkx,
+			"zdkxms":   cfg.Window.zdkxms,
+			"sfkxq":    cfg.Window.sfkxq,
+			"sfkcfx":   cfg.Window.sfkcfx,
+			"bbhzxjxb": cfg.Window.bbhzxjxb,
+			"kkbk":     cfg.Window.kkbk,
+			"kkbkdj":   cfg.Window.kkbkdj,
 
 			// 	sfkgbcx: 0
 			// 	sfrxtgkcxd: 0
@@ -546,12 +440,12 @@ func (a *APIClient) GetCourseDetail(ctx context.Context, cfg *APIConfig, kch_id 
 			"xkxnm": cfg.Index.xkxnm, // 当前学期年份, 如2021-2022 即2021，必须
 			"xkxqm": cfg.Index.xkxqm, // 3 12 16
 
-			"rlkz":   cfg.Index.rlkz,
+			"rlkz":   cfg.Window.rlkz,
 			"kklxdm": cfg.Index.kklxdm, // 01为主修课 10为选修课，校选10 专选01，英语进阶06，必须
 
 			// 	xkzgbj: 0
 			"kch_id": kch_id, // 课程号，必须
-			"xklc":   cfg.Index.xklc,
+			"xklc":   cfg.Window.xklc,
 		}
 		if cfg.Index.xkkz_id != "" {
 			formData["xkkz_id"] = cfg.Index.xkkz_id
@@ -644,11 +538,11 @@ func (a *APIClient) GetCourseDetail(ctx context.Context, cfg *APIConfig, kch_id 
 	}
 }
 
-func (a *APIClient) ChooseCourse(ctx context.Context, idx IndexInfo, co *CustomCourseDic) (ChooseCourseResult, error) {
+func (a *APIClient) ChooseCourse(ctx context.Context, idx IndexInfo, win SelectionWindow, co *CustomCourseDic) (ChooseCourseResult, error) {
 	// 	选课
 	// 	若flag==1则表示选课成功
 	var sxbj = "0"
-	if idx.rlkz == "1" || idx.rlzlkz == "1" || idx.cdrlkz == "1" {
+	if win.rlkz == "1" || win.rlzlkz == "1" || win.cdrlkz == "1" {
 		sxbj = "1"
 	}
 	var result = ChooseCourseResult{Flag: "-5"}
@@ -659,10 +553,10 @@ func (a *APIClient) ChooseCourse(ctx context.Context, idx IndexInfo, co *CustomC
 			"jxb_ids": co.Do_jxb_id,
 			"kch_id":  co.Kch_id,
 			// "kcmc":    co.kcmc,
-			"rwlx":   idx.rwlx,
-			"rlkz":   idx.rlkz,
-			"cdrlkz": idx.cdrlkz,
-			"rlzlkz": idx.rlzlkz,
+			"rwlx":   win.rwlx,
+			"rlkz":   win.rlkz,
+			"cdrlkz": win.cdrlkz,
+			"rlzlkz": win.rlzlkz,
 			"sxbj":   sxbj,
 			"xxkbj":  co.Xxkbj,
 			"qz":     "0",
@@ -673,7 +567,7 @@ func (a *APIClient) ChooseCourse(ctx context.Context, idx IndexInfo, co *CustomC
 			"zyh_id": idx.zyh_id,
 			//"zyh_id_xs":  idx.zyh_id,
 			"kklxdm": idx.kklxdm, // 校选10 专选01 英语06
-			"xklc":   idx.xklc,   // 选课轮次
+			"xklc":   win.xklc,   // 选课轮次
 			"xkxnm":  idx.xkxnm,
 			"xkxqm":  idx.xkxqm,
 			//"jcxx_id":    "[]jcxx_arr",
@@ -911,10 +805,10 @@ func (a *APIClient) getCourseDoJxb(ctx context.Context, cfg *APIConfig, jxb_ids 
 	for {
 		formData := map[string]string{
 			"jxb_ids": strings.Join(jxb_ids, ","),
-			"bklx_id": cfg.Index.bklx_id,
+			"bklx_id": cfg.Window.bklx_id,
 			"kklxdm":  cfg.Index.kklxdm,
-			"rlkz":    cfg.Index.rlkz,
-			"xklc":    cfg.Index.xklc,
+			"rlkz":    cfg.Window.rlkz,
+			"xklc":    cfg.Window.xklc,
 			"zyh_id":  cfg.Index.zyh_id,
 			"njdm_id": cfg.Index.njdm_id,
 		}

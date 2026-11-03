@@ -256,6 +256,40 @@ func TestSessionWishIsIsolated(t *testing.T) {
 	}
 }
 
+// 选课时间窗属于发布后的快照：初始化成功才能读到，Reset 后清空。
+func TestSessionWindowFollowsInitialize(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == config.ChooseCourseListPre {
+			_, _ = io.WriteString(w, `<html><body>
+<input type="hidden" name="xkkssj" id="xkkssj" value="2026-09-09 12:30:00"/>
+<input type="hidden" name="xkjssj" id="xkjssj" value="2026-09-23 11:00:00"/>
+</body></html>`)
+			return
+		}
+		_, _ = io.WriteString(w, indexOKHTML)
+	}))
+	t.Cleanup(srv.Close)
+
+	s := newTestSession(t, srv.URL)
+	if got := s.Window(); got != (protocol.WindowInfo{}) {
+		t.Fatalf("初始化前 Window = %+v，期望零值", got)
+	}
+	if err := s.Initialize(context.Background()); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if got := s.Window(); got != (protocol.WindowInfo{
+		Xkkssj: "2026-09-09 12:30:00",
+		Xkjssj: "2026-09-23 11:00:00",
+	}) {
+		t.Fatalf("初始化后 Window = %+v", got)
+	}
+
+	s.Reset()
+	if got := s.Window(); got != (protocol.WindowInfo{}) {
+		t.Fatalf("Reset 后 Window = %+v，期望零值", got)
+	}
+}
+
 // newTestSession 构造一个已登录的会话，指向 httptest 服务器。
 func newTestSession(t *testing.T, baseURL string) *session {
 	t.Helper()

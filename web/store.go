@@ -377,6 +377,16 @@ func (s *AccountStore) Update(id string, patch *Account) (*Account, error) {
 	}
 	// 布尔值前端会显式传，所以直接覆盖
 	a.Hedging = patch.Hedging
+	// 自动重登开关用专用端点热更新（见 SetAutoRelogin），这里只在调用方
+	// 显式提交该字段时跟随更新；nil 表示"本次 PUT 不涉及它"。
+	if patch.AutoRelogin != nil {
+		a.AutoRelogin = patch.AutoRelogin
+	}
+	// 自动选课邮件开关同样有专用端点（见 SetAutoNotify）；PUT 显式提交时跟随，
+	// nil 表示本次不涉及它。
+	if patch.AutoNotify != nil {
+		a.AutoNotify = patch.AutoNotify
+	}
 
 	a.normalize()
 
@@ -422,6 +432,47 @@ func (s *AccountStore) SetWish(id string, w protocol.WishList) (*Account, error)
 	c.WantTeachers = slices.Clone(a.WantTeachers)
 	c.WantTypes = slices.Clone(a.WantTypes)
 	return &c, nil
+}
+
+// SetAutoRelogin 更新账号的"会话失效时自动重登"开关。
+//
+// 和 SetWish 一样不走 Update：Update 会丢弃运行态，而切一个开关不应该
+// 把用户踢回登录页。运行态已存在时直接热更新 engine 的策略。
+func (s *AccountStore) SetAutoRelogin(id string, enabled bool) (*Account, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	a, ok := s.accounts[id]
+	if !ok {
+		return nil, fmt.Errorf("账号不存在")
+	}
+	a.AutoRelogin = &enabled
+	if err := s.saveLocked(); err != nil {
+		return nil, err
+	}
+	if rt, ok := s.runtimes[id]; ok && rt.engine != nil {
+		rt.engine.SetAutoRelogin(enabled)
+	}
+	return publicAccount(a), nil
+}
+
+// SetAutoNotify 更新账号的"自动选课结束是否发结果邮件"开关。
+//
+// 和 SetAutoRelogin 一样不走 Update：Update 会丢弃运行态。通知在任务结束时
+// 才读取账号，因此这里不需要通知 engine，落盘即可。
+func (s *AccountStore) SetAutoNotify(id string, enabled bool) (*Account, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	a, ok := s.accounts[id]
+	if !ok {
+		return nil, fmt.Errorf("账号不存在")
+	}
+	a.AutoNotify = &enabled
+	if err := s.saveLocked(); err != nil {
+		return nil, err
+	}
+	return publicAccount(a), nil
 }
 
 func (s *AccountStore) Delete(id string) error {

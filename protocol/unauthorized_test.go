@@ -50,6 +50,11 @@ func TestCourseListReportsUnauthorizedWithoutRelogin(t *testing.T) {
 	if got := hits.Load(); got != 1 {
 		t.Fatalf("未登录后不应再发请求（协议层不再自动重登），共 %d 次", got)
 	}
+	// 业务响应已经证明会话失效，登录态必须当场记下来：
+	// 上层 /status 只读 client，不能等下一次 Ping 才发现。
+	if api.LoggedIn() {
+		t.Fatal("服务器判定未登录后，client 的 LoggedIn() 仍为 true")
+	}
 }
 
 func TestQuitCourseReportsUnauthorized(t *testing.T) {

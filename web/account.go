@@ -27,21 +27,33 @@ const (
 
 // Account 持久化账号信息（不含运行态）。
 type Account struct {
-	ID            string   `json:"id"`
-	Name          string   `json:"name"`
-	BaseURL       string   `json:"baseUrl"`
-	Username      string   `json:"username"`
-	Password      string   `json:"password,omitempty"`
-	CasPassword   string   `json:"casPassword,omitempty"`
-	CasLogin      bool     `json:"casLogin"`            // 旧字段：是否走 CAS2 密码登录；由 LoginMode 反向同步
-	LoginMode     string   `json:"loginMode,omitempty"` // password | cas | wechat
-	UserAgent     string   `json:"userAgent"`
-	Timeout       string   `json:"timeout"`
-	LoginTimeout  string   `json:"loginTimeout"` // 登录/初始化任务的最长等待时间（Go duration）
-	Want          string   `json:"want,omitempty"`
-	Hedging       bool     `json:"hedging"`                 // 是否启用请求对冲（hedging）
-	HedgingDelay  string   `json:"hedgingDelay"`            // 对冲请求之间的间隔
-	Routes        []string `json:"routes"`                  // 自定义 route cookie 列表（空 = 使用内置默认）
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	BaseURL      string   `json:"baseUrl"`
+	Username     string   `json:"username"`
+	Password     string   `json:"password,omitempty"`
+	CasPassword  string   `json:"casPassword,omitempty"`
+	CasLogin     bool     `json:"casLogin"`            // 旧字段：是否走 CAS2 密码登录；由 LoginMode 反向同步
+	LoginMode    string   `json:"loginMode,omitempty"` // password | cas | wechat
+	UserAgent    string   `json:"userAgent"`
+	Timeout      string   `json:"timeout"`
+	LoginTimeout string   `json:"loginTimeout"` // 登录/初始化任务的最长等待时间（Go duration）
+	Want         string   `json:"want,omitempty"`
+	Hedging      bool     `json:"hedging"`      // 是否启用请求对冲（hedging）
+	HedgingDelay string   `json:"hedgingDelay"` // 对冲请求之间的间隔
+	Routes       []string `json:"routes"`       // 自定义 route cookie 列表（空 = 使用内置默认）
+
+	// AutoRelogin 是"会话失效时是否自动重新登录一次"的开关（默认开启）。
+	// 用指针是为了区分"老账号没写过这个字段"（按开启处理）和"显式关闭"；
+	// 它只影响 engine 的重登策略，不属于 protocol 配置。
+	AutoRelogin *bool `json:"autoRelogin,omitempty"`
+
+	// AutoNotify 是"自动选课结束时是否发结果邮件"的账号级开关（默认开启）。
+	// 服务端配置里的 smtp.enabled / smtp.notifyAutoChoose 仍是总开关，这里只
+	// 决定这个账号是否参与通知。指针的语义与 AutoRelogin 相同：老账号没有该
+	// 字段时按开启处理，显式 false 才关闭。
+	AutoNotify *bool `json:"autoNotify,omitempty"`
+
 	LearnedRoutes []string `json:"learnedRoutes,omitempty"` // 登录过程中学到的 route（client 回传，不是用户偏好）
 	TicketJWT     string   `json:"ticketJWT,omitempty"`     // CAS2 门户登录 JWT 缓存
 
@@ -82,6 +94,17 @@ func (a *Account) normalize() {
 	// 历史账号可能存着登录页地址：统一收敛成 scheme://host/，
 	// 避免 client 在请求时悄悄截断（截断后的地址与用户填的不一致）。
 	a.BaseURL = config.NormalizeBaseURL(a.BaseURL)
+	// 自动重登：老账号没有这个字段，默认按开启处理；显式 false 才关闭。
+	if a.AutoRelogin == nil {
+		enabled := true
+		a.AutoRelogin = &enabled
+	}
+	// 自动选课结果邮件：与自动重登一致，老账号默认开启。总开关在服务端配置里，
+	// 账号级开关只能把它再关掉，不能绕过 smtp.enabled 单独发信。
+	if a.AutoNotify == nil {
+		enabled := true
+		a.AutoNotify = &enabled
+	}
 	// 登录方式：loginMode 优先；历史账号只有 casLogin，按它推导。
 	// CasLogin 保留为兼容镜像，只表示"CAS 密码登录"，不再承载 wechat。
 	a.LoginMode = a.effectiveLoginMode()
@@ -94,6 +117,18 @@ func (a *Account) normalize() {
 	if a.Identity.Empty() {
 		a.Identity = nil
 	}
+}
+
+// autoReloginEnabled 返回账号是否开启自动重登；nil（老账号 / 未 normalize）
+// 按开启处理，保证默认行为不变。
+func (a *Account) autoReloginEnabled() bool {
+	return a == nil || a.AutoRelogin == nil || *a.AutoRelogin
+}
+
+// autoNotifyEnabled 返回账号是否接收自动选课结果邮件；nil（老账号 / 未 normalize）
+// 按开启处理，保证默认行为不变。服务端 SMTP 总开关不在这个判断里。
+func (a *Account) autoNotifyEnabled() bool {
+	return a == nil || a.AutoNotify == nil || *a.AutoNotify
 }
 
 // validLoginMode 报告 mode 是否是已知的登录方式。

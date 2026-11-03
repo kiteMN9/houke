@@ -2,12 +2,10 @@ package web
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"strconv"
 	"time"
 
-	"school_sdk/engine"
 	"school_sdk/protocol"
 
 	"github.com/gin-gonic/gin"
@@ -20,24 +18,6 @@ func (s *Server) listTabs(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, rt.engine.Tabs())
-}
-
-// writeEngineError 把 engine 返回的错误映射成前端能处理的 HTTP 语义：
-// 会话失效让前端弹登录框，取消/超时单独区分，无功能权限（学校返回
-// “无功能权限”页面）用 403 + code 让前端在面板里说明，其余按服务器错误返回。
-func writeEngineError(c *gin.Context, err error) {
-	switch {
-	case errors.Is(err, context.Canceled):
-		c.JSON(http.StatusRequestTimeout, gin.H{"error": "请求已取消"})
-	case errors.Is(err, context.DeadlineExceeded):
-		c.JSON(http.StatusGatewayTimeout, gin.H{"error": "请求超时"})
-	case errors.Is(err, protocol.ErrUnauthorized):
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "登录已失效，请重新登录"})
-	case errors.Is(err, protocol.ErrNoPermission):
-		c.JSON(http.StatusForbidden, gin.H{"error": "该账号无此功能权限", "code": "no_permission"})
-	default:
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-	}
 }
 
 func (s *Server) selectTab(c *gin.Context) {
@@ -54,11 +34,7 @@ func (s *Server) selectTab(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
 	defer cancel()
 	if err := rt.engine.SelectTab(ctx, idx); err != nil {
-		if errors.Is(err, engine.ErrSessionReset) {
-			c.JSON(http.StatusConflict, gin.H{"error": "会话已重置，请重新初始化"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		writeEngineError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -225,7 +201,7 @@ func (s *Server) selected(c *gin.Context) {
 	// 未登录时直接失败：Session.Selected 会在内部触发一次阻塞登录（最长到账号的
 	// 登录超时），这次登录不在任务面板里、也无法取消，前端按钮会一直转圈。
 	if !rt.engine.LoggedIn() {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "尚未登录，请先登录"})
+		writeUnauthorized(c, "尚未登录，请先登录")
 		return
 	}
 	xn := c.Query("xnm")

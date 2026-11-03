@@ -39,7 +39,7 @@ func (a *APIClient) CheckSession(ctx context.Context) bool {
 		return true
 	}
 	fmt.Println("Login check:", resp.Status())
-	a.setLoggedIn(false)
+	a.markSessionExpired(resp)
 	return false
 }
 
@@ -71,7 +71,7 @@ func (a *APIClient) CheckSession2(ctx context.Context) bool {
 	}
 
 	fmt.Println(resp.Status())
-	a.setLoggedIn(false)
+	a.markSessionExpired(resp)
 	return false
 }
 
@@ -89,9 +89,14 @@ func (a *APIClient) LoginCheck(resp *resty.Response) bool {
 		return true
 	}
 	if a.CheckLogout302(resp) {
+		a.markSessionExpired(resp)
 		return false
 	}
-	return utils.UserIsLogin(a.cfg.Account, resp.String())
+	if !utils.UserIsLogin(a.cfg.Account, resp.String()) {
+		a.markSessionExpired(resp)
+		return false
+	}
+	return true
 }
 
 func (a *APIClient) CheckLogout302(resp *resty.Response) bool {

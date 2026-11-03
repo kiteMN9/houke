@@ -139,7 +139,7 @@ func (s *Server) autoChoose(c *gin.Context) {
 		return
 	}
 	if !rt.engine.LoggedIn() {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "尚未登录，请先登录"})
+		writeUnauthorized(c, "尚未登录，请先登录")
 		return
 	}
 	if !rt.engine.Inited() {
@@ -176,7 +176,7 @@ func (s *Server) autoChoose(c *gin.Context) {
 	// 任务与取消函数原子登记：/status 一旦显示"自动选课中"，
 	// /auto-choose/cancel 就一定真的能取消。
 	if _, ok := s.tasks.startCancelable(id, taskKindAuto, cancel); !ok {
-		c.JSON(http.StatusConflict, gin.H{"error": "自动选课已在进行中"})
+		writeAPIError(c, http.StatusConflict, codeBusy, "自动选课已在进行中")
 		return
 	}
 	rt.autoMu.Lock()
@@ -207,12 +207,14 @@ func (s *Server) autoChoose(c *gin.Context) {
 	})
 	if err != nil {
 		s.finishAutoTask(id, ctx, err, timeout)
+		s.notifyAutoChooseEnd(id, nil, err, ctx, startAt)
 		s.autoError(c, ctx, err)
 		return
 	}
 
 	s.tasks.finish(id, taskKindAuto, taskStatusDone,
 		fmt.Sprintf("已选上《%s》", chosen.Kcmc), chosen.Jxbmc)
+	s.notifyAutoChooseEnd(id, &chosen, nil, ctx, startAt)
 	c.JSON(http.StatusOK, gin.H{
 		"status": "ok",
 		"flag":   result.Flag,
@@ -230,7 +232,7 @@ func (s *Server) autoError(c *gin.Context, ctx context.Context, err error) {
 	case errors.Is(ctx.Err(), context.Canceled):
 		c.JSON(http.StatusOK, gin.H{"status": "cancelled"})
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		c.JSON(http.StatusGatewayTimeout, gin.H{"error": "自动选课超时"})
+		writeAPIError(c, http.StatusGatewayTimeout, codeTimeout, "自动选课超时")
 	case errors.Is(err, engine.ErrNotChosen):
 		c.JSON(http.StatusOK, gin.H{"status": "not_chosen", "error": err.Error()})
 	case errors.Is(err, engine.ErrNoWantedCourse), errors.Is(err, engine.ErrNoCandidates):
@@ -238,7 +240,7 @@ func (s *Server) autoError(c *gin.Context, ctx context.Context, err error) {
 	case errors.Is(err, engine.ErrNotInitialized):
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请先调用 /init 完成初始化"})
 	case errors.Is(err, protocol.ErrUnauthorized):
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "登录已失效，请重新登录"})
+		writeUnauthorized(c, "登录已失效，请重新登录")
 	default:
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 	}

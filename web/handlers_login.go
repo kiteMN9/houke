@@ -47,13 +47,16 @@ func (s *Server) login(c *gin.Context) {
 	if err := s.doLogin(id, ctx, rt, true); err != nil {
 		switch {
 		case errors.Is(err, errLoginInProgress):
-			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			writeAPIError(c, http.StatusConflict, codeBusy, err.Error())
 		case errors.Is(err, context.Canceled):
 			c.JSON(http.StatusOK, gin.H{"status": "cancelled"})
 		case errors.Is(err, context.DeadlineExceeded):
-			c.JSON(http.StatusGatewayTimeout, gin.H{"error": "登录超时（" + loginTimeoutText(timeout) + "）"})
+			writeAPIError(c, http.StatusGatewayTimeout, codeTimeout,
+				"登录超时（"+loginTimeoutText(timeout)+"）")
 		default:
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "登录失败"})
+			// 登录动作失败（密码错 / 流程失败）也是 401，但不是"会话刚失效"：
+			// 用 login_failed 区分，前端不会把输错密码显示成"登录已失效"。
+			writeAPIError(c, http.StatusUnauthorized, codeLoginFailed, "登录失败")
 		}
 		return
 	}
@@ -285,6 +288,7 @@ func (s *Server) status(c *gin.Context) {
 		"loggedIn":    rt.engine.LoggedIn(), // 登录态由 client 维护，这里只读
 		"initialized": rt.engine.Inited(),
 		"modeName":    rt.engine.ModeName(),
+		"window":      rt.engine.Window(),
 		"task":        s.tasks.snapshot(id),
 		"pending":     pending,
 		"qr":          rt.qrView(),

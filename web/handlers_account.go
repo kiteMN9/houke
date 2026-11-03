@@ -65,6 +65,59 @@ func (s *Server) updateAccount(c *gin.Context) {
 	c.JSON(http.StatusOK, updated)
 }
 
+// toggleReq 是账号级布尔开关的请求体：指针区分"没传"和"传了 false"。
+type toggleReq struct {
+	Enabled *bool `json:"enabled"`
+}
+
+// setAutoRelogin 热切换账号的自动重登开关（不重建运行态，不丢登录态）。
+func (s *Server) setAutoRelogin(c *gin.Context) {
+	var req toggleReq
+	if err := c.ShouldBindJSON(&req); err != nil || req.Enabled == nil {
+		writeAPIError(c, http.StatusBadRequest, "", "enabled 必须是布尔值")
+		return
+	}
+	id := c.Param("id")
+	if _, ok := s.store.Get(id); !ok {
+		writeAPIError(c, http.StatusNotFound, "", "账号不存在")
+		return
+	}
+	a, err := s.store.SetAutoRelogin(id, *req.Enabled)
+	if err != nil {
+		writeAPIError(c, http.StatusInternalServerError, "", err.Error())
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"status":      "ok",
+		"autoRelogin": a.autoReloginEnabled(),
+	})
+}
+
+// setAutoNotify 热切换账号的"自动选课结束是否发结果邮件"开关。
+//
+// 和自动重登一样不重建运行态：切一个通知开关不该把用户踢回登录页。
+func (s *Server) setAutoNotify(c *gin.Context) {
+	var req toggleReq
+	if err := c.ShouldBindJSON(&req); err != nil || req.Enabled == nil {
+		writeAPIError(c, http.StatusBadRequest, "", "enabled 必须是布尔值")
+		return
+	}
+	id := c.Param("id")
+	if _, ok := s.store.Get(id); !ok {
+		writeAPIError(c, http.StatusNotFound, "", "账号不存在")
+		return
+	}
+	a, err := s.store.SetAutoNotify(id, *req.Enabled)
+	if err != nil {
+		writeAPIError(c, http.StatusInternalServerError, "", err.Error())
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"status":     "ok",
+		"autoNotify": a.autoNotifyEnabled(),
+	})
+}
+
 func (s *Server) deleteAccount(c *gin.Context) {
 	if err := s.store.Delete(c.Param("id")); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})

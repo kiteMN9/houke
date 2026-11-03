@@ -90,6 +90,9 @@ func MergeCourseDetail(base []CustomCourseDic, list []CourseDetail) []CustomCour
 		if in.Yxzrs != "" {
 			d.Yxzrs = in.Yxzrs
 		}
+		if in.Xf != "" {
+			d.XF = in.Xf
+		}
 	}
 	return out
 }

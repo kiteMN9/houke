@@ -274,6 +274,14 @@ func (s *session) Tabs() []protocol.TabInfo {
 	return protocol.TabsOf(cfg)
 }
 
+// Window 返回当前选课时间窗（未初始化时为零值）。
+func (s *session) Window() protocol.WindowInfo {
+	s.mu.RLock()
+	cfg := s.cfg
+	s.mu.RUnlock()
+	return protocol.WindowOf(cfg)
+}
+
 // SelectTab 切换到指定页签，并重新拉取该页签下的选课参数。
 //
 // 和 Initialize 一样，参数抓取在私有副本上完成，成功后才发布；
@@ -367,7 +375,8 @@ func (s *session) CacheCourseDetail(list []protocol.CourseDetail) {
 
 // Choose 执行一次选课。
 func (s *session) Choose(ctx context.Context, co *protocol.CustomCourseDic) (protocol.ChooseCourseResult, error) {
-	return s.client.ChooseCourse(ctx, s.snapshot().Index, co)
+	snapshot := s.snapshot()
+	return s.client.ChooseCourse(ctx, snapshot.Index, snapshot.Window, co)
 }
 
 // Quit 退课。

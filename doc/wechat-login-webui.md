@@ -493,4 +493,6 @@ idToken 给 `ATTR_name` / `ATTR_identityTypeName` / `ATTR_organizationName`。
 "登录进行中"，直到 `loginTimeout`（默认 10 分钟）超时。这正好解释了"登录成功后
 仍显示登录进行中"。现在 `startBackgroundLogin` 对 `loginMode=wechat` 的账号直接
 返回 false，`/ping` 的响应多一个 `hint` 字段让界面提示"需要手动点微信扫码登录"。
+另外，账号关闭 `autoRelogin`（自动重登开关）时也不起后台登录，`hint` 会说明
+"已关闭自动重登，请手动点登录"。
 

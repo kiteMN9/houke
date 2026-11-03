@@ -30,7 +30,7 @@ func (s *Server) getScore(c *gin.Context) {
 	// 未登录时直接失败：WebGetScore 内部会触发一次阻塞登录（最长到账号的登录
 	// 超时），这次登录不在任务面板里、也无法取消，前端按钮会一直转圈。
 	if !rt.engine.LoggedIn() {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "尚未登录，请先登录"})
+		writeUnauthorized(c, "尚未登录，请先登录")
 		return
 	}
 	xnm := c.Query("xnm")
@@ -45,15 +45,18 @@ func (s *Server) getScore(c *gin.Context) {
 
 	list, err := rt.engine.WebGetScore(ctx, xnm, xqm)
 	if err != nil {
-		if errors.Is(err, protocol.ErrNoPermission) {
-			c.JSON(http.StatusForbidden, gin.H{"error": "该账号无此功能权限", "code": "no_permission"})
-			return
+		switch {
+		case errors.Is(err, protocol.ErrNoPermission):
+			writeAPIError(c, http.StatusForbidden, codeNoPermission, "该账号无此功能权限")
+		case errors.Is(err, protocol.ErrUnauthorized):
+			// 成绩接口不走 engine 的统一重试；会话失效同样要按统一协议报 401，
+			// 否则前端只会看到 500，登录态也不会切。
+			writeUnauthorized(c, "登录已失效，请重新登录")
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			writeAPIError(c, http.StatusGatewayTimeout, codeTimeout, "查询超时")
+		default:
+			writeAPIError(c, http.StatusInternalServerError, codeInternal, err.Error())
 		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			c.JSON(http.StatusGatewayTimeout, gin.H{"error": "查询超时"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	if list == nil {
@@ -92,9 +95,12 @@ func (s *Server) ping(c *gin.Context) {
 	relogin := false
 	hint := ""
 	if shouldRelogin(res, s.tasks.running(c.Param("id"), "")) {
-		if s.startBackgroundLogin(c.Param("id"), rt) {
+		switch {
+		case !rt.engine.AutoRelogin():
+			hint = "该账号已关闭自动重登，请手动点「登录」"
+		case s.startBackgroundLogin(c.Param("id"), rt):
 			relogin = true
-		} else {
+		default:
 			hint = "该账号用微信扫码登录，会话失效时需要手动点「微信扫码登录」"
 		}
 	}

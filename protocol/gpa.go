@@ -39,6 +39,7 @@ func (a *APIClient) GetGPA(ctx context.Context) (GPA.Report, error) {
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode() == http.StatusFound {
+		a.markSessionExpired(resp)
 		return GPA.Report{}, ErrUnauthorized
 	}
 	if resp.IsStatusFailure() {

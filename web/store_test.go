@@ -53,6 +53,101 @@ func TestLoginTimeoutConfigurable(t *testing.T) {
 	}
 }
 
+// 自动重登开关是热更新：不能因为切开关重建 runtime（会丢登录态/课程缓存）。
+func TestSetAutoReloginHotUpdatesRuntime(t *testing.T) {
+	s := newTestStore(t)
+	acc, err := s.Create(&Account{
+		Name:     "n",
+		Username: "u",
+		BaseURL:  "https://jwglxt.ycit.edu.cn/",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	rt, err := s.runtime(acc.ID)
+	if err != nil {
+		t.Fatalf("runtime: %v", err)
+	}
+	rt.engine.TestSetLoggedIn(true)
+	if !rt.engine.AutoRelogin() {
+		t.Fatal("新账号默认应开启自动重登")
+	}
+
+	updated, err := s.SetAutoRelogin(acc.ID, false)
+	if err != nil {
+		t.Fatalf("SetAutoRelogin: %v", err)
+	}
+	if updated.autoReloginEnabled() {
+		t.Error("关闭后账号仍报告 autoRelogin=true")
+	}
+	if rt.engine.AutoRelogin() {
+		t.Error("关闭后运行态 engine 仍是自动重登")
+	}
+
+	got, err := s.runtime(acc.ID)
+	if err != nil {
+		t.Fatalf("runtime again: %v", err)
+	}
+	if got != rt {
+		t.Fatal("切换自动重登不应重建运行态")
+	}
+	if !got.engine.LoggedIn() {
+		t.Fatal("切换自动重登不应丢掉登录态")
+	}
+}
+
+// 自动选课邮件开关是热更新：只落盘，不重建 runtime（否则会丢登录态）。
+func TestSetAutoNotifyKeepsRuntime(t *testing.T) {
+	s := newTestStore(t)
+	acc, err := s.Create(&Account{
+		Name:     "n",
+		Username: "u",
+		BaseURL:  "https://jwglxt.ycit.edu.cn/",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if !acc.autoNotifyEnabled() {
+		t.Fatal("新账号默认应开启自动选课邮件")
+	}
+	rt, err := s.runtime(acc.ID)
+	if err != nil {
+		t.Fatalf("runtime: %v", err)
+	}
+	rt.engine.TestSetLoggedIn(true)
+
+	updated, err := s.SetAutoNotify(acc.ID, false)
+	if err != nil {
+		t.Fatalf("SetAutoNotify: %v", err)
+	}
+	if updated.autoNotifyEnabled() {
+		t.Error("关闭后账号仍报告 autoNotify=true")
+	}
+	again, err := s.runtime(acc.ID)
+	if err != nil {
+		t.Fatalf("runtime again: %v", err)
+	}
+	if again != rt {
+		t.Fatal("切换邮件通知不应重建运行态")
+	}
+	if !again.engine.LoggedIn() {
+		t.Fatal("切换邮件通知不应丢掉登录态")
+	}
+
+	// 重新加载账号文件：开关必须已经落盘（重启后仍然生效）。
+	reloaded, err := NewAccountStore(s.filename)
+	if err != nil {
+		t.Fatalf("NewAccountStore: %v", err)
+	}
+	got, ok := reloaded.Get(acc.ID)
+	if !ok {
+		t.Fatal("重新加载后找不到账号")
+	}
+	if got.autoNotifyEnabled() {
+		t.Error("落盘后的 autoNotify 仍为开启")
+	}
+}
+
 func TestUpdateHedgingAndRoutes(t *testing.T) {
 	s := newTestStore(t)
 

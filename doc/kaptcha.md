@@ -37,7 +37,7 @@ GET /kaptcha  ──►  kaptcha.Manager.RecognizeKaptcha  ──►  "3f2nn5"  
 | `engine/engine.go` | `Options.Kaptcha` → `cli.Kaptcha` |
 | `web/store.go` | `AccountStore` 创建并持有 `*kaptcha.Manager`；`buildRuntime` 把它交给每个账号的 Engine |
 | `web/handlers_kaptcha.go` | 配置接口：读状态、保存、重载、上传模型、测试识别 |
-| `web/static/` | 侧栏「🧠 验证码模型」全局配置页 |
+| `web/static/` | 侧栏「⚙️ 服务端配置」→「🧠 验证码模型」子页 |
 | `main.go` | 启动时 `store.Kaptcha().Reload()`；失败只打印提示，不阻止 WebUI 启动 |
 
 模型只有一个，进程级加载、所有账号共用；配置是全局的，不在 `accounts.json` 里。
@@ -62,7 +62,8 @@ ONNX 解释器与预处理代码已经并入本仓库，`go.mod` **不再**依�
 
 ## 4. 配置
 
-WebUI 侧栏点「🧠 验证码模型」进入全局配置页，不依赖当前选中的账号。页面包含：
+「验证码模型」是「⚙️ 服务端配置」页的第一个子页（另一个是「✉️ 邮件通知」），
+不依赖当前选中的账号。页面包含：
 
 - **当前状态**：是否启用、模型是否加载、路径/大小/修改时间、最近错误；
 - **识别配置**：启用开关、模型路径、置信度下限、推理并发（0 = 自动）；
@@ -147,7 +148,7 @@ go test ./check_code/kaptcha/ -run TestAutoKaptchaEndToEnd -count=1 -v
 go test ./protocol/ -run Kaptcha -count=1 -v
 ```
 
-WebUI 手动验证：启动后打开「🧠 验证码模型」，保存一次配置、上传模型、再上传一张验证码
+WebUI 手动验证：启动后打开「⚙️ 服务端配置」→「🧠 验证码模型」，保存一次配置、上传模型、再上传一张验证码
 图片看识别结果；然后在账号页登录，确认字符验证码不再弹窗。
 
 ## 8. 边界

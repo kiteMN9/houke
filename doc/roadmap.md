@@ -59,8 +59,8 @@
 | 字符验证码只能人工输入 | 内置 `check_code/kaptcha` 自动识别，低置信度/连续判错回退人工（[kaptcha.md](kaptcha.md)） | ✅ |
 
 顺带删掉的死代码：`GetScoreRaw`、`GetSuggestYearTerm2`、`evaluations.go`、`keepSession.go`、
-`utils/{smtp,termcolor,userInputWithSigInt}.go`。`config/excel.go` 的 `ReadExcel` 保留
-（愿望清单导入能力），但当前没有调用方。
+`utils/{termcolor,userInputWithSigInt}.go`（`utils/smtp.go` 后来随服务端 SMTP 配置重新加入）。
+`config/excel.go` 的 `ReadExcel` 保留（愿望清单导入能力），但当前没有调用方。
 
 ### 2.2 还剩什么
 

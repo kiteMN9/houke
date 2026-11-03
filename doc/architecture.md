@@ -36,7 +36,7 @@
 | 包 | 内部依赖 |
 |---|---|
 | `school_sdk` (main) | `check_code/kaptcha`, `utils`, `web` |
-| `school_sdk/web` | `engine`, `protocol`, `protocol/config`, `check_code/kaptcha` |
+| `school_sdk/web` | `engine`, `protocol`, `protocol/config`, `check_code/kaptcha`, `utils` |
 | `school_sdk/engine` | `protocol`, `protocol/config` |
 | `school_sdk/protocol` | `check_code`, `protocol/{GPA,cas2,config,hedge,internal,rsa}`, `utils` |
 | `school_sdk/check_code/kaptcha` | 标准库 + 包内 `internal/{onnx,imagex}`（无第三方依赖） |
@@ -114,12 +114,14 @@
 | `task.go` | 长任务状态机（running/done/failed/cancelled/timeout）、事件流、SSE 订阅 |
 | `stream.go` | SSE 推帧（`snapshot` / `progress`）、心跳 |
 | `classify.go` | 请求 URL → 阶段文案（只覆盖选课类端点，登录/初始化阶段由 protocol 上报） |
-| `handlers_*.go` | 按功能拆的 handler：account / login / init / course / auto / score / wish / kaptcha |
+| `server_settings.go` | 服务端配置（`server.json`）：SMTP 设置、旧 `SMTP.json` 导入、校验与原子落盘 |
+| `handlers_*.go` | 按功能拆的 handler：account / login / init / course / auto / score / wish / kaptcha / server |
 
 ### 2.4 `utils` / `check_code`
 
 * `utils`：日志（`logger.go`，`init()` 改 `time.Local`、接管 `log` 输出）、颜色包 `utils/color`、
-  私网 IP 判断、NTP 校时与时间锁（`checkTime_windows.go`）、双击 Ctrl+C 退出（`exit.go`）。
+  私网 IP 判断、NTP 校时与时间锁（`checkTime_windows.go`）、双击 Ctrl+C 退出（`exit.go`）、
+  SMTP 发信（`smtp.go`，支持 465 隐式 TLS / 587 STARTTLS）。
 * `check_code`：验证码识别。
   滑块：`matcher.go` 用 10 张内置模板做逐列像素绝对差匹配（结果 `+70` 补偿滑块宽度），
   模板由 `sync.Once` 后台预加载，就绪标志用 `atomic.Bool`、模板与初始化错误走 `RWMutex`，
@@ -201,12 +203,21 @@
 现在 protocol 只返回 `protocol.ErrUnauthorized`：
 
 ```
-请求 → 302 到登录页 / 未登录提示 ──► ErrUnauthorized
+请求 → 302 到登录页 / 未登录提示 ──► protocol：loggedIn=false + ErrUnauthorized
         │
         ├─ engine.retryOnUnauthorized：未登录就重登一次 + 重试一次
-        │  （只一次：彻底失效时把错误交给上层，不无限重登）
-        └─ 仍失败 ──► web：401
+        │  （受账号 autoRelogin 开关控制；只一次，彻底失效就交给上层）
+        └─ 仍失败 ──► web：401 + code=unauthorized
+                        └─► 前端统一处理：徽标切未登录 + 提示 + 重拉 /status
 ```
+
+登录态不是只由登录 / 登出 / Ping 维护：**任何**业务响应发现"服务器不认这个会话"
+都会当场记账（`markSessionExpired`），否则 `/status` 会在错误弹窗之后继续报
+`loggedIn:true`，前端只能靠用户自己 Ping 才发现掉线。
+
+自动重登由账号级 `autoRelogin` 控制（默认开，见 `web/account.go`）：
+关闭后 `authorize()` 直接返回 false，课程 / 成绩 / 工具 / 初始化都只回 401，
+不在业务请求里偷偷跑登录；Ping 也不再起后台重登。
 
 ### 5.2 选课参数过期 → `Renew`
 
@@ -232,6 +243,7 @@
 | `engine.session` | `cacheMu`（RW） | 课程缓存 | 否 |
 | `web.AccountStore` | `mu`（RW） | accounts map + order + runtimes | 否（`saveLocked` 在写锁内落盘） |
 | `web.taskStore` | `mu` | 全部账号任务状态 | 否 |
+| `web.serverSettingsManager` | `mu`（RW） | `server.json` 的 SMTP 设置 | 是（保存时 `.tmp` + rename） |
 | `web.accountRuntime` | `loginMu` / `initMu` / `autoMu` / `inputMu` | 任务互斥、pendingInput | 视任务而定 |
 | `check_code` | `sync.Once` + `cacheMutex`（RW）+ `atomic.Bool` | 10 张内置模板、初始化错误、就绪标志 | 否（PNG 解码在锁外，发布时短暂持写锁） |
 | `check_code/kaptcha.Manager` | `applyMu` + `mu`（RW） | `kaptcha.json` 设置、当前 `Recognizer`、加载错误 | 是（`kaptcha.json`，保存时 `.tmp` + rename） |
@@ -263,4 +275,6 @@ hook 只补充"请求明细"，因此不挂 hook 的宿主也能显示进度。
 * `StageError{Op, Message, Err}`：`Message` 是可以直接给用户看的中文，`Op` 是阶段名，
   `errors.Is/As` 可用。
 * 判断"登录失效"只认 `errors.Is(err, protocol.ErrUnauthorized)`，不要再匹配字符串。
+* Web 的错误统一走 `web/api_error.go` 的 `writeEngineError` / `writeUnauthorized`：
+  401 必须带 `code`（`unauthorized` 或 `login_failed`），前端按 code 分支。
 * 日志：`utils/logger.go` 统一接管全局 `log`，每次启动写一个 `logs/<启动时间>.log`。

@@ -4,7 +4,9 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
+	"log"
 	"net/http"
+	"path/filepath"
 	"sync"
 
 	"github.com/gin-gonic/gin"
@@ -17,6 +19,9 @@ type Server struct {
 	store  *AccountStore
 	tasks  *taskStore
 	router *gin.Engine
+
+	// 服务端配置（server.json）：目前是 SMTP 邮件通知，和账号无关。
+	serverCfg *serverSettingsManager
 
 	// 微信扫码登录（不经过账号）：同一时刻只允许一次。
 	// wechatMu 保护指针本身，wechatFlow 自己保护结果字段。
@@ -33,7 +38,20 @@ func NewServer(store *AccountStore) (*Server, error) {
 		return nil, err
 	}
 
-	s := &Server{store: store, tasks: store.tasks, router: r}
+	// 服务端配置与 accounts.json 同目录；第一次启动时尝试导入旧版 SMTP.json。
+	cfgMgr, cfgErr := newServerSettingsManager(
+		filepath.Join(filepath.Dir(store.filename), "server.json"),
+		filepath.Join(filepath.Dir(store.filename), "SMTP.json"),
+	)
+	if cfgErr != nil {
+		if cfgMgr == nil {
+			return nil, fmt.Errorf("加载服务端配置失败: %w", cfgErr)
+		}
+		// 配置损坏不阻止启动：页面还能重新保存一份合法配置。
+		log.Printf("服务端配置有问题，暂用默认设置: %v", cfgErr)
+	}
+
+	s := &Server{store: store, tasks: store.tasks, router: r, serverCfg: cfgMgr}
 	s.registerRoutes()
 	if err := s.registerStatic(); err != nil {
 		return nil, fmt.Errorf("挂载静态资源失败: %w", err)
@@ -71,6 +89,10 @@ func (s *Server) registerRoutes() {
 		api.GET("/accounts/:id", s.getAccount)       // 账号详情
 		api.PUT("/accounts/:id", s.updateAccount)    // 更新
 		api.DELETE("/accounts/:id", s.deleteAccount) // 删除账号
+		// 会话失效时是否自动重登（热切换，不重建运行态）
+		api.PUT("/accounts/:id/auto-relogin", s.setAutoRelogin)
+		// 自动选课结束时是否给该账号发结果邮件（热切换，不重建运行态）
+		api.PUT("/accounts/:id/auto-notify", s.setAutoNotify)
 
 		// 愿望清单（高级选课的持久化配置）：GET 读取、PUT 全量替换
 		api.GET("/accounts/:id/wish", s.getWish)
@@ -119,6 +141,11 @@ func (s *Server) registerRoutes() {
 		api.GET("/accounts/:id/tools/debug", s.toolsDebug)     // 会话诊断（不要求登录，不含密码）
 
 		api.GET("/accounts/:id/ping", s.ping) // 探测会话（不重新登录）
+
+		// 服务端配置（全局，不依赖账号）：目前是 SMTP 邮件通知
+		api.GET("/server", s.getServerSettings)    // 配置 + 配置是否完整（不测试连接）
+		api.PUT("/server", s.updateServerSettings) // 保存 SMTP 配置
+		api.POST("/server/smtp/test", s.testSMTP)  // 用当前/已保存配置发测试邮件
 
 		// 字符验证码模型配置（全局，不依赖账号）
 		api.GET("/kaptcha", s.kaptchaStatus)             // 配置 + 模型加载状态
