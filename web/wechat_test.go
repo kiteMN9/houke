@@ -20,7 +20,7 @@ func TestUpsertWechatCreatesAccount(t *testing.T) {
 	store, err := NewAccountStore(path)
 	require.NoError(t, err)
 
-	id := config.Identity{Sub: "20230001", Name: "张三", Type: "学生", Org: "盐城工学院", OrgCode: "00300"}
+	id := config.Identity{Sub: "20230001", Name: "张三", Type: "学生", Org: "示例大学", OrgCode: "99999"}
 	sess := config.Session{TicketJWT: "a.b.c", Identity: &id}
 
 	acc, created, err := store.UpsertWechat(id, sess)
@@ -37,7 +37,7 @@ func TestUpsertWechatCreatesAccount(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "a.b.c", raw.TicketJWT)
 	require.NotNil(t, raw.Identity)
-	assert.Equal(t, "00300", raw.Identity.OrgCode)
+	assert.Equal(t, "99999", raw.Identity.OrgCode)
 
 	// 身份必须落盘：下次启动时才知道这个账号是谁，而不是只有一张会过期的票。
 	reloaded, err := NewAccountStore(path)
@@ -52,7 +52,7 @@ func TestUpsertWechatCreatesAccount(t *testing.T) {
 // 同一个人第二次扫码不该变成第二个账号。
 func TestUpsertWechatReusesBoundAccount(t *testing.T) {
 	store := newTestStore(t)
-	id := config.Identity{Sub: "20230001", Name: "张三", OrgCode: "00300"}
+	id := config.Identity{Sub: "20230001", Name: "张三", OrgCode: "99999"}
 	first, created, err := store.UpsertWechat(id, config.Session{TicketJWT: "first"})
 	require.NoError(t, err)
 	require.True(t, created)
@@ -82,7 +82,7 @@ func TestUpsertWechatAdoptsLegacyAccount(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	id := config.Identity{Sub: "20230001", Name: "张三", OrgCode: "00300"}
+	id := config.Identity{Sub: "20230001", Name: "张三", OrgCode: "99999"}
 	acc, created, err := store.UpsertWechat(id, config.Session{TicketJWT: "t"})
 	require.NoError(t, err)
 	assert.False(t, created, "应复用已有账号")
@@ -117,7 +117,7 @@ func TestUpsertWechatDoesNotAdoptOtherSchoolAccount(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	id := config.Identity{Sub: "20230001", Name: "张三", OrgCode: "00300"}
+	id := config.Identity{Sub: "20230001", Name: "张三", OrgCode: "99999"}
 	acc, created, err := store.UpsertWechat(id, config.Session{TicketJWT: "t"})
 	require.NoError(t, err)
 	assert.True(t, created, "不同学校应新建账号")
@@ -142,7 +142,7 @@ func TestUpsertWechatBindsSameSchoolAccount(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	id := config.Identity{Sub: "20230001", Name: "张三", OrgCode: "00300"}
+	id := config.Identity{Sub: "20230001", Name: "张三", OrgCode: "99999"}
 	acc, created, err := store.UpsertWechat(id, config.Session{TicketJWT: "t"})
 	require.NoError(t, err)
 	assert.False(t, created)

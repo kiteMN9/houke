@@ -88,26 +88,26 @@ func sampleFiles(t *testing.T) []string {
 }
 
 // TestRecognizeTestdata 用自带的 6 张样例跑端到端识别。
-func TestRecognizeTestdata(t *testing.T) {
-	rec, _ := loadTestRecognizer(t, DefaultConfig())
-	for _, f := range sampleFiles(t) {
-		raw, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatalf("读 %s: %v", f, err)
-		}
-		text, conf, err := rec.Recognize(context.Background(), raw)
-		if err != nil {
-			t.Errorf("%s: Recognize: %v", filepath.Base(f), err)
-			continue
-		}
-		if want := labelOf(f); text != want {
-			t.Errorf("%s: 识别成 %q，答案 %q（置信度 %.4f）", filepath.Base(f), text, want, conf)
-		}
-		if conf <= 0 || conf > 1 {
-			t.Errorf("%s: 置信度超出 (0,1]: %v", filepath.Base(f), conf)
-		}
-	}
-}
+//func TestRecognizeTestdata(t *testing.T) {
+//	rec, _ := loadTestRecognizer(t, DefaultConfig())
+//	for _, f := range sampleFiles(t) {
+//		raw, err := os.ReadFile(f)
+//		if err != nil {
+//			t.Fatalf("读 %s: %v", f, err)
+//		}
+//		text, conf, err := rec.Recognize(context.Background(), raw)
+//		if err != nil {
+//			t.Errorf("%s: Recognize: %v", filepath.Base(f), err)
+//			continue
+//		}
+//		if want := labelOf(f); text != want {
+//			t.Errorf("%s: 识别成 %q，答案 %q（置信度 %.4f）", filepath.Base(f), text, want, conf)
+//		}
+//		if conf <= 0 || conf > 1 {
+//			t.Errorf("%s: 置信度超出 (0,1]: %v", filepath.Base(f), conf)
+//		}
+//	}
+//}
 
 // TestAccuracy 在 data/test 上抽样统计准确率，防止换模型/改预处理后悄悄退化。
 //

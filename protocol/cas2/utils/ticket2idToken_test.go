@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"encoding/base64"
 	"testing"
 	"time"
 
@@ -9,13 +10,66 @@ import (
 )
 
 func Test_extractIDToken(t *testing.T) {
-	tokenString := "eyJhbGciOiJIUzUxMiJ9.eyJpZGVudGl0eVR5cGVDb2RlIjoiUzAyIiwiYXVkIjoiaHR0cHM6XC9cL3BvcnRhbC55Y2l0LmVkdS5jblwvP3BhdGg9aHR0cHMlM0ElMkYlMkZwb3J0YWwueWNpdC5lZHUuY24lMkZtYWluLmh0bWwiLCJzdWIiOiIyMzAxMDMwMTEwMjMiLCJvcmdhbml6YXRpb25Db2RlIjoiMDAzMDAiLCJpc3MiOiJodHRwczpcL1wvY2FzMi55Y2l0LmVkdS5jblwvY2FzIiwiaWRUb2tlbiI6ImV5SmhiR2NpT2lKU1V6VXhNaUo5LmV5SnpkV0lpT2lJeU16QXhNRE13TVRFd01qTWlMQ0pwYzNNaU9pSmpZWE15TG5samFYUXVaV1IxTG1OdUlpd2lRVlJVVWw5cFpHVnVkR2wwZVZSNWNHVkpaQ0k2SWpNM01XWTVOVFF3T0RWalpERXhaV1JoT0RFMU9EWmxaV0U0WXpsa05qTmlJaXdpUVZSVVVsOWhZMk52ZFc1MFNXUWlPaUkyWkRNM1lUbGtNRFEzTlRreE1XVmxNRGt5WmpJeU9ESXhPRFJpWlRZeU9TSXNJa0ZVVkZKZmRYTmxja2xrSWpvaU5tUXlZemcyTkRBME56VTVNVEZsWlRBNU1tWXlNamd5TVRnMFltVTJNamtpTENKQlZGUlNYMjVoYldVaU9pTG1pTFRtbUk3b3Zva2lMQ0pCVkZSU1gybGtaVzUwYVhSNVZIbHdaVU52WkdVaU9pSlRNRElpTENKQlZGUlNYMmxrWlc1MGFYUjVWSGx3WlU1aGJXVWlPaUxtbkt6bnA1SG5sSjhpTENKQlZGUlNYMkZqWTI5MWJuUk9ZVzFsSWpvaU1qTXdNVEF6TURFeE1ESXpJaXdpUVZSVVVsOXZjbWRoYm1sNllYUnBiMjVPWVcxbElqb2k1WXlXNWEybTVZeVc1YmVsNWEybTZabWk0NENCNWJxVTVvQ2w1NjZoNTVDRzVMaU81YTZKNVlXbzViZWw1NmlMNWEybTZabWk3N3lJNVpDSTU3Mnk3N3lKSWl3aVFWUlVVbDkxYzJWeVRtRnRaU0k2SXVhSXRPYVlqdWktaVNJc0ltVjRjQ0k2TVRjMk1qYzRNRE15TWl3aVFWUlVVbDl2Y21kaGJtbDZZWFJwYjI1SlpDSTZJakF3TXpBd0lpd2lhV0YwSWpveE56WXlOelV4TlRJeUxDSnFkR2tpT2lKSlJDMVViMnRsYmkweE9ESXlOeTFVZG1WNE9ETTVOUzB0VlZFMmFIZDJiVFJzVFVsalZGVkpiRWRNVW1wWWNpSXNJbkpsY1NJNkltaDBkSEJ6T2k4dmNHOXlkR0ZzTG5samFYUXVaV1IxTG1OdUx5SXNJa0ZVVkZKZmIzSm5ZVzVwZW1GMGFXOXVRMjlrWlNJNklqQXdNekF3SW4wLkt4SEN6bDZUR2h3dVpGazdlRk5mRzUtNGwzSUFPV3JyQldPZmVUTkNsajBfcmU5S2QzZllRSks4UThGbGszRUU5QmNWeVhiR3BVNGZqbHp5N2NYM19nVDRUN21MOUI0UUFHRHdJWGZIeEdKeHRmRGZfMmZjU0sxdDNQYl85SmJxWmQ5X0hrblNMeXotVEhENWlpM1NhMGZWNlBQWlZackhVZGZfbWRMZVkxb0k3X1d1OFlWSWZ4ejRsUU4zLU0xdFpfTnE2NkdyZWVjM29jTXc2XzlSNGJ3cVVqaDk2YjlzdHdQSGNOMWpWRXJQU1JyZGdURE5VRnNTOFZUYW0tdEM1Q1RRVUE1UzQ5TEdrQkx5TkQzeHRrU1B3TWtUeGNLaVFUaHNEQ1RCNmp6X3l1dlV4LWZTejBjVDhBQk45YTlMUEd5X2VQUHJUTmlCYXRpamxZU0Z1USIsImV4cCI6MTc2MjgwOTEyMiwiaWF0IjoxNzYyNzUxNTIyLCJqdGkiOiJTVC02NjM2My1JZVcyTFl1eU5RVkw2enBRbzFERzdRRy1PeVFjYXMtc2VydmVyLXdlYmFwcC1jNTViNTk2YzQtYjl2OHQifQ==.7IjPR3W2kzbzLuLTKxTJqOXr5s1dqYK-I2atSRl5RIE-F1Phu0Uvyr1AtHxRQWj0kq6dBz0mvZgtNFUU_g1-7Q"
+	exp := time.Date(2030, time.January, 2, 3, 4, 5, 0, time.FixedZone("CST", 8*60*60))
+	// 票据全是编的：学号、姓名、学校都不指向真人。
+	inner := makeJWT(t, map[string]any{
+		"sub":                   "20230001",
+		"ATTR_name":             "张三",
+		"ATTR_identityTypeName": "本科生",
+		"ATTR_organizationName": "示例大学",
+	})
+	outer := makeJWT(t, map[string]any{
+		"sub":              "20230001",
+		"organizationCode": "99999",
+		"idToken":          inner,
+		"exp":              exp.Unix(),
+	})
 
-	_, expTime, account, err := ExtractIDToken(tokenString)
+	idToken, expTime, account, err := ExtractIDToken(outer)
 	require.NoError(t, err)
+	assert.Equal(t, inner, idToken)
+	// 别拿 time.Local 比墙上时间：CI 跑在 UTC 机器上，比时刻本身才对。
+	assert.True(t, exp.Equal(expTime), "exp = %s, want %s", expTime.In(exp.Location()), exp)
+	assert.Equal(t, "20230001", account)
 
-	//fmt.Printf("成功提取idToken: %s\n", idToken)
-	//fmt.Println("expTime, account:", expTime, account)
-	assert.Equal(t, time.Date(2025, time.November, 11, 5, 12, 2, 0, time.Local), expTime)
-	assert.Equal(t, "230103011023", account)
+	// 内层 idToken 用 base64url，解开后才有姓名 / 学校这些展示信息。
+	tk, err := ParseTicket(outer)
+	require.NoError(t, err)
+	assert.Equal(t, "20230001", tk.Identity.Sub)
+	assert.Equal(t, "99999", tk.Identity.OrgCode)
+	assert.Equal(t, "张三", tk.Identity.Name)
+	assert.Equal(t, "本科生", tk.Identity.Type)
+	assert.Equal(t, "示例大学", tk.Identity.Org)
+}
+
+// 票据段可能是无填充的 base64url（JWT 规范）、带 padding 的 base64url，
+// 也可能混用标准字母表，解码都得认。旧实现先补 '=' 再交给 RawStdEncoding，
+// 这种票直接解坏——真实内层 idToken 就中过招。
+func TestDecodeJWTPart(t *testing.T) {
+	payloads := []struct {
+		name string
+		raw  []byte
+	}{
+		{"json", []byte(`{"ATTR_name":"张三"}`)},
+		{"url-alphabet", []byte{0xfb, 0xff}}, // base64url 是 "-_8"，且长度 3%4 != 0
+	}
+	encodings := []struct {
+		name string
+		enc  *base64.Encoding
+	}{
+		{"rawurl", base64.RawURLEncoding},
+		{"url", base64.URLEncoding},
+		{"rawstd", base64.RawStdEncoding},
+		{"std", base64.StdEncoding},
+	}
+
+	for _, p := range payloads {
+		for _, e := range encodings {
+			t.Run(p.name+"/"+e.name, func(t *testing.T) {
+				got, err := decodeJWTPart(e.enc.EncodeToString(p.raw))
+				require.NoError(t, err)
+				assert.Equal(t, p.raw, got)
+			})
+		}
+	}
 }

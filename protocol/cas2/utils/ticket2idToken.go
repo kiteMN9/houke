@@ -100,25 +100,29 @@ func ExtractIDToken(tokenString string) (string, time.Time, string, error) {
 // decodeJWTPayload 解出 JWT 的 payload 部分（不校验签名：票据来源是
 // 门户自己 302 回来的，验签既没有公钥也没有必要）。
 func decodeJWTPayload(tokenString string, v any) error {
-	parts := strings.Split(tokenString, ".")
+	parts := strings.Split(strings.TrimSpace(tokenString), ".")
 	if len(parts) != 3 {
 		return fmt.Errorf("无效的token格式，期望3部分，实际得到%d部分", len(parts))
 	}
-	payload := parts[1]
-	// 添加 padding 如果必要（base64 解码需要正确的 padding）
-	if len(payload)%4 != 0 {
-		payload += strings.Repeat("=", 4-len(payload)%4)
-	}
-	decodedBytes, err := base64.RawStdEncoding.DecodeString(payload)
+	decodedBytes, err := decodeJWTPart(parts[1])
 	if err != nil {
-		// 如果 RawStdEncoding 失败，尝试标准编码
-		decodedBytes, err = base64.StdEncoding.DecodeString(payload)
-		if err != nil {
-			return fmt.Errorf("Base64解码失败: %w", err)
-		}
+		return fmt.Errorf("Base64解码失败: %w", err)
 	}
 	if err := json.Unmarshal(decodedBytes, v); err != nil {
 		return fmt.Errorf("JSON解析失败: %w", err)
 	}
 	return nil
+}
+
+// decodeJWTPart 解 JWT 的某一段。
+//
+// JWT 规定用无填充的 base64url，实际票据里也可能混用标准字母表，两种都认。
+// 先去掉 padding：Raw 系列编码不接受 '='，旧代码手动补 padding 再交给
+// RawStdEncoding，必然解码失败——内层 idToken 的姓名 / 学校就是这么丢的。
+func decodeJWTPart(part string) ([]byte, error) {
+	part = strings.TrimRight(part, "=")
+	if b, err := base64.RawURLEncoding.DecodeString(part); err == nil {
+		return b, nil
+	}
+	return base64.RawStdEncoding.DecodeString(part)
 }
