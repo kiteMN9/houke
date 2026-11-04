@@ -56,9 +56,9 @@ func (a *APIClient) GetIndexParams(ctx context.Context, cfg *APIConfig, opts Ind
 		reqAt := time.Now()
 		resp, err := a.hedgeC.R().
 			SetContext(ctx).
-			SetQueryParam("gnmkdm", "N253512").
+			SetQueryParam("gnmkdm", baseCfg.Gndmmk_xsxk).
 			SetFormData(map[string]string{
-				"gnmkdm":  "N253512", // 这个接口能post
+				"gnmkdm":  baseCfg.Gndmmk_xsxk, // 这个接口能post
 				"czdmKey": "00",
 			}).
 			Get(baseCfg.ChooseCourseIndex)
@@ -192,7 +192,7 @@ func (a *APIClient) GetCourseListPre(ctx context.Context, cfg *APIConfig, save b
 
 		resp, err := a.hedgeC.R().
 			SetContext(ctx).
-			SetQueryParam("gnmkdm", "N253512").
+			SetQueryParam("gnmkdm", baseCfg.Gndmmk_xsxk).
 			SetFormData(formData).
 			Post(baseCfg.ChooseCourseListPre)
 
@@ -318,7 +318,7 @@ func (a *APIClient) GetCourseList(ctx context.Context, cfg *APIConfig) ([]Course
 		requ := a.hedgeC.R().
 			SetContext(ctx).
 			SetQueryParams(map[string]string{
-				"gnmkdm": "N253512",
+				"gnmkdm": baseCfg.Gndmmk_xsxk,
 			}).
 			SetFormData(formData)
 
@@ -464,7 +464,7 @@ func (a *APIClient) GetCourseDetail(ctx context.Context, cfg *APIConfig, kch_id 
 		requ := a.hedgeC.R().
 			SetContext(ctx).
 			SetQueryParams(map[string]string{
-				"gnmkdm": "N253512",
+				"gnmkdm": baseCfg.Gndmmk_xsxk,
 			}).
 			SetFormData(formData)
 
@@ -585,7 +585,7 @@ func (a *APIClient) ChooseCourse(ctx context.Context, idx IndexInfo, win Selecti
 		}
 		resp, err := a.hedgeC.R().
 			SetQueryParams(map[string]string{
-				"gnmkdm": "N253512",
+				"gnmkdm": baseCfg.Gndmmk_xsxk,
 				//"su":     a.cfg.Account,
 			}).SetContext(ctx).
 			SetFormData(formData).
@@ -635,7 +635,7 @@ func (a *APIClient) GetSelected(ctx context.Context, xkxnm, xkxqm string) ([]Cho
 		resp, err := a.hedgeC.R().
 			SetContext(ctx).
 			SetTimeout(time.Second*23).
-			SetQueryParam("gnmkdm", "N253512").
+			SetQueryParam("gnmkdm", baseCfg.Gndmmk_xsxk).
 			//SetQueryParam("su", a.cfg.Account).
 			SetFormData(map[string]string{
 				"xkxnm": xkxnm,
@@ -694,7 +694,7 @@ func (a *APIClient) QuitCourse(ctx context.Context, idx IndexInfo, jxb_ids, kch_
 	for range 3 {
 		resp, err := a.hedgeC.R().
 			SetContext(ctx).
-			SetQueryParam("gnmkdm", "N253512").
+			SetQueryParam("gnmkdm", baseCfg.Gndmmk_xsxk).
 			//SetQueryParam("su", a.cfg.Account).
 			SetFormData(map[string]string{
 				"kch_id":  kch_id,
@@ -761,7 +761,7 @@ func (a *APIClient) isCourseRegistered(ctx context.Context, cfg *APIConfig, co *
 		resp, err := a.hedgeC.R().
 			SetContext(ctx).
 			SetTimeout(time.Second*19).
-			SetQueryParam("gnmkdm", "N253512").
+			SetQueryParam("gnmkdm", baseCfg.Gndmmk_xsxk).
 			//SetQueryParam("su", a.cfg.Account).
 			SetFormData(formData).
 			Post(baseCfg.CourseRegistered)
@@ -823,7 +823,7 @@ func (a *APIClient) getCourseDoJxb(ctx context.Context, cfg *APIConfig, jxb_ids 
 		requ := a.hedgeC.R().
 			SetContext(ctx).
 			SetQueryParams(map[string]string{
-				"gnmkdm": "N253512",
+				"gnmkdm": baseCfg.Gndmmk_xsxk,
 				//"su":     a.cfg.Account,
 			}).
 			SetFormData(formData)

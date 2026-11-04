@@ -45,15 +45,18 @@ const (
 
 // 选课
 const (
+	Gndmmk_xsxk              = "N253512"                                    // 功能模块代码
 	ChooseCourseIndex        = "/xsxk/zzxkyzb_cxZzxkYzbIndex.html"          // 选课基础页面
-	ChooseCourseListPre      = "/xsxk/zzxkyzb_cxZzxkYzbDisplay.html"        // 搜索课程前的参数准备，浏览器有缓存的话貌似会第一个请求这个
+	ChooseCourseListPre      = "/xsxk/zzxkyzb_cxZzxkYzbDisplay.html"        // 课程页签参数
 	ChooseCourseCourseList   = "/xsxk/zzxkyzb_cxZzxkYzbPartDisplay.html"    // 搜索课程接口
 	ChooseCourseCourseDetail = "/xsxk/zzxkyzb_cxJxbWithKchZzxkYzb.html"     // 查询课程号对应的详细信息
 	ChooseSimpleDoJxb        = "/xsxk/zzxkyzb_cxZkcZzxkYzb.html"            // 查询实践课 jxb_id[] -> do_jxb_id
 	ChooseCourse             = "/xsxk/zzxkyzbjk_xkBcZyZzxkYzb.html"         // 发送选课
 	CourseSelectedList       = "/xsxk/zzxkyzb_cxZzxkYzbChoosedDisplay.html" // 查询已选课程接口
-	QuitCourse               = "/xsxk/zzxkyzb_tuikBcZzxkYzb.html"           // 退课
-	CourseRegistered         = "/xsxk/zzxkyzb_xkJcInXksjZzxkYzb.html"       // 课程选课检查
+
+	//SelectedCourses  = "/xsxk/zzxkyzb_cxYxkAndKc.html"        // 已选课程查询 参考自 GCCTool 实测盐工不能用（未定义）
+	QuitCourse       = "/xsxk/zzxkyzb_tuikBcZzxkYzb.html"     // 退课
+	CourseRegistered = "/xsxk/zzxkyzb_xkJcInXksjZzxkYzb.html" // 课程选课检查
 
 	//ChooseCourseCourseDetail2 = "/xsxk/zzxkyzbjk_cxJxbWithKchZzxkYzb.html" // 查询课程号对应的详细信息
 	//ChooseCourse2             = "/xsxk/zzxkyzbjk_xkBcZyZzxkYzb.html"       // 发送选课

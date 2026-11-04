@@ -195,7 +195,6 @@ func NewBasicClient(cfg config.Settings) (*resty.Client, *resty.Client) {
 		if transport, _ := client.HTTPTransport(); transport != nil {
 			transport.IdleConnTimeout = 68 * time.Second
 		}
-
 	}
 	client.SetHeader("Connection", "keep-alive")
 

@@ -416,9 +416,9 @@ type CourseListDic struct {
 	KchId     string `json:"kch_id"`           // 课程号 id
 	Kclxmc    string `json:"kclxmc,omitempty"` // 公共选修课
 	Kcmc      string `json:"kcmc"`             // 课程名称  "艺术哲学：美是如何诞生的(艺术类)"
-	Kcrow     string `json:"kcrow"`
-	Kklxdm    string `json:"kklxdm"` // 关键参数，区分不同类型选课  '10'
-	Kzmc      string `json:"kzmc"`   // 课程性质  "艺术类"
+	Kcrow     string `json:"kcrow"`            // RowNum int 行号
+	Kklxdm    string `json:"kklxdm"`           // 课程类型代码，区分不同类型选课  '10'
+	Kzmc      string `json:"kzmc"`             // 课程性质  "艺术类"
 	Listnav   string `json:"listnav"`
 	LocaleKey string `json:"localeKey"`
 	Month     string `json:"month"`
@@ -432,7 +432,7 @@ type CourseListDic struct {
 	Xf          string `json:"xf"`    // 学分  "1.5"
 	Xxkbj       string `json:"xxkbj"` // 选修课标记?
 	Year        string `json:"year"`  // '2025'
-	Yxzrs       string `json:"yxzrs"` // 已选人数  "70"
+	Yxzrs       string `json:"yxzrs"` // 已选总人数  "70"
 	Zcongbj     string `json:"zcongbj"`
 
 	QueryModel QueryModel `json:"queryModel"`
@@ -483,17 +483,21 @@ type CourseDetail struct {
 	Jxbrl  string `json:"jxbrl"`  // 教学班容量
 	Xqumc  string `json:"xqumc"`  // 校区名称 北校区 南校区
 	Xqh_id string `json:"xqh_id"` // 校区号 3
-	Kcxzmc string `json:"kcxzmc"` // kcxzmc: 必修
+	Kcxzmc string `json:"kcxzmc"` // 课程性质名称: 必修
 	Kkxymc string `json:"kkxymc"` // kkxymc: 外国语学院
 	Jxms   string `json:"jxms"`   // jxms: 理论
 	Kclbmc string `json:"kclbmc"` // kclbmc: 公共必修课
 	Xf     string `json:"xf"`
 	Yqmc   string `json:"yqmc"` //'yqmc': '--'
 
-	Yxzrs string `json:"yxzrs"` // // 已选人数 9.0正方
+	Yxzrs string `json:"yxzrs"` // 已选总人数 9.0正方
 
 	QueryModel QueryModel `json:"queryModel"`
 	UserModel  UserModel  `json:"userModel"`
+
+	//Jsm       string `json:"jsm"`    // Teacher 参考自 GCCTool
+	//Jsmc      string `json:"jsmc"`   // Room 参考自 GCCTool
+	//Zrs         string `json:"zrs"` // 总人数 参考自 GCCTool 盐工无
 }
 
 type CustomCourseDic struct {
