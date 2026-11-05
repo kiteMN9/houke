@@ -107,6 +107,8 @@ func (s *Server) newGuestRuntime() (*accountRuntime, error) {
 		OnInitStage: rt.initStage,
 		OnRequest:   rt.requestStage,
 		OnQRCode:    rt.setQRCode,
+		// 扫码期间还没有账号，但走的是同一批门户地址：复用账号连接池。
+		Transports: s.store.transports,
 	})
 	if err != nil {
 		return nil, err

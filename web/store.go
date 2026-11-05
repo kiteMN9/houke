@@ -34,6 +34,11 @@ type AccountStore struct {
 	// 字符验证码识别器：所有账号共用一份模型（约 11 MB），运行态拿到的是
 	// 这个稳定指针，因此 WebUI 里换模型 / 开关识别会立即对所有账号生效。
 	kaptchaMgr *kaptcha.Manager
+
+	// 跨账号共享的底层连接池：账号共用 transport，cookie jar / resty 客户端
+	// 仍每账号独立（见 protocol.TransportPool）。账号配置变更重建运行态时
+	// 不清池，只在服务关闭时统一关空闲连接。
+	transports *protocol.TransportPool
 }
 
 // Kaptcha 返回字符验证码配置管理器；WebUI 的模型配置页会用到。
@@ -60,6 +65,7 @@ func NewAccountStore(filename string) (*AccountStore, error) {
 		runtimes:   make(map[string]*accountRuntime),
 		tasks:      newTaskStore(),
 		kaptchaMgr: mgr,
+		transports: protocol.NewTransportPool(),
 	}
 	if err := s.load(); err != nil {
 		return nil, err

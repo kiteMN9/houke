@@ -138,6 +138,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if err != nil {
 		_ = s.httpServer.Close()
 	}
+	// 在途请求结束后再关共享连接池的空闲连接。只在这里关，不按账号关：
+	// dropRuntime 只是丢运行态，其他账号还在复用同一个 transport。
+	if s.store != nil {
+		s.store.transports.CloseIdleConnections()
+	}
 	log.Printf("WebUI 已停止（取消 %d 个运行中的任务）", n)
 	return err
 }

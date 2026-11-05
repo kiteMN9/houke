@@ -143,12 +143,24 @@ func (a *APIClient) SetQRHandler(h func(*QRCode)) {
 //
 // 它不校验 baseURL：调用方（NewAPIClient / NewClientWithCookieJar）已经用
 // config.ValidateBaseURL 把过关，这里只负责组装。
+//
+// 每个账号一套 resty.Client / cookie jar / transport（transport 参数见
+// mainTransportProfile）。需要跨账号共享连接池时走 newBasicClient + TransportPool。
 func NewBasicClient(cfg config.Settings) (*resty.Client, *resty.Client) {
+	client, hedgeClient := newBasicClient(cfg, buildTransport(mainTransportProfile(cfg)))
+	return client, hedgeClient
+}
+
+// newBasicClient 用调用方给的底层 transport 组装 resty 客户端。
+//
+// cookie jar 由 resty.New() 新建，每个账号独立；rt 可以是 TransportPool
+// 里的共享 transport，也可以是 buildTransport 新建的独占 transport。
+// transport 级参数（代理 / TLS / 空闲超时）由 buildTransport 一次性设置，
+// 这里不再改，避免多个账号同时改同一个共享 transport。
+func newBasicClient(cfg config.Settings, rt http.RoundTripper) (*resty.Client, *resty.Client) {
 	baseURL := cfg.BaseURL
-	client := resty.NewWithTransportSettings(&resty.TransportSettings{
-		ResponseHeaderTimeout: 35 * time.Second,
-		DisableKeepAlives:     false,
-	}).
+	client := resty.New().
+		SetTransport(rt).
 		//SetRedirectPolicy(resty.RedirectNoPolicy()).
 		SetRedirectPolicy(resty.RedirectPolicyFunc(func(req *http.Request, via []*http.Request) error {
 			if req.Response != nil {
@@ -160,18 +172,6 @@ func NewBasicClient(cfg config.Settings) (*resty.Client, *resty.Client) {
 		})).
 		SetBaseURL(baseURL)
 	client.Client().Timeout = 55 * time.Second //
-
-	if os.Getenv("proxy") == "1" {
-		client.SetProxy("http://127.0.0.1:8866")
-		if tls_ := client.TLSClientConfig(); tls_ != nil {
-			tls_.InsecureSkipVerify = true
-			//client.SetCloseConnection(true)
-		}
-		transport, err := client.HTTPTransport()
-		if err == nil {
-			transport.DisableKeepAlives = false
-		}
-	}
 
 	if os.Getenv("trace") == "1" {
 		client.SetTrace(true)
@@ -191,11 +191,6 @@ func NewBasicClient(cfg config.Settings) (*resty.Client, *resty.Client) {
 
 	client.AddContentDecompresser("br", internal.DecompressBrotli)
 
-	if strings.HasPrefix(cfg.BaseURL, "https://") {
-		if transport, _ := client.HTTPTransport(); transport != nil {
-			transport.IdleConnTimeout = 68 * time.Second
-		}
-	}
 	client.SetHeader("Connection", "keep-alive")
 
 	if cfg.Hedging {
@@ -225,6 +220,39 @@ func NewBasicClient(cfg config.Settings) (*resty.Client, *resty.Client) {
 	return client, client
 }
 
+// Option 是 NewAPIClient 的可选装配项。
+type Option func(*clientOptions)
+
+// clientOptions 收集可选装配项；零值表示全部走默认行为。
+type clientOptions struct {
+	transports *TransportPool
+}
+
+// WithTransportPool 让多个账号共用底层连接池。
+//
+// 共享的只有 transport：每个账号仍然拿到自己的 resty.Client、http.Client
+// 和 cookie jar（见 newBasicClient），所以不会串号。不传这个 Option 时
+// 每个账号各建一份 transport，行为与旧版一致。
+func WithTransportPool(p *TransportPool) Option {
+	return func(o *clientOptions) { o.transports = p }
+}
+
+// transport 返回主链路（jwglxt）的 transport：传了池就取共享的，否则新建。
+func (o clientOptions) transport(profile transportProfile) http.RoundTripper {
+	if o.transports != nil {
+		return o.transports.transport(profile)
+	}
+	return buildTransport(profile)
+}
+
+// cas2Transport 返回门户登录链路的 transport；nil 表示让 cas2.NewCas 自建。
+func (o clientOptions) cas2Transport() http.RoundTripper {
+	if o.transports == nil {
+		return nil
+	}
+	return o.transports.transport(cas2TransportProfile())
+}
+
 // NewAPIClient 构造客户端。sess 是会话产物（JWT / 学到的 route / 修正过的地址），
 // 由上层持有并在登录结束后取走持久化；传 nil 表示这次不需要跨进程复用。
 //
@@ -232,7 +260,13 @@ func NewBasicClient(cfg config.Settings) (*resty.Client, *resty.Client) {
 //
 // baseURL 不合法时返回错误而不是退出进程：调用方可能是一个 Web 请求、
 // 一个测试、或者将来别的宿主，它们都应该有机会把错误展示给用户。
-func NewAPIClient(cfg config.Settings, sess *config.Session, isCas2, WX bool, route string) (*APIClient, error) {
+func NewAPIClient(cfg config.Settings, sess *config.Session, isCas2, WX bool, route string, opts ...Option) (*APIClient, error) {
+	var o clientOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&o)
+		}
+	}
 	if sess == nil {
 		sess = config.NewSession()
 	}
@@ -247,7 +281,7 @@ func NewAPIClient(cfg config.Settings, sess *config.Session, isCas2, WX bool, ro
 		fmt.Println("当前使用的是私网地址，请确保网络可达性")
 		fmt.Println(cfg.BaseURL)
 	}
-	client, htc := NewBasicClient(cfg)
+	client, htc := newBasicClient(cfg, o.transport(mainTransportProfile(cfg)))
 	if route != "" {
 		cookie := &http.Cookie{ // 过 nginx有这个
 			Name:  "route",
@@ -285,7 +319,9 @@ func NewAPIClient(cfg config.Settings, sess *config.Session, isCas2, WX bool, ro
 	// 只有启用门户登录时才需要 cas2 客户端：它会额外构造两个 resty 客户端，
 	// 未启用的账号不该为它付出代价（hook 下发对 nil 是安全的）。
 	if apiClient.enableCas2 {
-		apiClient.cas2Client = cas2.NewCas(cfg.Account, cfg.CasPassword, cfg.UserAgent, WX, cfg, sess)
+		// cas2Transport 为 nil 时 NewCasWithTransport 走原路径自建 transport；
+		// 传了池则主链路与门户链路各按自己的配置档复用共享连接。
+		apiClient.cas2Client = cas2.NewCasWithTransport(cfg.Account, cfg.CasPassword, cfg.UserAgent, WX, cfg, sess, o.cas2Transport())
 		// 门户登录内部的取登录页 / 加密密码 / 提交 / 失败原因都翻译成
 		// 统一的 LoginPhase 上报：否则 WebUI 在整个门户登录期间只能看到
 		// 一条"正在登录统一身份认证"。

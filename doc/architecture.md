@@ -65,6 +65,7 @@
 | 文件 | 职责 |
 |---|---|
 | `client.go` | `APIClient` 定义、resty 构造、路由 cookie、`Settings()` / `Session()` 快照 |
+| `transport.go` | 跨账号共享的 `*http.Transport` 池：按配置档（响应头超时 / 空闲超时 / 代理 / TLS）分组复用；cookie jar 与 resty 客户端仍每账号独立 |
 | `login.go` | 登录主流程（1251 行）：滑块 / 字符验证码 / 无验证码三条分支，密码错误重试 |
 | `kaptcha.go` | 字符验证码自动识别：`KaptchaRecognizer` 接口、置信度/文本校验、连续判错后的降级策略（见 [kaptcha.md](kaptcha.md)） |
 | `loginState.go` | 登录态（`atomic.Bool`）、`loginCoord` 串行锁与冷静期 |
@@ -246,6 +247,7 @@
 |---|---|---|---|
 | `protocol.APIClient` | `login.mu` + gate | 登录流程串行化（per client） | 是（登录本身就要发请求） |
 | `protocol.APIClient` | `loginStage.mu` / `initStage.mu` | 阶段快照 | 否（observer 在锁外调用） |
+| `protocol.TransportPool` | `mu`（Mutex） | `transportProfile → *http.Transport` | 否（首次建 transport 不发起连接） |
 | `engine.session` | `initMu` | 初始化 / Renew | 是（设计上就是要持锁做 IO） |
 | `engine.session` | `mu`（RW） | 已发布的 `APIConfig` | 否 |
 | `engine.session` | `cacheMu`（RW） | 课程缓存 | 否 |
@@ -257,6 +259,8 @@
 | `check_code/kaptcha.Manager` | `applyMu` + `mu`（RW） | `kaptcha.json` 设置、当前 `Recognizer`、加载错误 | 是（`kaptcha.json`，保存时 `.tmp` + rename） |
 
 已知薄弱点见 [analysis.md](analysis.md#3-结构性问题)。
+
+`protocol.TransportPool` 让同一配置档的账号共用一个 `*http.Transport`（切换账号 / 重登时复用 TCP + TLS 连接），但每个账号仍持有自己的 `resty.Client`、`http.Client` 与 cookie jar——身份在 jar 里，Go 的连接池只按 `(proxy, scheme, host)` 分桶，因此共享 transport 不会串号。空闲连接只在 `Server.Shutdown` 时统一关闭；账号配置变更（`dropRuntime`）只丢运行态、不清池，避免误伤其他账号。
 
 ---
 

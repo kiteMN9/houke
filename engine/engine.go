@@ -42,6 +42,10 @@ type Options struct {
 	// Kaptcha 是字符验证码的自动识别器（可选）。注入后登录先识别、识别不了
 	// 再走 Ask 等人工输入；nil 就是纯人工。
 	Kaptcha protocol.KaptchaRecognizer
+	// Transports 是跨账号共享的底层连接池（可选）。nil 表示每个账号各建
+	// 一份 transport；Web 宿主传一份，账号切换 / 重登时复用 TCP + TLS 连接。
+	// 共享的只有 transport：cookie jar 与 resty 客户端仍每账号独立。
+	Transports *protocol.TransportPool
 }
 
 // LoginKind 是账号的登录方式。
@@ -91,7 +95,11 @@ func New(settings config.Settings, sess *config.Session, kind LoginKind, opts Op
 	isCas2 := kind == LoginCAS || kind == LoginWeChat
 	wx := kind == LoginWeChat
 
-	cli, err := protocol.NewAPIClient(settings, sess, isCas2, wx, "")
+	var clientOpts []protocol.Option
+	if opts.Transports != nil {
+		clientOpts = append(clientOpts, protocol.WithTransportPool(opts.Transports))
+	}
+	cli, err := protocol.NewAPIClient(settings, sess, isCas2, wx, "", clientOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -405,7 +413,10 @@ func (e *Engine) UserPhoto(ctx context.Context) ([]byte, string, error) {
 		body, contentType, err := e.client.WebGetUserPhoto(ctx)
 		return photo{body: body, contentType: contentType}, err
 	})
-	return r.body, r.contentType, err
+	if err != nil {
+		return nil, "", err
+	}
+	return r.body, r.contentType, nil
 }
 
 // Cookies 返回当前会话 Cookie 快照和拼好的请求头，不会发起网络请求。

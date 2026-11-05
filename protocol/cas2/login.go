@@ -96,18 +96,50 @@ func (c *Client) SetProtocolHook(h internal.ProtocolHook) {
 	attachHooks(c)
 }
 
+// cas2 门户链路的 transport 配置档。protocol 跨账号共享连接池时按这三个值
+// 给 cas2 链路分组，因此它们必须与 NewCas 自建 transport 的参数一致；
+// 改这里等于同时改共享池的分组。
+const (
+	TransportResponseHeaderTimeout = 31 * time.Second
+	TransportIdleConnTimeout       = 68 * time.Second
+	TransportMaxIdleConnsPerHost   = 8
+)
+
 func NewCas(account, password, UA string, wx bool, fCfg config.Settings, sess *config.Session) *Client {
+	return NewCasWithTransport(account, password, UA, wx, fCfg, sess, nil)
+}
+
+// NewCasWithTransport 用调用方提供的 transport 构造门户客户端。
+//
+// rt == nil 时自建 transport（与旧 NewCas 完全一致）；rt != nil 时使用共享
+// transport：transport 级参数（代理 / TLS 跳过校验 / 空闲超时）由调用方在
+// 池里一次性设好，这里不再覆盖。cookie jar 仍由 resty.New() 新建，
+// portalHttp 依旧是 Clone，同账号的 cas2 / portal 两个域共享 transport + jar。
+func NewCasWithTransport(account, password, UA string, wx bool, fCfg config.Settings, sess *config.Session, rt http.RoundTripper) *Client {
 	if UA == "" {
 		UA = config.EdgeUA
 	}
 	if sess == nil {
 		sess = config.NewSession()
 	}
-	client := resty.NewWithTransportSettings(&resty.TransportSettings{
-		IdleConnTimeout:       68 * time.Second,
-		ResponseHeaderTimeout: 31 * time.Second,
-		MaxIdleConnsPerHost:   8,
-	})
+	var client *resty.Client
+	if rt != nil {
+		client = resty.New().SetTransport(rt)
+	} else {
+		client = resty.NewWithTransportSettings(&resty.TransportSettings{
+			IdleConnTimeout:       TransportIdleConnTimeout,
+			ResponseHeaderTimeout: TransportResponseHeaderTimeout,
+			MaxIdleConnsPerHost:   TransportMaxIdleConnsPerHost,
+		})
+		// 只有自建 transport 时才在这里设代理和跳过 TLS 校验；
+		// 共享 transport 由 transportPool 建池时统一设置。
+		if os.Getenv("proxy") == "1" {
+			//.EnableInsecureSkipVerify()
+			client.SetProxy("http://127.0.0.1:8866")
+			tls_ := client.TLSClientConfig()
+			tls_.InsecureSkipVerify = true
+		}
+	}
 	client.SetBaseURL("https://cas2.ycit.edu.cn/").
 		SetHeader("user-agent", UA).
 		SetRedirectPolicy(resty.RedirectPolicyFunc(func(req *http.Request, via []*http.Request) error {
@@ -126,12 +158,6 @@ func NewCas(account, password, UA string, wx bool, fCfg config.Settings, sess *c
 	if os.Getenv("trace") == "1" {
 		client.SetTrace(true)
 		//client.SetLogger()
-	}
-	if os.Getenv("proxy") == "1" {
-		//.EnableInsecureSkipVerify()
-		client.SetProxy("http://127.0.0.1:8866")
-		tls_ := client.TLSClientConfig()
-		tls_.InsecureSkipVerify = true
 	}
 
 	// 共享transport

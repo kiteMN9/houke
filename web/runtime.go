@@ -331,6 +331,8 @@ func buildRuntime(s *AccountStore, id string, a *Account) (*accountRuntime, erro
 		OnRequest:   rt.requestStage,
 		OnQRCode:    rt.setQRCode,
 		Kaptcha:     s.kaptchaRecognizer(),
+		// 所有账号共用同一份 transport 池：切换账号 / 重登时不再重新握 TCP+TLS。
+		Transports: s.transports,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("账号 %q 构造客户端失败: %w", a.Name, err)
