@@ -5,11 +5,9 @@ import (
 	"flag"
 	"log"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -91,6 +89,9 @@ type asyncLogger struct {
 	bufWriter *bufio.Writer
 	lock      sync.Mutex
 	flushFreq time.Duration
+	// file 是 InitLogger 传入的输出文件。退出时 CloseLogger 要真正关掉它，
+	// 仅 Flush 缓冲不够——文件没关，最后一段日志仍可能留在操作系统缓冲区。
+	file *os.File
 }
 
 func InitLogger(output *os.File, bufSize int, flushInterval time.Duration) {
@@ -99,6 +100,7 @@ func InitLogger(output *os.File, bufSize int, flushInterval time.Duration) {
 		asyncWriter = &asyncLogger{
 			bufWriter: bufio.NewWriterSize(output, bufSize),
 			flushFreq: flushInterval,
+			file:      output,
 		}
 
 		// 接管标准log输出
@@ -107,9 +109,6 @@ func InitLogger(output *os.File, bufSize int, flushInterval time.Duration) {
 
 		// 启动后台刷新
 		go asyncWriter.autoFlush()
-
-		// 注册退出信号处理
-		go asyncWriter.handleExitSignal()
 	})
 }
 
@@ -133,17 +132,38 @@ func (a *asyncLogger) autoFlush() {
 	}
 }
 
-// handleExitSignal 处理退出信号
-func (a *asyncLogger) handleExitSignal() {
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	<-sigCh
-	a.lock.Lock()
-	err := a.bufWriter.Flush()
-	if err != nil {
-		a.lock.Unlock()
+// FlushLogger 把缓冲区里还没落盘的日志刷到文件。强制退出路径（第二次
+// Ctrl+C）只能尽力而为：不关文件、也不等后台的定时刷新协程。
+func FlushLogger() {
+	if asyncWriter == nil {
 		return
 	}
-	a.lock.Unlock()
-	//os.Exit(0)
+	asyncWriter.lock.Lock()
+	defer asyncWriter.lock.Unlock()
+	_ = asyncWriter.bufWriter.Flush()
+}
+
+var closeOnce sync.Once
+
+// CloseLogger 刷新缓冲并关闭日志文件，进程退出前调用；可重复调用。
+//
+// 旧实现是在包 init 里 signal.Notify 等 Ctrl+C 来刷日志，副作用是整个进程
+// 的默认 Ctrl+C 终止行为被关掉：第一次 Ctrl+C 只刷日志、进程不退，之后
+// 再按也没人接收。退出信号现在由 main 统一处理，这里只负责"退出前把日志
+// 写完、把文件关掉"。
+func CloseLogger() {
+	if asyncWriter == nil {
+		return
+	}
+	closeOnce.Do(func() {
+		asyncWriter.lock.Lock()
+		defer asyncWriter.lock.Unlock()
+		_ = asyncWriter.bufWriter.Flush()
+		f := asyncWriter.file
+		// stdout/stderr 是进程级共享句柄，不归 logger 关闭。
+		if f == nil || f == os.Stdout || f == os.Stderr {
+			return
+		}
+		_ = f.Close()
+	})
 }

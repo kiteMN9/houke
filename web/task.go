@@ -267,6 +267,57 @@ func (ts *taskStore) drop(id string) {
 	}
 }
 
+// cancelAll 取消所有仍在运行的长任务，返回取消的数量。用于进程退出。
+//
+// 这些任务的 context 都派生自 context.Background()（不是请求 ctx），不主动
+// 取消就会继续跑到自己的预算——自动选课默认 24 小时，进程退出后任务还在
+// 登录、抓页面、提交选课。这里把任务标成已取消并推一帧收尾事件，前端
+// 能看到干净的结束状态。
+//
+// 与 drop 同理：cancel 会唤醒任务的收尾路径（收尾要回头拿 ts.mu），
+// 所以 cancel 与 publish 都放在解锁之后，不能在持锁时调用。
+func (ts *taskStore) cancelAll() int {
+	type cancelled struct {
+		id     string
+		notice *taskNotice
+	}
+	var (
+		cancels []context.CancelFunc
+		notices []cancelled
+	)
+	now := time.Now()
+
+	ts.mu.Lock()
+	for id, t := range ts.tasks {
+		if !t.running {
+			continue
+		}
+		t.running = false
+		t.status = taskStatusCancelled
+		t.endedAt = now
+		if t.cancel != nil {
+			cancels = append(cancels, t.cancel)
+			t.cancel = nil
+		}
+		t.emitLocked(taskEvent{
+			Kind:  "task.cancelled",
+			Stage: "task.cancelled",
+			Text:  kindLabel(t.kind) + "已取消（进程退出）",
+			Final: true,
+		})
+		notices = append(notices, cancelled{id: id, notice: t.noticeLocked()})
+	}
+	ts.mu.Unlock()
+
+	for _, cancel := range cancels {
+		cancel()
+	}
+	for _, n := range notices {
+		ts.publish(n.id, n.notice)
+	}
+	return len(notices)
+}
+
 // emit 由 web 层写入一条生命周期事件（任务不存在时静默忽略）。
 func (ts *taskStore) emit(id string, e taskEvent) {
 	ts.mu.Lock()

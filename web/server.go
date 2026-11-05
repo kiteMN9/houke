@@ -1,16 +1,25 @@
 package web
 
 import (
+	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
+
+// shutdownTimeout 优雅退出的等待上限。等太久用户会以为又"退不掉"，
+// 也要给 Windows 关闭控制台窗口时的系统宽限留出余量（系统在 SIGTERM
+// 处理者不返回时会于数秒后强制结束进程）；超过这里限制的连接会被强制关闭。
+const shutdownTimeout = 3 * time.Second
 
 //go:embed static/*
 var staticFS embed.FS
@@ -19,6 +28,16 @@ type Server struct {
 	store  *AccountStore
 	tasks  *taskStore
 	router *gin.Engine
+
+	// 进程级上下文：Shutdown 时先取消它。请求的 context 由它派生
+	//（http.Server.BaseContext），所以 SSE 这类长连接会随退出一起结束——
+	// http.Server.Shutdown 只等连接空闲，并不会取消已建立的请求上下文。
+	baseCtx    context.Context
+	baseCancel context.CancelFunc
+
+	// 真正的 HTTP 服务实例。gin 的 Engine.Run 内部自己 new 一个
+	// http.Server 并且不给关停的机会，这里自己持有，才能优雅退出。
+	httpServer *http.Server
 
 	// 服务端配置（server.json）：目前是 SMTP 邮件通知，和账号无关。
 	serverCfg *serverSettingsManager
@@ -52,6 +71,13 @@ func NewServer(store *AccountStore) (*Server, error) {
 	}
 
 	s := &Server{store: store, tasks: store.tasks, router: r, serverCfg: cfgMgr}
+	s.baseCtx, s.baseCancel = context.WithCancel(context.Background())
+	s.httpServer = &http.Server{
+		Handler: r,
+		BaseContext: func(net.Listener) context.Context {
+			return s.baseCtx
+		},
+	}
 	s.registerRoutes()
 	if err := s.registerStatic(); err != nil {
 		return nil, fmt.Errorf("挂载静态资源失败: %w", err)
@@ -59,8 +85,61 @@ func NewServer(store *AccountStore) (*Server, error) {
 	return s, nil
 }
 
-func (s *Server) Run(addr string) error {
-	return s.router.Run(addr)
+// Listen 绑定监听地址。先绑定、后打印启动信息，端口被占用时就不会出现
+// 「WebUI 已启动」的假成功（旧实现的 Run 先打印再 ListenAndServe）。
+func (s *Server) Listen(addr string) (net.Listener, error) {
+	return net.Listen("tcp", addr)
+}
+
+// Serve 在 ln 上提供服务，直到 ctx 结束（优雅退出）或服务本身出错。
+//
+// ctx 结束时按顺序收尾（见 Shutdown）：取消运行中的长任务 → 取消请求
+// 上下文（SSE 长连接随之结束）→ 关闭 listener 并等在途请求结束。超过
+// shutdownTimeout 仍在的连接会被强制关闭，保证进程一定退得掉。
+// 正常关停返回 nil；Serve 因关闭而返回的 http.ErrServerClosed 不是错误。
+func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- s.httpServer.Serve(ln)
+	}()
+
+	select {
+	case err := <-errCh:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+		log.Printf("收到退出信号，开始优雅退出")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		if err := s.Shutdown(shutdownCtx); err != nil {
+			// 用户是主动退出，超时不算运行错误：打印提示、强制关干净即可。
+			log.Printf("优雅退出超时（%s），强制关闭剩余连接: %v", shutdownTimeout, err)
+		}
+		// 等 Serve 协程返回，避免关停后仍有 goroutine 写已关闭的 listener。
+		<-errCh
+		return nil
+	}
+}
+
+// Shutdown 优雅关闭 WebUI，可重复调用。顺序是刻意安排的：
+//
+//  1. 取消仍在运行的登录 / 初始化 / 自动选课任务。这些任务的 context 都
+//     派生自 context.Background()（见 handlers_login.go 等），不主动取消
+//     就会继续跑到自己的预算——自动选课默认 24 小时，进程退了任务还在发请求。
+//  2. 取消所有请求的 context：SSE（/api/accounts/:id/events）挂在请求 ctx
+//     上，http.Server.Shutdown 不会替我们取消它，不先取消就会一直等到超时。
+//  3. 关闭 listener、拒绝新连接，等在途请求结束；超时则强制 Close 兜底。
+func (s *Server) Shutdown(ctx context.Context) error {
+	n := s.tasks.cancelAll()
+	s.baseCancel()
+	err := s.httpServer.Shutdown(ctx)
+	if err != nil {
+		_ = s.httpServer.Close()
+	}
+	log.Printf("WebUI 已停止（取消 %d 个运行中的任务）", n)
+	return err
 }
 
 func (s *Server) registerStatic() error {

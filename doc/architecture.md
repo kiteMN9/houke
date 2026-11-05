@@ -107,20 +107,28 @@
 
 | 文件 | 职责 |
 |---|---|
-| `server.go` | 路由注册、`/ui` 静态资源（`go:embed static`） |
+| `server.go` | 路由注册、`/ui` 静态资源（`go:embed static`）、`Listen` / `Serve(ctx, ln)` / `Shutdown(ctx)` 优雅退出 |
 | `store.go` | `accounts.json` 读写、账号 CRUD、运行态缓存、原子落盘（tmp + rename） |
 | `account.go` | `Account` 模型、`normalize()`、`toSettings()` / `session()` / `applySession()` 唯一映射点 |
 | `runtime.go` | `accountRuntime`：engine + 登录/初始化/自动选课三把独立锁 + pendingInput + 阶段回调 |
-| `task.go` | 长任务状态机（running/done/failed/cancelled/timeout）、事件流、SSE 订阅 |
+| `task.go` | 长任务状态机（running/done/failed/cancelled/timeout）、事件流、SSE 订阅、退出时 `cancelAll()` |
 | `stream.go` | SSE 推帧（`snapshot` / `progress`）、心跳 |
 | `classify.go` | 请求 URL → 阶段文案（只覆盖选课类端点，登录/初始化阶段由 protocol 上报） |
 | `server_settings.go` | 服务端配置（`server.json`）：SMTP 设置、旧 `SMTP.json` 导入、校验与原子落盘 |
 | `handlers_*.go` | 按功能拆的 handler：account / login / init / course / auto / score / wish / kaptcha / server |
 
+`web.Server` 自己持有 `http.Server`（gin 的 `Engine.Run` 没有关停入口）。退出信号由
+`main` 统一处理：第一次 Ctrl+C 取消 context，`Serve` 收到后调用 `Shutdown`，顺序是
+「取消运行中的长任务（它们的 ctx 派生自 `context.Background()`，不取消会跑到自己的预算）
+→ 取消服务级 `BaseContext`（SSE 挂在请求 ctx 上，`http.Server.Shutdown` 不会取消它）
+→ 关闭 listener 并等待在途请求（上限 3 秒，超时强制关闭）」；第二次 Ctrl+C 直接退出。
+先 `Listen` 绑定端口、成功后才打印启动地址，端口占用不会出现「已启动」的假成功。
+
 ### 2.4 `utils` / `check_code`
 
-* `utils`：日志（`logger.go`，`init()` 改 `time.Local`、接管 `log` 输出）、颜色包 `utils/color`、
-  私网 IP 判断、NTP 校时与时间锁（`checkTime_windows.go`）、双击 Ctrl+C 退出（`exit.go`）、
+* `utils`：日志（`logger.go`，`init()` 改 `time.Local`、接管 `log` 输出；退出前由 `main`
+  调用 `FlushLogger` / `CloseLogger` 落盘，不再用 `signal.Notify` 抢 Ctrl+C）、颜色包
+  `utils/color`、私网 IP 判断、NTP 校时与时间锁（`checkTime_windows.go`）、
   SMTP 发信（`smtp.go`，支持 465 隐式 TLS / 587 STARTTLS）。
 * `check_code`：验证码识别。
   滑块：`matcher.go` 用 10 张内置模板做逐列像素绝对差匹配（结果 `+70` 补偿滑块宽度），
