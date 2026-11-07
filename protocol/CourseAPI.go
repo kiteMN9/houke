@@ -194,7 +194,7 @@ func (a *APIClient) GetCourseTabParams(ctx context.Context, cfg *APIConfig, save
 			SetContext(ctx).
 			SetQueryParam("gnmkdm", baseCfg.Gndmmk_xsxk).
 			SetFormData(formData).
-			Post(baseCfg.ChooseCourseListPre)
+			Post(baseCfg.ChooseCourseTabParams)
 
 		if err != nil {
 			// 判断是否因Context取消导致的错误

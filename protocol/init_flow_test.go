@@ -19,7 +19,7 @@ func TestInitReportsSemanticStages(t *testing.T) {
 			// 最小可用页面：不含 #tips，登录态判定通过；带一个 xkkz_id
 			// 让 parseYzbIndexHtml 认为页面结构正常；解析函数对缺字段是宽容的。
 			_, _ = w.Write([]byte(`<html><body><input id="firstXkkzId" value="test"></body></html>`))
-		case config.ChooseCourseListPre:
+		case config.ChooseCourseTabParams:
 			_, _ = w.Write([]byte(`<html><body><div id="x">ok</div></body></html>`))
 		default:
 			http.NotFound(w, r)

@@ -259,7 +259,7 @@ func TestSessionWishIsIsolated(t *testing.T) {
 // 选课时间窗属于发布后的快照：初始化成功才能读到，Reset 后清空。
 func TestSessionWindowFollowsInitialize(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == config.ChooseCourseListPre {
+		if r.URL.Path == config.ChooseCourseTabParams {
 			_, _ = io.WriteString(w, `<html><body>
 <input type="hidden" name="xkkssj" id="xkkssj" value="2026-09-09 12:30:00"/>
 <input type="hidden" name="xkjssj" id="xkjssj" value="2026-09-23 11:00:00"/>

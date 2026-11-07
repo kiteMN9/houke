@@ -47,7 +47,7 @@ const (
 const (
 	Gndmmk_xsxk              = "N253512"                                    // 功能模块代码
 	ChooseCourseIndex        = "/xsxk/zzxkyzb_cxZzxkYzbIndex.html"          // 选课基础页面
-	ChooseCourseListPre      = "/xsxk/zzxkyzb_cxZzxkYzbDisplay.html"        // 课程页签参数
+	ChooseCourseTabParams    = "/xsxk/zzxkyzb_cxZzxkYzbDisplay.html"        // 课程页签参数
 	ChooseCourseCourseList   = "/xsxk/zzxkyzb_cxZzxkYzbPartDisplay.html"    // 搜索课程接口
 	ChooseCourseCourseDetail = "/xsxk/zzxkyzb_cxJxbWithKchZzxkYzb.html"     // 查询课程号对应的详细信息
 	ChooseSimpleDoJxb        = "/xsxk/zzxkyzb_cxZkcZzxkYzb.html"            // 查询实践课 jxb_id[] -> do_jxb_id
