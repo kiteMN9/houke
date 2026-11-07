@@ -11,6 +11,8 @@
 - **Ctrl+C 退不掉**：`utils/logger.go` 在包 `init()` 里注册了 `signal.Notify` 刷新日志，副作用是关掉了 Go 默认的 Ctrl+C 终止行为——第一次按键只刷一次日志、进程继续运行，之后再按没人接收，只能关窗口或 `taskkill`。现在退出信号由 `main` 统一处理，日志不再占用信号。
 - 端口被占用时不再先打印「WebUI 已启动」再报错：先绑定监听端口，成功后才输出启动地址；启动失败写 stderr 并以退出码 1 结束。
 - 启动错误不再用 `log.Fatalf`（异步日志来不及落盘，控制台只剩一行看不懂的错误）：错误同时写 stderr 与日志文件，退出前统一刷新关闭。
+- **空白愿望条目会命中所有课程**：`strings.Contains(x, "")` 恒为真，类型或教师里多一个空行就等于没填条件，自动选课会去抢所有课。`protocol.WishList.Match` 现在跳过空白条目（首尾空格也忽略），教师清单只有空白项时按"不限教师"处理，课程类型为空时不再靠反向包含全命中；`WishList.Empty` 同样改为按内容判断。
+- **自动选课请求体没清洗愿望清单**：`POST /accounts/:id/auto-choose` 现在和保存路径一样 trim、丢空行、去重，清洗后为空才回落到账号里保存的清单。
 
 ### 新增
 
@@ -18,10 +20,12 @@
 - `web.Server` 新增 `Listen` / `Serve(ctx, ln)` / `Shutdown(ctx)`，替换无法关停的 `Run`；`http.Server` 使用服务级 `BaseContext`，退出时 SSE 等长连接会随请求上下文一起结束。
 - `web.taskStore.cancelAll()`：退出时把仍在跑的长任务标记为已取消，并向 SSE 推一帧收尾事件。
 - `utils.FlushLogger()` / `utils.CloseLogger()`：退出前刷新缓冲并关闭日志文件；删除已废弃的 `utils/exit.go`（双击 Ctrl+C 逻辑，唯一调用点早已被注释）。
+- WebUI 自动选课页的「课程类型」示例改成多行（艺术类 / 人文类 / 自然类 / 经管类），愿望清单说明同步写清类型与教师的组合规则。
 
 ### 测试
 
 - 新增 `web/shutdown_test.go`（退出取消任务、`Serve` 随 ctx 结束、SSE 不阻塞退出）与 `utils/logger_exit_test.go`（退出前 Flush / Close 落盘且可重复调用）。
+- `protocol/wish_test.go` 补空白课程类型 / 教师、教师清单全空白与空 `Kzmc` 的用例；`web/handlers_auto_test.go` 覆盖 `/auto-choose` 请求体清单的 trim、去空行、去重。
 
 ## [2.1.0] - 2026-11-03
 

@@ -176,7 +176,8 @@
                 <div class="card">
                     <h3>愿望清单</h3>
                     <p class="muted note">
-                        每行一项，任意一项命中即可。清单会随账号保存，登录、初始化、重启 WebUI 后都还在；也作为自动选课的默认条件。
+                        每行一项，空行和首尾空格会被忽略。课程名任意一项命中即可；只填教师时教师命中即可；
+                        填了课程类型时，类型命中后教师还要命中（教师留空即不限）。清单会随账号保存，登录、初始化、重启 WebUI 后都还在；也作为自动选课的默认条件。
                     </p>
                     <div class="field">
                         <label for="wish-classes">课程名（包含匹配）</label>
@@ -185,12 +186,13 @@
                     </div>
                     <div class="field">
                         <label for="wish-teachers">教师（包含匹配）</label>
-                        <textarea id="wish-teachers" rows="2" placeholder="裴如意"
+                        <textarea id="wish-teachers" rows="2" placeholder="超星尔雅"
                                   class="w-full"></textarea>
                     </div>
                     <div class="field">
                         <label for="wish-types">课程类型（包含匹配）</label>
-                        <textarea id="wish-types" rows="2" placeholder="通识选修"
+                        <textarea id="wish-types" rows="4"
+                                  placeholder="艺术类&#10;人文类&#10;自然类&#10;经管类"
                                   class="w-full"></textarea>
                     </div>
                     <div class="row">

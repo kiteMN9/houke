@@ -111,6 +111,19 @@ func autoPlanText(now time.Time, timeout time.Duration) string {
 		autoTimeoutText(timeout), now.Add(timeout).Format("2006-01-02 15:04"))
 }
 
+// autoWants 把请求体里的愿望清单清洗成 engine.Plan 用的形式。
+//
+// 与保存路径（applyWish / store.SetWish）用同一套 cleanWishItems：去首尾空格、
+// 丢空行、去重。不清洗的话，wants 里混进一个空串就会让类型 / 教师条件失效
+// （Contains 的第二个参数为空串时恒为真），"只要艺术类"会变成"什么课都要"。
+func autoWants(req autoChooseReq) protocol.WishList {
+	return protocol.WishList{
+		WantClassList:   cleanWishItems(req.WantClasses),
+		WantTeacherList: cleanWishItems(req.WantTeachers),
+		WantTypeList:    cleanWishItems(req.WantTypes),
+	}
+}
+
 // autoChoose 执行自动选课。
 //
 // 与 /choose 的区别是它跑的是 engine.Plan：候选（列表 + 详情里的 Do_jxb_id）
@@ -147,11 +160,8 @@ func (s *Server) autoChoose(c *gin.Context) {
 		return
 	}
 
-	wants := protocol.WishList{
-		WantClassList:   req.WantClasses,
-		WantTeacherList: req.WantTeachers,
-		WantTypeList:    req.WantTypes,
-	}
+	// 请求体里的清单按保存路径的同一套规则清洗，再决定是否回落到账号里保存的清单。
+	wants := autoWants(req)
 	if wants.Empty() {
 		wants = rt.engine.Wish()
 	}

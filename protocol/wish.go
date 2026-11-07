@@ -9,7 +9,9 @@ import "strings"
 // 规则本身是学校侧的历史行为，改之前先看 CourseUtil_test.go 里的用例：
 //   - 课程名包含愿望课程名即命中；
 //   - 填了课程类型时，类型命中后还要看教师：教师清单为空即命中，否则要求教师也命中；
-//   - 只填教师时，教师命中即命中。
+//   - 只填教师时，教师命中即命中；
+//   - 空白条目一律跳过（首尾空格忽略）：strings.Contains(x, "") 恒为真，
+//     多打一个空行就会让类型 / 教师条件失效，变成"什么课都要"。
 
 // Clone 复制三个切片，避免调用方与 Session 共享底层数组。
 func (w WishList) Clone() WishList {
@@ -20,9 +22,21 @@ func (w WishList) Clone() WishList {
 	}
 }
 
-// Empty 判断清单是否为空（三项都为 0）。
+// Empty 判断清单是否为空：三项都没有非空内容。只填了空白条目也算空——
+// 那些条目在 Match 里会被跳过，等于没配置。保存路径会清洗，但直接传进来的
+// 请求体不一定，所以这里按内容判断，而不只是看长度。
 func (w WishList) Empty() bool {
-	return len(w.WantClassList) == 0 && len(w.WantTeacherList) == 0 && len(w.WantTypeList) == 0
+	return !hasNonBlank(w.WantClassList) && !hasNonBlank(w.WantTeacherList) && !hasNonBlank(w.WantTypeList)
+}
+
+// hasNonBlank 报告清单里是否至少有一项非空内容。
+func hasNonBlank(items []string) bool {
+	for _, item := range items {
+		if strings.TrimSpace(item) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // Match 判断一门课是否命中愿望清单。
@@ -31,6 +45,10 @@ func (w WishList) Empty() bool {
 // CLI 的历史习惯是填教学班名（"定向越野-01班"），WebUI 的输入框却叫"课程名"，
 // 用户会填"高等数学"这种课程名。只比 Jxbmc 的话，课程名能筛出详情却匹配不上，
 // 最后报"愿望清单没有命中可选的课程"（见 matchesLoosely 的粗筛）。
+//
+// 空白条目一律跳过，且教师清单"只有空白项"等同于没填教师：Contains 的第二个
+// 参数是空串时恒为真，一个空行就会让类型 / 教师条件失效，把"只要艺术类"
+// 变成"什么课都要"。
 func (w WishList) Match(item CustomCourseDic) bool {
 	for _, class := range w.WantClassList {
 		class = strings.TrimSpace(class)
@@ -41,15 +59,21 @@ func (w WishList) Match(item CustomCourseDic) bool {
 			return true
 		}
 	}
-	if len(w.WantTypeList) > 0 {
+	if hasNonBlank(w.WantTypeList) {
+		teacherLimited := hasNonBlank(w.WantTeacherList)
 		for _, courseType := range w.WantTypeList {
-			if !strings.Contains(item.Kzmc, courseType) && !strings.Contains(courseType, item.Kzmc) {
+			courseType = strings.TrimSpace(courseType)
+			if courseType == "" || !matchCourseType(item.Kzmc, courseType) {
 				continue
 			}
-			if len(w.WantTeacherList) == 0 {
+			if !teacherLimited {
 				return true
 			}
 			for _, teacher := range w.WantTeacherList {
+				teacher = strings.TrimSpace(teacher)
+				if teacher == "" {
+					continue
+				}
 				if strings.Contains(item.Jsxx, teacher) {
 					return true
 				}
@@ -58,11 +82,25 @@ func (w WishList) Match(item CustomCourseDic) bool {
 		return false
 	}
 	for _, teacher := range w.WantTeacherList {
+		teacher = strings.TrimSpace(teacher)
+		if teacher == "" {
+			continue
+		}
 		if strings.Contains(item.Jsxx, teacher) {
 			return true
 		}
 	}
 	return false
+}
+
+// matchCourseType 判断课程类型是否命中愿望里的类型。列表还没带类型（Kzmc 为空）
+// 时只能靠愿望反向包含，历史行为如此；但空 Kzmc 不能反向包含出"全命中"，
+// 所以显式判空。
+func matchCourseType(kzmc, courseType string) bool {
+	if strings.Contains(kzmc, courseType) {
+		return true
+	}
+	return kzmc != "" && strings.Contains(courseType, kzmc)
 }
 
 // Rank 返回课程在愿望清单中的优先级：越小越想要。

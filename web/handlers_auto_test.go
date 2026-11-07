@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -93,6 +94,33 @@ func TestCancelAutoChooseNoop(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "noop") {
 		t.Fatalf("body = %s", rec.Body.String())
+	}
+}
+
+// 请求体里的愿望清单要按保存路径的同一套规则清洗：去首尾空格、丢空行、去重。
+// 空白条目带进 Plan 后，Match 里的 Contains(x, "") 会命中所有课程。
+func TestAutoWantsCleansRequest(t *testing.T) {
+	got := autoWants(autoChooseReq{
+		WantClasses:  []string{" 高等数学 ", "", "   ", "高等数学"},
+		WantTeachers: []string{" ", ""},
+		WantTypes:    []string{" 艺术类 ", ""},
+	})
+	if want := []string{"高等数学"}; !slices.Equal(got.WantClassList, want) {
+		t.Fatalf("WantClassList = %q，期望 %q", got.WantClassList, want)
+	}
+	if len(got.WantTeacherList) != 0 {
+		t.Fatalf("WantTeacherList = %q，期望空", got.WantTeacherList)
+	}
+	if want := []string{"艺术类"}; !slices.Equal(got.WantTypeList, want) {
+		t.Fatalf("WantTypeList = %q，期望 %q", got.WantTypeList, want)
+	}
+	if got.Empty() {
+		t.Fatal("清洗后还有有效条目，不该是空清单")
+	}
+
+	// 全是空白条目等于没指定：调用方据此回落到账号里保存的清单。
+	if !autoWants(autoChooseReq{WantTeachers: []string{" "}}).Empty() {
+		t.Fatal("全是空白条目时应视为空清单")
 	}
 }
 

@@ -21,6 +21,11 @@ func TestWishListMatch(t *testing.T) {
 		{"类型命中且教师命中", WishList{WantTypeList: []string{"通识"}, WantTeacherList: []string{"陈爱华"}}, true},
 		{"类型命中但教师不命中", WishList{WantTypeList: []string{"通识"}, WantTeacherList: []string{"张三"}}, false},
 		{"类型不命中且教师不命中", WishList{WantTypeList: []string{"体育"}, WantTeacherList: []string{"张三"}}, false},
+		{"空白类型", WishList{WantTypeList: []string{"", "  "}}, false},
+		{"空白教师", WishList{WantTeacherList: []string{" ", ""}}, false},
+		{"类型命中且教师清单全空白", WishList{WantTypeList: []string{"通识"}, WantTeacherList: []string{"  "}}, true},
+		{"类型与教师带首尾空格", WishList{WantTypeList: []string{" 通识 "}, WantTeacherList: []string{" 陈爱华 "}}, true},
+		{"类型不命中且教师全空白", WishList{WantTypeList: []string{" 体育 "}, WantTeacherList: []string{""}}, false},
 		{"空清单", WishList{}, false},
 	}
 	for _, tc := range tests {
@@ -72,5 +77,45 @@ func TestWishListMatchIgnoresBlankClass(t *testing.T) {
 	}
 	if !(WishList{WantClassList: []string{" 体育Ⅰ "}}).Match(item) {
 		t.Fatal("条目首尾空格应被忽略")
+	}
+}
+
+// 列表还没带课程类型（Kzmc 为空）时，类型只能靠愿望反向包含来匹配；
+// 不能让空 Kzmc 反向包含出"全命中"。
+func TestWishListMatchEmptyCourseType(t *testing.T) {
+	item := CustomCourseDic{Jxbmc: "瑜伽4", Kcmc: "体育Ⅰ"}
+	if (WishList{WantTypeList: []string{"艺术类"}}).Match(item) {
+		t.Fatal("Kzmc 为空时不该命中任何类型")
+	}
+	if (WishList{WantTypeList: []string{"", " "}}).Match(item) {
+		t.Fatal("Kzmc 与类型都为空时不该命中")
+	}
+}
+
+// Empty 按内容判断：只填空白条目等于没配置，保存路径会清洗掉它们，
+// 但直接传进来的请求体不一定。
+func TestWishListEmpty(t *testing.T) {
+	tests := []struct {
+		name string
+		wish WishList
+		want bool
+	}{
+		{"零值", WishList{}, true},
+		{"只有空白条目", WishList{
+			WantClassList:   []string{"  "},
+			WantTeacherList: []string{""},
+			WantTypeList:    []string{" "},
+		}, true},
+		{"有课程名", WishList{WantClassList: []string{"高等数学"}}, false},
+		{"只有教师", WishList{WantTeacherList: []string{"陈爱华"}}, false},
+		{"只有类型", WishList{WantTypeList: []string{"艺术类"}}, false},
+		{"空白里混一个有效的", WishList{WantTeacherList: []string{" ", "陈爱华"}}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.wish.Empty(); got != tc.want {
+				t.Fatalf("Empty(%+v) = %v, want %v", tc.wish, got, tc.want)
+			}
+		})
 	}
 }
