@@ -553,9 +553,9 @@ func (a *APIClient) getCourseDetail(ctx context.Context, cfg *APIConfig, kch_id 
 				log.Println(resp.String())
 				cfg.detailDump = true
 			}
-			if result != nil {
-				return result
-			}
+			//if result != nil {
+			//	return result
+			//}
 		} else {
 			loginWg.Add(1)
 			a.ReLogin()
@@ -583,8 +583,8 @@ func (a *APIClient) getCourseDetail(ctx context.Context, cfg *APIConfig, kch_id 
 				fmt.Println(resp.String())
 				return nil
 			}
+			return result
 		}
-
 	}
 }
 
