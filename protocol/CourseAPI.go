@@ -166,8 +166,8 @@ func (a *APIClient) GetIndexParams(ctx context.Context, cfg *APIConfig, opts Ind
 	}
 }
 
-// GetCourseListPre 页签获取
-func (a *APIClient) GetCourseListPre(ctx context.Context, cfg *APIConfig, save bool) error {
+// GetCourseTabParams 页签获取
+func (a *APIClient) GetCourseTabParams(ctx context.Context, cfg *APIConfig, save bool) error {
 	// 补齐搜索课程需要的发包参数
 	log.Println("===============getCourseList_pre()=================")
 	formData := map[string]string{

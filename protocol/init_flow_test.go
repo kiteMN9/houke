@@ -41,7 +41,7 @@ func TestInitReportsSemanticStages(t *testing.T) {
 	if err := api.GetIndexParams(context.Background(), cfg, IndexOptions{}); err != nil {
 		t.Fatalf("GetIndexParams: %v", err)
 	}
-	if err := api.GetCourseListPre(context.Background(), cfg, false); err != nil {
+	if err := api.GetCourseTabParams(context.Background(), cfg, false); err != nil {
 		t.Fatalf("GetCourseListPre: %v", err)
 	}
 

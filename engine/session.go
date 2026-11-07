@@ -147,7 +147,7 @@ func (s *session) Initialize(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := s.client.GetCourseListPre(ctx, cfg, false); err != nil {
+	if err := s.client.GetCourseTabParams(ctx, cfg, false); err != nil {
 		return err
 	}
 	if err := ctx.Err(); err != nil {
@@ -224,7 +224,7 @@ func (s *session) Renew(ctx context.Context) error {
 		}
 		next = *protocol.WithTab(&next, fresh)
 	}
-	if err := s.client.GetCourseListPre(ctx, &next, false); err != nil {
+	if err := s.client.GetCourseTabParams(ctx, &next, false); err != nil {
 		return err
 	}
 	if err := ctx.Err(); err != nil {
@@ -301,7 +301,7 @@ func (s *session) SelectTab(ctx context.Context, idx int) error {
 	s.ClearCourseCache() // 页签变了，课程集合必然不同
 
 	// 拉取该页签下的参数
-	if err := s.client.GetCourseListPre(ctx, next, false); err != nil {
+	if err := s.client.GetCourseTabParams(ctx, next, false); err != nil {
 		return err
 	}
 	if err := ctx.Err(); err != nil {
