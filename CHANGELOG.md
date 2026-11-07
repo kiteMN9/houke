@@ -13,7 +13,7 @@
 - 启动错误不再用 `log.Fatalf`（异步日志来不及落盘，控制台只剩一行看不懂的错误）：错误同时写 stderr 与日志文件，退出前统一刷新关闭。
 - **空白愿望条目会命中所有课程**：`strings.Contains(x, "")` 恒为真，类型或教师里多一个空行就等于没填条件，自动选课会去抢所有课。`protocol.WishList.Match` 现在跳过空白条目（首尾空格也忽略），教师清单只有空白项时按"不限教师"处理，课程类型为空时不再靠反向包含全命中；`WishList.Empty` 同样改为按内容判断。
 - **自动选课请求体没清洗愿望清单**：`POST /accounts/:id/auto-choose` 现在和保存路径一样 trim、丢空行、去重，清洗后为空才回落到账号里保存的清单。
-- **填了教师时通识选修课报「愿望清单没有命中可选的课程」**：课程列表（`GetCourseList`）没有教师字段，教师只出现在课程详情（`GetCourseDetail`）里；而抓详情前的粗筛只看课程名，愿望里同时填了课程名和教师（如「定向越野 / 乒乓球」+「殷海华」）时，教师命中的课永远不会被抓详情，最后报没有命中。新增 `protocol.WishList.CouldMatch` 作为抓详情的粗筛：填了教师时放行整张列表；课程类型同时匹配列表侧的 `kzmc`（课程性质，如「公共艺术」）与 `kclxmc`（课程类别，如「公共选修课」）。
+- **填了教师时通识选修课报「愿望清单没有命中可选的课程」**：课程列表（`GetCourseList`）没有教师字段，教师只出现在课程详情（`GetCourseDetail`）里；而抓详情前的粗筛只看课程名，愿望里同时填了课程名和教师（如「定向越野 / 乒乓球」+「殷海华」）时，教师命中的课永远不会被抓详情，最后报没有命中。新增 `protocol.WishList.CouldMatch` 作为抓详情的粗筛：填了教师时放行整张列表；类型粗筛只看列表侧的 `kzmc`（课程性质，如「公共艺术」）。
 
 ### 新增
 
@@ -24,13 +24,14 @@
 - `web.taskStore.cancelAll()`：退出时把仍在跑的长任务标记为已取消，并向 SSE 推一帧收尾事件。
 - `utils.FlushLogger()` / `utils.CloseLogger()`：退出前刷新缓冲并关闭日志文件；删除已废弃的 `utils/exit.go`（双击 Ctrl+C 逻辑，唯一调用点早已被注释）。
 - WebUI 自动选课页的「课程类型」示例改成多行（艺术类 / 人文类 / 自然类 / 经管类），愿望清单说明同步写清类型与教师的组合规则。
+- **自动选课名字优先**：填了课程名时，第一次收集候选只抓课程名命中的教学班，命中就立即进入提交循环，不再等整页详情抓完。通识选修课整页有几十个课程号，点名的课不必排在整页详情之后；板块课本来一次详情就补齐，行为不变。名字一门都没命中时才回落到整表扫描，教师的整页扫描仍按原来的节奏在刷新时进行。
 
 ### 测试
 
 - 新增 `web/auto_async_test.go`：`/auto-choose` 立即返回 202，任务在后台收尾并把结果写入任务快照；`web/handlers_auto_test.go` 的 `TestAutoOutcome` 覆盖异步结果映射。
 - 新增 `web/shutdown_test.go`（退出取消任务、`Serve` 随 ctx 结束、SSE 不阻塞退出）与 `utils/logger_exit_test.go`（退出前 Flush / Close 落盘且可重复调用）。
 - `protocol/wish_test.go` 补空白课程类型 / 教师、教师清单全空白与空 `Kzmc` 的用例；`web/handlers_auto_test.go` 覆盖 `/auto-choose` 请求体清单的 trim、去空行、去重。
-- `engine/candidates_test.go` 新增回归用例 `TestCollectCandidatesTeacherMatchesWhenCourseNameMisses`（课程名不命中、教师命中，旧代码会报 `ErrNoWantedCourse`）；`protocol/wish_test.go` 补 `CouldMatch` 粗筛与 `Kclxmc` 类型匹配的用例。
+- `engine/candidates_test.go` 新增回归用例 `TestCollectCandidatesTeacherMatchesWhenCourseNameMisses`（课程名不命中、教师命中，旧代码会报 `ErrNoWantedCourse`），以及 `TestCandidateSourceNameFirst` / `TestCandidateSourceNameFirstFallsBackToFullScan`（首次只抓课程名命中的课；名字没命中时回落整表扫描且列表只请求一次）；`protocol/wish_test.go` 补 `CouldMatch` 粗筛、类型只看 `Kzmc`、课程名辅助判断的用例。
 
 ## [2.1.0] - 2026-11-03
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sort"
+	"sync/atomic"
 
 	"school_sdk/protocol"
 )
@@ -14,16 +15,34 @@ var ErrNotInitialized = errors.New("engine: 会话尚未初始化")
 
 // CandidateSource 返回绑定在本引擎课程缓存上的候选源（见 Source）。
 //
-// 与 CollectCandidates 的区别只有一点：**每次调用都重拉课程列表**。自动选课
-// 一跑几小时，已选人数和新开的教学班只有重新查列表才看得到（详情缓存里只有
-// Do_jxb_id，人数以列表为准）。拉回来的列表会合并进缓存，所以课程页也跟着更新。
+// 与 CollectCandidates 的区别有两处：**每次调用都重拉课程列表**，以及第一次
+// 调用如果愿望里填了课程名，先走"名字优先"——只抓课程名命中的课，命中就立即
+// 返回。名字一门都没命中时才回落到整表扫描。
+//
+// 名字优先是为学校的两类选课设计的：板块课一个课程号下挂着全部教学班，一次
+// 详情就能补齐，怎么算都不慢；通识选修课整页有几十个课程号、每个课程号一两个
+// 教学班，全抓一遍要几十次详情（限流下约一分钟）。用户点名的课经常不在整页的
+// 开头，名字优先把它从"扫完整页才能提交"变成"第一次请求就能提交"。
 //
 // 列表接口"成功"但没回数据（典型是加密串过期、参数被教务拒绝）时返回
 // ErrNoCandidates：这不能当成"愿望没有命中"，否则 RunAuto 会把上一次的队列
 // 丢掉，用户看到的就是"跑着跑着没候选了"。
 func (e *Engine) CandidateSource(wants protocol.WishList) Source {
+	var first atomic.Bool
+	first.Store(true)
 	return func(ctx context.Context) ([]protocol.CustomCourseDic, error) {
-		return e.collectCandidates(ctx, wants, true)
+		if first.CompareAndSwap(true, false) && wants.HasCourseNames() {
+			nameOnly, err := e.collect(ctx, wants, true, true)
+			if err != nil {
+				return nil, err
+			}
+			if len(nameOnly) > 0 {
+				return nameOnly, nil
+			}
+			// 名字没有命中：列表刚刷新过，直接拿它做整表扫描。
+			return e.collect(ctx, wants, false, false)
+		}
+		return e.collect(ctx, wants, true, false)
 	}
 }
 
@@ -40,12 +59,13 @@ func (e *Engine) CandidateSource(wants protocol.WishList) Source {
 // 满员过滤与排序不在这里做：那是 RunAuto 的职责，CollectCandidates 只保证
 // 候选带齐提交参数。需要"此刻最新人数"时用 CandidateSource。
 func (e *Engine) CollectCandidates(ctx context.Context, wants protocol.WishList) ([]protocol.CustomCourseDic, error) {
-	return e.collectCandidates(ctx, wants, false)
+	return e.collect(ctx, wants, false, false)
 }
 
-// collectCandidates 是 CollectCandidates / CandidateSource 的实现。
+// collect 是 CollectCandidates / CandidateSource 的实现。
 // refreshList 为 true 时无条件重拉课程列表（自动选课的周期性刷新走这条）。
-func (e *Engine) collectCandidates(ctx context.Context, wants protocol.WishList, refreshList bool) ([]protocol.CustomCourseDic, error) {
+// nameOnly 为 true 时只收课程名命中的课，空结果不算错误——调用方要回落到整表扫描。
+func (e *Engine) collect(ctx context.Context, wants protocol.WishList, refreshList, nameOnly bool) ([]protocol.CustomCourseDic, error) {
 	if !e.Inited() {
 		return nil, ErrNotInitialized
 	}
@@ -74,7 +94,7 @@ func (e *Engine) collectCandidates(ctx context.Context, wants protocol.WishList,
 	}
 
 	var firstErr error
-	for _, kchID := range detailTargets(wants, cached) {
+	for _, kchID := range detailTargets(wants, cached, nameOnly) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -98,9 +118,17 @@ func (e *Engine) collectCandidates(ctx context.Context, wants protocol.WishList,
 		if course.Do_jxb_id == "" || !wants.Match(course) {
 			continue
 		}
+		if nameOnly && !wants.MatchesCourseName(course) {
+			continue
+		}
 		out = append(out, course)
 	}
 	if len(out) == 0 {
+		if nameOnly {
+			// 名字命中的课可能一门都没拿到详情：交给调用方回落整表扫描，
+			// 不能把"还没扫完"当成"选不上"。
+			return nil, nil
+		}
 		// 详情请求全失败时，把第一个错误报出去，比"没有命中"更好排查。
 		if firstErr != nil {
 			return nil, firstErr
@@ -119,7 +147,10 @@ func (e *Engine) collectCandidates(ctx context.Context, wants protocol.WishList,
 // 教师时它就是"整张列表都要抓"——只看课程名会把教师命中的课漏在门外，最后报
 // "愿望清单没有命中可选的课程"（真实案例：愿望"定向越野 / 乒乓球" + 教师
 // "殷海华"，而殷老师教的是《西方美术鉴赏》，课程名一条都不含）。
-func detailTargets(wants protocol.WishList, list []protocol.CustomCourseDic) []string {
+//
+// nameOnly 为 true 时再收窄到课程名命中的课：名字优先的快速路径只抓用户点名
+// 的那几门，不必为了它们把整张课表抓一遍。
+func detailTargets(wants protocol.WishList, list []protocol.CustomCourseDic, nameOnly bool) []string {
 	type target struct {
 		kchID string
 		rank  int
@@ -132,6 +163,9 @@ func detailTargets(wants protocol.WishList, list []protocol.CustomCourseDic) []s
 			continue
 		}
 		if !wants.CouldMatch(course) {
+			continue
+		}
+		if nameOnly && !wants.MatchesCourseName(course) {
 			continue
 		}
 		seen[course.Kch_id] = true

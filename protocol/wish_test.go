@@ -68,6 +68,33 @@ func TestWishListMatchCourseName(t *testing.T) {
 	}
 }
 
+// 名字优先的快速路径用 HasCourseNames / MatchesCourseName 判断"哪些课是用户
+// 点名的"，规则必须与 Match 的课程名分支一致（空白跳过、首尾空格忽略）。
+func TestWishListCourseNameHelpers(t *testing.T) {
+	item := CustomCourseDic{Jxbmc: "瑜伽4", Kcmc: "体育Ⅰ"}
+	if !(WishList{WantClassList: []string{" 体育Ⅰ "}}).MatchesCourseName(item) {
+		t.Fatal("首尾空格的课程名应命中")
+	}
+	if !(WishList{WantClassList: []string{"瑜伽"}}).MatchesCourseName(item) {
+		t.Fatal("教学班名包含课程名应命中")
+	}
+	if (WishList{WantClassList: []string{"高等数学"}}).MatchesCourseName(item) {
+		t.Fatal("不同课程名不该命中")
+	}
+	if (WishList{WantClassList: []string{"", "  "}}).MatchesCourseName(item) {
+		t.Fatal("空白条目不该命中")
+	}
+	if !(WishList{WantClassList: []string{"体育Ⅰ"}}).HasCourseNames() {
+		t.Fatal("有课程名时 HasCourseNames 应为 true")
+	}
+	if (WishList{WantClassList: []string{"", " "}}).HasCourseNames() {
+		t.Fatal("只有空白条目时 HasCourseNames 应为 false")
+	}
+	if (WishList{WantTeacherList: []string{"陈爱华"}}).HasCourseNames() {
+		t.Fatal("只填教师时 HasCourseNames 应为 false")
+	}
+}
+
 // 空/纯空白条目必须被忽略：strings.Contains(x, "") 恒为真，多打一个空行
 // 就会让愿望清单变成"什么课都要"。
 func TestWishListMatchIgnoresBlankClass(t *testing.T) {
@@ -92,8 +119,8 @@ func TestWishListMatchEmptyCourseType(t *testing.T) {
 	}
 }
 
-// 类型也要看课程类别（Kclxmc）：真实列表里"公共艺术"写在 Kzmc、"公共选修课"
-// 写在 Kclxmc，用户填"选修"或"公共选修课"都该命中。
+// 课程类型只看 Kzmc（课程性质）：真实列表里"公共艺术"写在 Kzmc；Kclxmc
+// （"公共选修课"）是教务的选课分类，不参与愿望类型匹配。
 func TestWishListMatchCourseCategory(t *testing.T) {
 	item := CustomCourseDic{
 		Jxbmc:  "西方美术鉴赏(美育)-评论类-0002",
@@ -101,13 +128,15 @@ func TestWishListMatchCourseCategory(t *testing.T) {
 		Kzmc:   "公共艺术",
 		Kclxmc: "公共选修课",
 	}
-	for _, courseType := range []string{"公共艺术", "艺术", "公共选修课", "选修"} {
+	for _, courseType := range []string{"公共艺术", "艺术"} {
 		if !(WishList{WantTypeList: []string{courseType}}).Match(item) {
 			t.Fatalf("类型 %q 没命中：%+v", courseType, item)
 		}
 	}
-	if (WishList{WantTypeList: []string{"体育"}}).Match(item) {
-		t.Fatal("不同课程类型不该命中")
+	for _, courseType := range []string{"公共选修课", "选修", "体育"} {
+		if (WishList{WantTypeList: []string{courseType}}).Match(item) {
+			t.Fatalf("类型 %q 不该命中：%+v", courseType, item)
+		}
 	}
 }
 
@@ -116,11 +145,10 @@ func TestWishListMatchCourseCategory(t *testing.T) {
 // 放行名字不命中的课——否则教师命中的课永远拿不到详情，最后报没有命中。
 func TestWishListCouldMatch(t *testing.T) {
 	art := CustomCourseDic{
-		Jxbmc:  "西方美术鉴赏(美育)-评论类-0002",
-		Kcmc:   "西方美术鉴赏(美育)-评论类",
-		Kzmc:   "公共艺术",
-		Kclxmc: "公共选修课",
-		Jsxx:   "360044/殷海华/副教授",
+		Jxbmc: "西方美术鉴赏(美育)-评论类-0002",
+		Kcmc:  "西方美术鉴赏(美育)-评论类",
+		Kzmc:  "公共艺术",
+		Jsxx:  "360044/殷海华/副教授",
 	}
 	tests := []struct {
 		name string

@@ -231,3 +231,111 @@ func TestCandidateSourceRefreshesListEveryTime(t *testing.T) {
 		t.Fatalf("刷新后的候选里没有新教学班 d2: %+v", got)
 	}
 }
+
+// candidateSourceServer 同时处理课程列表与详情：列表读 listBody，详情按表单里的
+// kch_id 返回对应教学班，用来统计"名字优先"实际抓了几门课的详情。
+func candidateSourceServer(t *testing.T, listBody *atomic.Value, listHits, detailHits *atomic.Int32, details map[string]string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "cxZzxkYzbPartDisplay"):
+			listHits.Add(1)
+			_, _ = io.WriteString(w, listBody.Load().(string))
+		case strings.Contains(r.URL.Path, "cxJxbWithKchZzxkYzb"):
+			detailHits.Add(1)
+			_ = r.ParseForm()
+			body := details[r.PostFormValue("kch_id")]
+			if body == "" {
+				body = "[]"
+			}
+			_, _ = io.WriteString(w, body)
+		default:
+			_, _ = io.WriteString(w, indexOKHTML)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// 名字优先：第一次收集只抓课程名命中的课，命中就立即返回，不把整页详情拖到
+// 提交之前；教师愿望等整表扫描留到刷新时再做。
+func TestCandidateSourceNameFirst(t *testing.T) {
+	var listBody atomic.Value
+	listBody.Store(`{"tmpList":[` +
+		`{"kch_id":"k1","jxb_id":"j1","kcmc":"定向越野","jxbmc":"定向越野-0001","yxzrs":"10"},` +
+		`{"kch_id":"k2","jxb_id":"j2","kcmc":"篮球","jxbmc":"篮球-0001","yxzrs":"10"}]}`)
+	var listHits, detailHits atomic.Int32
+	srv := candidateSourceServer(t, &listBody, &listHits, &detailHits, map[string]string{
+		"k1": `[{"jxb_id":"j1","do_jxb_id":"d1","jxbrl":"50","yxzrs":"10","jsxx":"440015/裴如意/副教授"}]`,
+		"k2": `[{"jxb_id":"j2","do_jxb_id":"d2","jxbrl":"50","yxzrs":"10","jsxx":"440015/裴如意/副教授"}]`,
+	})
+	e := newCandidateEngine(t, srv, nil)
+	listHits.Store(0)
+	source := e.CandidateSource(protocol.WishList{
+		WantClassList:   []string{"定向越野"},
+		WantTeacherList: []string{"裴如意"},
+	})
+
+	got, err := source(context.Background())
+	if err != nil {
+		t.Fatalf("首次 source: %v", err)
+	}
+	if listHits.Load() != 1 {
+		t.Fatalf("首次列表请求 = %d，期望 1", listHits.Load())
+	}
+	if detailHits.Load() != 2 {
+		t.Fatalf("首次详情请求 = %d，期望 2（只抓名字命中的 k1）", detailHits.Load())
+	}
+	if len(got) != 1 || got[0].Kch_id != "k1" {
+		t.Fatalf("首次候选 = %+v，期望只有 k1", got)
+	}
+
+	// 第二次调用回到整表扫描：k1 已有 Do_jxb_id，只补 k2 的详情。
+	got, err = source(context.Background())
+	if err != nil {
+		t.Fatalf("第二次 source: %v", err)
+	}
+	if listHits.Load() != 2 {
+		t.Fatalf("第二次列表请求 = %d，期望 2", listHits.Load())
+	}
+	if detailHits.Load() != 4 {
+		t.Fatalf("第二次详情请求 = %d，期望 4（补 k2）", detailHits.Load())
+	}
+	if len(got) != 2 {
+		t.Fatalf("第二次候选 = %+v，期望 k1 + 教师命中的 k2", got)
+	}
+}
+
+// 名字一门都没命中时不能只返回空：第一次调用在刷新完列表后立刻回落到整表
+// 扫描，教师/类型命中的课仍要能进候选，而且列表只请求一次。
+func TestCandidateSourceNameFirstFallsBackToFullScan(t *testing.T) {
+	var listBody atomic.Value
+	listBody.Store(`{"tmpList":[` +
+		`{"kch_id":"k1","jxb_id":"j1","kcmc":"篮球","jxbmc":"篮球-0001","yxzrs":"10"},` +
+		`{"kch_id":"k2","jxb_id":"j2","kcmc":"排球","jxbmc":"排球-0001","yxzrs":"10"}]}`)
+	var listHits, detailHits atomic.Int32
+	srv := candidateSourceServer(t, &listBody, &listHits, &detailHits, map[string]string{
+		"k1": `[{"jxb_id":"j1","do_jxb_id":"d1","jxbrl":"50","yxzrs":"10","jsxx":"440015/裴如意/副教授"}]`,
+		"k2": `[{"jxb_id":"j2","do_jxb_id":"d2","jxbrl":"50","yxzrs":"10","jsxx":"440016/张三/教授"}]`,
+	})
+	e := newCandidateEngine(t, srv, nil)
+	listHits.Store(0)
+	source := e.CandidateSource(protocol.WishList{
+		WantClassList:   []string{"定向越野"},
+		WantTeacherList: []string{"裴如意"},
+	})
+
+	got, err := source(context.Background())
+	if err != nil {
+		t.Fatalf("source: %v", err)
+	}
+	if listHits.Load() != 1 {
+		t.Fatalf("列表请求 = %d，期望 1（回落扫描复用刚刷新的列表）", listHits.Load())
+	}
+	if detailHits.Load() != 4 {
+		t.Fatalf("详情请求 = %d，期望 4（整表扫描两门课）", detailHits.Load())
+	}
+	if len(got) != 1 || got[0].Kch_id != "k1" {
+		t.Fatalf("候选 = %+v，期望教师命中的 k1", got)
+	}
+}
