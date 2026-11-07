@@ -24,14 +24,14 @@
 - `web.taskStore.cancelAll()`：退出时把仍在跑的长任务标记为已取消，并向 SSE 推一帧收尾事件。
 - `utils.FlushLogger()` / `utils.CloseLogger()`：退出前刷新缓冲并关闭日志文件；删除已废弃的 `utils/exit.go`（双击 Ctrl+C 逻辑，唯一调用点早已被注释）。
 - WebUI 自动选课页的「课程类型」示例改成多行（艺术类 / 人文类 / 自然类 / 经管类），愿望清单说明同步写清类型与教师的组合规则。
-- **自动选课名字优先**：填了课程名时，第一次收集候选只抓课程名命中的教学班，命中就立即进入提交循环，不再等整页详情抓完。通识选修课整页有几十个课程号，点名的课不必排在整页详情之后；板块课本来一次详情就补齐，行为不变。名字一门都没命中时才回落到整表扫描，教师的整页扫描仍按原来的节奏在刷新时进行。
+- **自动选课名字优先**：填了课程名时，第一次收集候选只抓课程名命中的教学班，命中就立即进入提交循环，不再等整页详情抓完。通识选修课整页有几十个课程号，点名的课不必排在整页详情之后；板块课本来一次详情就补齐，行为不变。名字一门都没命中时才回落到整表扫描，教师的整页扫描仍按原来的节奏在刷新时进行。候选组装按课程号分组：一个课程号只请求一次详情（详情返回它下面的全部教学班），这个课程号下没有命中教学班就整组跳过、继续下一个课程号。
 
 ### 测试
 
 - 新增 `web/auto_async_test.go`：`/auto-choose` 立即返回 202，任务在后台收尾并把结果写入任务快照；`web/handlers_auto_test.go` 的 `TestAutoOutcome` 覆盖异步结果映射。
 - 新增 `web/shutdown_test.go`（退出取消任务、`Serve` 随 ctx 结束、SSE 不阻塞退出）与 `utils/logger_exit_test.go`（退出前 Flush / Close 落盘且可重复调用）。
 - `protocol/wish_test.go` 补空白课程类型 / 教师、教师清单全空白与空 `Kzmc` 的用例；`web/handlers_auto_test.go` 覆盖 `/auto-choose` 请求体清单的 trim、去空行、去重。
-- `engine/candidates_test.go` 新增回归用例 `TestCollectCandidatesTeacherMatchesWhenCourseNameMisses`（课程名不命中、教师命中，旧代码会报 `ErrNoWantedCourse`），以及 `TestCandidateSourceNameFirst` / `TestCandidateSourceNameFirstFallsBackToFullScan`（首次只抓课程名命中的课；名字没命中时回落整表扫描且列表只请求一次）；`protocol/wish_test.go` 补 `CouldMatch` 粗筛、类型只看 `Kzmc`、课程名辅助判断的用例。
+- `engine/candidates_test.go` 新增回归用例 `TestCollectCandidatesTeacherMatchesWhenCourseNameMisses`（课程名不命中、教师命中，旧代码会报 `ErrNoWantedCourse`），以及 `TestCandidateSourceNameFirst` / `TestCandidateSourceNameFirstFallsBackToFullScan`（首次只抓课程名命中的课；名字没命中时回落整表扫描且列表只请求一次）、`TestCourseNumberGroups` / `TestCollectCandidatesSkipsCourseNumberWithoutMatch`（课程号分组与排序、课程号下没有命中教学班时整组跳过）；`protocol/wish_test.go` 补 `CouldMatch` 粗筛、类型只看 `Kzmc`、课程名辅助判断的用例。
 
 ## [2.1.0] - 2026-11-03
 

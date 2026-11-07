@@ -339,3 +339,60 @@ func TestCandidateSourceNameFirstFallsBackToFullScan(t *testing.T) {
 		t.Fatalf("候选 = %+v，期望教师命中的 k1", got)
 	}
 }
+
+// 课程号是补详情的单位：一个课程号只抓一次详情，下面挂着的教学班一起补齐；
+// 名字没命中（或名字优先时名字没命中）的课程号整组跳过。
+func TestCourseNumberGroups(t *testing.T) {
+	wants := protocol.WishList{WantClassList: []string{"定向越野", "乒乓球"}}
+	list := []protocol.CustomCourseDic{
+		{Kch_id: "k2", Jxbmc: "乒乓球-0001", Kcmc: "乒乓球", Do_jxb_id: "d2"},
+		{Kch_id: "k1", Jxbmc: "定向越野-0001", Kcmc: "定向越野"},
+		{Kch_id: "k1", Jxbmc: "定向越野-0002", Kcmc: "定向越野"},
+		{Kch_id: "k3", Jxbmc: "篮球-0001", Kcmc: "篮球"},
+	}
+
+	got := courseNumberGroups(wants, list, false)
+	want := []courseNumber{
+		{kchID: "k1", rank: 0, needsDetail: true},
+		{kchID: "k2", rank: 1, needsDetail: false},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("课程号分组 = %+v，期望 %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("第 %d 个课程号 = %+v，期望 %+v", i, got[i], want[i])
+		}
+	}
+
+	// 名字优先只保留课程名命中的课程号。
+	byName := courseNumberGroups(wants, list, true)
+	if len(byName) != 2 || byName[0].kchID != "k1" || byName[1].kchID != "k2" {
+		t.Fatalf("名字优先的课程号 = %+v，期望 k1、k2", byName)
+	}
+}
+
+// 某个课程号下的教学班一个都没命中愿望时整组跳过：它的详情照样抓（教师只在
+// 详情里），但不会拿没命中的教学班凑候选，也不会挡住后面的课程号。
+func TestCollectCandidatesSkipsCourseNumberWithoutMatch(t *testing.T) {
+	var listBody atomic.Value
+	listBody.Store(`{"tmpList":[` +
+		`{"kch_id":"k1","jxb_id":"j1","kcmc":"高等数学","jxbmc":"高等数学-0001","yxzrs":"10"},` +
+		`{"kch_id":"k2","jxb_id":"j2","kcmc":"大学英语","jxbmc":"大学英语-0001","yxzrs":"10"}]}`)
+	var listHits, detailHits atomic.Int32
+	srv := candidateSourceServer(t, &listBody, &listHits, &detailHits, map[string]string{
+		"k1": `[{"jxb_id":"j1","do_jxb_id":"d1","jxbrl":"50","yxzrs":"10","jsxx":"440016/张三/教授"}]`,
+		"k2": `[{"jxb_id":"j2","do_jxb_id":"d2","jxbrl":"50","yxzrs":"10","jsxx":"440015/裴如意/副教授"}]`,
+	})
+	e := newCandidateEngine(t, srv, nil)
+	got, err := e.CollectCandidates(context.Background(), protocol.WishList{WantTeacherList: []string{"裴如意"}})
+	if err != nil {
+		t.Fatalf("CollectCandidates: %v", err)
+	}
+	if detailHits.Load() != 4 {
+		t.Fatalf("详情请求 = %d，期望 4（两个课程号各一次，每次 2 个 POST）", detailHits.Load())
+	}
+	if len(got) != 1 || got[0].Kch_id != "k2" {
+		t.Fatalf("候选 = %+v，期望只有教师命中的 k2", got)
+	}
+}

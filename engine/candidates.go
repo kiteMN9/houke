@@ -16,8 +16,8 @@ var ErrNotInitialized = errors.New("engine: 会话尚未初始化")
 // CandidateSource 返回绑定在本引擎课程缓存上的候选源（见 Source）。
 //
 // 与 CollectCandidates 的区别有两处：**每次调用都重拉课程列表**，以及第一次
-// 调用如果愿望里填了课程名，先走"名字优先"——只抓课程名命中的课，命中就立即
-// 返回。名字一门都没命中时才回落到整表扫描。
+// 调用如果愿望里填了课程名，先走"名字优先"——只抓课程名命中的课程号，命中就
+// 立即返回。名字一门都没命中时才回落到整表扫描。
 //
 // 名字优先是为学校的两类选课设计的：板块课一个课程号下挂着全部教学班，一次
 // 详情就能补齐，怎么算都不慢；通识选修课整页有几十个课程号、每个课程号一两个
@@ -49,12 +49,13 @@ func (e *Engine) CandidateSource(wants protocol.WishList) Source {
 // CollectCandidates 组装自动选课的候选课程。
 //
 // 课程列表只带教学班与人数，提交选课需要的 Do_jxb_id 必须从课程详情里拿
-// （详情按 kch_id 请求，返回该课程下所有教学班）。因此这里做三件事：
+// （详情按 kch_id 请求，返回该课程号下的全部教学班）。因此这里按课程号
+// （kch_id）逐个推进：
 //
 //  1. 缓存为空时先拉一次列表（Web 的列表页通常已经缓过，直接复用）；
-//  2. 对可能命中愿望、且还没拿到 Do_jxb_id 的课程，按优先级逐个拉详情并合并进缓存
-//     （教师只在详情里，所以填了教师愿望时列表里每门课都要抓）；
-//  3. 回读缓存，按愿望清单过滤出"能提交"的候选。
+//  2. 按愿望给课程号排序，逐个补详情：一个课程号只请求一次，覆盖它下面
+//     的全部教学班；这个课程号下一个教学班都没命中就跳过它，继续下一个；
+//  3. 把命中的教学班收进候选，满员过滤与最终排序留给 RunAuto。
 //
 // 满员过滤与排序不在这里做：那是 RunAuto 的职责，CollectCandidates 只保证
 // 候选带齐提交参数。需要"此刻最新人数"时用 CandidateSource。
@@ -64,7 +65,7 @@ func (e *Engine) CollectCandidates(ctx context.Context, wants protocol.WishList)
 
 // collect 是 CollectCandidates / CandidateSource 的实现。
 // refreshList 为 true 时无条件重拉课程列表（自动选课的周期性刷新走这条）。
-// nameOnly 为 true 时只收课程名命中的课，空结果不算错误——调用方要回落到整表扫描。
+// nameOnly 为 true 时只处理课程名命中的课程号，空结果不算错误——调用方要回落到整表扫描。
 func (e *Engine) collect(ctx context.Context, wants protocol.WishList, refreshList, nameOnly bool) ([]protocol.CustomCourseDic, error) {
 	if !e.Inited() {
 		return nil, ErrNotInitialized
@@ -93,35 +94,35 @@ func (e *Engine) collect(ctx context.Context, wants protocol.WishList, refreshLi
 		return nil, ErrNoCandidates
 	}
 
+	out := make([]protocol.CustomCourseDic, 0, len(cached))
 	var firstErr error
-	for _, kchID := range detailTargets(wants, cached, nameOnly) {
+	for _, group := range courseNumberGroups(wants, cached, nameOnly) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		detail, err := e.GetCourseDetail(ctx, kchID)
-		if err != nil {
-			// 取消/登录失效/会话结束是全局性问题，不能当成"这门课没拿到详情"跳过。
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
-				errors.Is(err, protocol.ErrUnauthorized) || isSessionEnd(err) {
-				return nil, err
+		// 一个课程号只抓一次详情：接口返回该课程号下的全部教学班。
+		if group.needsDetail {
+			detail, err := e.GetCourseDetail(ctx, group.kchID)
+			if err != nil {
+				// 取消/登录失效/会话结束是全局性问题，不能当成"这门课没拿到详情"跳过。
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
+					errors.Is(err, protocol.ErrUnauthorized) || isSessionEnd(err) {
+					return nil, err
+				}
+				if firstErr == nil {
+					firstErr = err
+				}
+			} else {
+				e.CacheCourseDetail(detail)
 			}
-			if firstErr == nil {
-				firstErr = err
-			}
+		}
+		// 详情补齐了教师与 Do_jxb_id，命中才收；这个课程号下一个教学班都没
+		// 命中就整组跳过，继续下一个课程号。
+		matched := matchedClasses(e.Courses(), wants, group.kchID, nameOnly)
+		if len(matched) == 0 {
 			continue
 		}
-		e.CacheCourseDetail(detail)
-	}
-
-	out := make([]protocol.CustomCourseDic, 0, len(cached))
-	for _, course := range e.Courses() {
-		if course.Do_jxb_id == "" || !wants.Match(course) {
-			continue
-		}
-		if nameOnly && !wants.MatchesCourseName(course) {
-			continue
-		}
-		out = append(out, course)
+		out = append(out, matched...)
 	}
 	if len(out) == 0 {
 		if nameOnly {
@@ -138,44 +139,62 @@ func (e *Engine) collect(ctx context.Context, wants protocol.WishList, refreshLi
 	return out, nil
 }
 
-// detailTargets 返回需要拉详情的 kch_id，按愿望优先级排序。
+// courseNumber 是同一个课程号（kch_id）下的候选。
 //
-// 先抓最想要的课：自动选课经常在详情阶段被取消/超时，优先保证第一志愿可用。
-// 同一门课只请求一次，且已经有 Do_jxb_id 的跳过。
+// 详情接口按课程号返回该课程号下的全部教学班，所以一个课程号只请求一次；
+// 这个课程号下一个教学班都没命中时整组跳过，继续下一个课程号。
+type courseNumber struct {
+	kchID       string
+	rank        int  // 课程号在愿望清单里的最好名次（名字越靠前越优先）
+	needsDetail bool // 还有教学班没拿到 Do_jxb_id
+}
+
+// courseNumberGroups 把课程列表按 kch_id 分组，只保留可能命中愿望的课程号，
+// 并按愿望优先级排序。
 //
-// 哪些课值得抓由 WishList.CouldMatch 决定。教师（Jsxx）只在详情里，愿望里填了
-// 教师时它就是"整张列表都要抓"——只看课程名会把教师命中的课漏在门外，最后报
-// "愿望清单没有命中可选的课程"（真实案例：愿望"定向越野 / 乒乓球" + 教师
-// "殷海华"，而殷老师教的是《西方美术鉴赏》，课程名一条都不含）。
-//
-// nameOnly 为 true 时再收窄到课程名命中的课：名字优先的快速路径只抓用户点名
+// nameOnly 为 true 时只收课程名命中的课程号：名字优先的快速路径只抓用户点名
 // 的那几门，不必为了它们把整张课表抓一遍。
-func detailTargets(wants protocol.WishList, list []protocol.CustomCourseDic, nameOnly bool) []string {
-	type target struct {
-		kchID string
-		rank  int
-	}
-	seen := make(map[string]bool, len(list)) // 去重
-	targets := make([]target, 0, len(list))
+func courseNumberGroups(wants protocol.WishList, list []protocol.CustomCourseDic, nameOnly bool) []courseNumber {
+	index := make(map[string]int, len(list))
+	groups := make([]courseNumber, 0, len(list))
 	for i := range list {
 		course := list[i]
-		if course.Kch_id == "" || course.Do_jxb_id != "" || seen[course.Kch_id] {
-			continue
-		}
-		if !wants.CouldMatch(course) {
+		if course.Kch_id == "" || !wants.CouldMatch(course) {
 			continue
 		}
 		if nameOnly && !wants.MatchesCourseName(course) {
 			continue
 		}
-		seen[course.Kch_id] = true
-		targets = append(targets, target{kchID: course.Kch_id, rank: rankOf(wants, course)})
+		pos, ok := index[course.Kch_id]
+		if !ok {
+			pos = len(groups)
+			index[course.Kch_id] = pos
+			groups = append(groups, courseNumber{kchID: course.Kch_id, rank: rankOf(wants, course)})
+		}
+		group := &groups[pos]
+		if byName := rankOf(wants, course); byName < group.rank {
+			group.rank = byName
+		}
+		if course.Do_jxb_id == "" {
+			group.needsDetail = true
+		}
 	}
-	sort.SliceStable(targets, func(i, j int) bool { return targets[i].rank < targets[j].rank })
+	sort.SliceStable(groups, func(i, j int) bool { return groups[i].rank < groups[j].rank })
+	return groups
+}
 
-	out := make([]string, len(targets))
-	for i := range targets {
-		out[i] = targets[i].kchID
+// matchedClasses 返回某个课程号下"命中愿望、且拿得到 Do_jxb_id"的教学班。
+func matchedClasses(list []protocol.CustomCourseDic, wants protocol.WishList, kchID string, nameOnly bool) []protocol.CustomCourseDic {
+	out := make([]protocol.CustomCourseDic, 0, 2)
+	for i := range list {
+		course := list[i]
+		if course.Kch_id != kchID || course.Do_jxb_id == "" || !wants.Match(course) {
+			continue
+		}
+		if nameOnly && !wants.MatchesCourseName(course) {
+			continue
+		}
+		out = append(out, course)
 	}
 	return out
 }
