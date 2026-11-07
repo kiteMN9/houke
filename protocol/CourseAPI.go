@@ -499,9 +499,6 @@ func (a *APIClient) GetCourseDetail(ctx context.Context, cfg *APIConfig, kch_id 
 				log.Println(resp.String())
 				cfg.State.detailDump = true
 			}
-			if result != nil {
-				return result, nil
-			}
 		} else {
 			return result, ErrUnauthorized
 		}
@@ -533,6 +530,9 @@ func (a *APIClient) GetCourseDetail(ctx context.Context, cfg *APIConfig, kch_id 
 				fmt.Println(resp.String())
 				return nil, nil
 			}
+			// 解析成功就返回：以前这里要等下一轮请求（result != nil）才返回，
+			// 每门课都白打一次详情，整页抓详情的时间直接翻倍。
+			return result, nil
 		}
 
 	}

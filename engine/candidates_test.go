@@ -68,10 +68,9 @@ func TestCollectCandidatesFetchesDetails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CollectCandidates: %v", err)
 	}
-	// 既有实现里 GetCourseDetail 解析成功后要再进一轮循环才返回，所以每门课
-	// 固定两次请求；这里用次数确认"只抓了这一门"，不把它当成需要修的行为。
-	if hits.Load() != 2 {
-		t.Fatalf("详情请求数 = %d，期望 2（每门课两轮）", hits.Load())
+	// GetCourseDetail 解析成功就返回，每门课一次请求；这里用次数确认"只抓了这一门"。
+	if hits.Load() != 1 {
+		t.Fatalf("详情请求数 = %d，期望 1（每门课一次请求）", hits.Load())
 	}
 	if len(got) != 1 {
 		t.Fatalf("候选数 = %d，期望 1", len(got))
@@ -94,8 +93,8 @@ func TestCollectCandidatesSkipsUnwantedCourses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CollectCandidates: %v", err)
 	}
-	if hits.Load() != 2 {
-		t.Fatalf("详情请求数 = %d，期望 2（只请求命中的 1 门）", hits.Load())
+	if hits.Load() != 1 {
+		t.Fatalf("详情请求数 = %d，期望 1（只请求命中的 1 门）", hits.Load())
 	}
 	if len(got) != 1 || got[0].Kch_id != "k1" {
 		t.Fatalf("候选 = %+v，期望只有 k1", got)
@@ -112,8 +111,8 @@ func TestCollectCandidatesTeacherOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CollectCandidates: %v", err)
 	}
-	if hits.Load() != 2 {
-		t.Fatalf("详情请求数 = %d，期望 2（每门课两轮）", hits.Load())
+	if hits.Load() != 1 {
+		t.Fatalf("详情请求数 = %d，期望 1（每门课一次请求）", hits.Load())
 	}
 	if len(got) != 1 || got[0].Do_jxb_id != "d1" {
 		t.Fatalf("候选 = %+v，期望教师命中的 k1", got)
@@ -136,8 +135,8 @@ func TestCollectCandidatesTeacherMatchesWhenCourseNameMisses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CollectCandidates: %v", err)
 	}
-	if hits.Load() != 2 {
-		t.Fatalf("详情请求数 = %d，期望 2（教师愿望必须为每门课抓详情）", hits.Load())
+	if hits.Load() != 1 {
+		t.Fatalf("详情请求数 = %d，期望 1（教师愿望必须为每门课抓详情）", hits.Load())
 	}
 	if len(got) != 1 || got[0].Kch_id != "k1" {
 		t.Fatalf("候选 = %+v，期望教师命中的 k1", got)
@@ -283,8 +282,8 @@ func TestCandidateSourceNameFirst(t *testing.T) {
 	if listHits.Load() != 1 {
 		t.Fatalf("首次列表请求 = %d，期望 1", listHits.Load())
 	}
-	if detailHits.Load() != 2 {
-		t.Fatalf("首次详情请求 = %d，期望 2（只抓名字命中的 k1）", detailHits.Load())
+	if detailHits.Load() != 1 {
+		t.Fatalf("首次详情请求 = %d，期望 1（只抓名字命中的 k1）", detailHits.Load())
 	}
 	if len(got) != 1 || got[0].Kch_id != "k1" {
 		t.Fatalf("首次候选 = %+v，期望只有 k1", got)
@@ -298,8 +297,8 @@ func TestCandidateSourceNameFirst(t *testing.T) {
 	if listHits.Load() != 2 {
 		t.Fatalf("第二次列表请求 = %d，期望 2", listHits.Load())
 	}
-	if detailHits.Load() != 4 {
-		t.Fatalf("第二次详情请求 = %d，期望 4（补 k2）", detailHits.Load())
+	if detailHits.Load() != 2 {
+		t.Fatalf("第二次详情请求 = %d，期望 2（补 k2）", detailHits.Load())
 	}
 	if len(got) != 2 {
 		t.Fatalf("第二次候选 = %+v，期望 k1 + 教师命中的 k2", got)
@@ -332,8 +331,8 @@ func TestCandidateSourceNameFirstFallsBackToFullScan(t *testing.T) {
 	if listHits.Load() != 1 {
 		t.Fatalf("列表请求 = %d，期望 1（回落扫描复用刚刷新的列表）", listHits.Load())
 	}
-	if detailHits.Load() != 4 {
-		t.Fatalf("详情请求 = %d，期望 4（整表扫描两门课）", detailHits.Load())
+	if detailHits.Load() != 2 {
+		t.Fatalf("详情请求 = %d，期望 2（整表扫描两门课）", detailHits.Load())
 	}
 	if len(got) != 1 || got[0].Kch_id != "k1" {
 		t.Fatalf("候选 = %+v，期望教师命中的 k1", got)
@@ -389,8 +388,8 @@ func TestCollectCandidatesSkipsCourseNumberWithoutMatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CollectCandidates: %v", err)
 	}
-	if detailHits.Load() != 4 {
-		t.Fatalf("详情请求 = %d，期望 4（两个课程号各一次，每次 2 个 POST）", detailHits.Load())
+	if detailHits.Load() != 2 {
+		t.Fatalf("详情请求 = %d，期望 2（两个课程号各一次详情）", detailHits.Load())
 	}
 	if len(got) != 1 || got[0].Kch_id != "k2" {
 		t.Fatalf("候选 = %+v，期望只有教师命中的 k2", got)
