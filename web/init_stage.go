@@ -15,9 +15,9 @@ func initStageText(st protocol.InitStage) string {
 		return "等待选课阶段开放"
 	case protocol.InitPhaseIndexParse:
 		return "正在解析选课页签"
-	case protocol.InitPhaseListPre:
+	case protocol.InitPhaseTabParams:
 		return "正在获取课程列表参数"
-	case protocol.InitPhaseListPreParse:
+	case protocol.InitPhaseTabParamsParse:
 		return "正在解析选课规则"
 	default:
 		return ""

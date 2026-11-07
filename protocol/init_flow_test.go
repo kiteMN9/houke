@@ -48,8 +48,8 @@ func TestInitReportsSemanticStages(t *testing.T) {
 	want := []InitPhase{
 		InitPhaseIndex,
 		InitPhaseIndexParse,
-		InitPhaseListPre,
-		InitPhaseListPreParse,
+		InitPhaseTabParams,
+		InitPhaseTabParamsParse,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("阶段序列 = %v, want %v", got, want)
@@ -59,7 +59,7 @@ func TestInitReportsSemanticStages(t *testing.T) {
 			t.Fatalf("阶段序列 = %v, want %v", got, want)
 		}
 	}
-	if st := api.InitStage(); st.Phase != InitPhaseListPreParse {
-		t.Errorf("最终阶段 = %q, want %q", st.Phase, InitPhaseListPreParse)
+	if st := api.InitStage(); st.Phase != InitPhaseTabParamsParse {
+		t.Errorf("最终阶段 = %q, want %q", st.Phase, InitPhaseTabParamsParse)
 	}
 }

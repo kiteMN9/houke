@@ -409,7 +409,7 @@ func TestInitStageIgnoredWithoutInitTask(t *testing.T) {
 	const id = "acc1"
 	ts.start(id, taskKindLogin)
 
-	ts.setInitStage(id, string(protocol.InitPhaseListPre), "正在获取课程列表参数")
+	ts.setInitStage(id, string(protocol.InitPhaseTabParams), "正在获取课程列表参数")
 	snap := ts.snapshot(id)
 	if snap.StageText != "登录已开始" {
 		t.Fatalf("登录任务的阶段被初始化阶段改写: %q", snap.StageText)

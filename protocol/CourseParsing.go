@@ -148,7 +148,7 @@ func parseYzbIndexHtml(cfg *APIConfig, docNode *html.Node) bool {
 }
 
 // 处理页签页
-func parseListPreHtml(cfg *APIConfig, docNode *html.Node) {
+func parseTabParamsHtml(cfg *APIConfig, docNode *html.Node) {
 	cfg.Window.bklx_id = getXpathValue(docNode, "bklx_id")
 	cfg.Window.rwlx = getXpathValue(docNode, "rwlx")
 	cfg.Window.xkly = getXpathValue(docNode, "xkly")

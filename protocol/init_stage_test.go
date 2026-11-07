@@ -43,7 +43,7 @@ func TestInitStageReportsChanges(t *testing.T) {
 // 每次初始化开始都要清掉上一次的残留阶段。
 func TestInitStageReset(t *testing.T) {
 	a := newStateTestClient(t, "http://127.0.0.1:1")
-	a.reportInitStage(InitPhaseListPre, "")
+	a.reportInitStage(InitPhaseTabParams, "")
 	a.resetInitStage()
 	if st := a.InitStage(); st.Phase != "" {
 		t.Fatalf("reset 后阶段 = %+v, want 空", st)

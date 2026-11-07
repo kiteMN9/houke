@@ -166,9 +166,9 @@ func (a *APIClient) GetIndexParams(ctx context.Context, cfg *APIConfig, opts Ind
 	}
 }
 
-// GetCourseTabParams 页签获取
+// GetCourseTabParams 页签下的具体参数获取
+// 补齐搜索课程需要的发包参数
 func (a *APIClient) GetCourseTabParams(ctx context.Context, cfg *APIConfig, save bool) error {
-	// 补齐搜索课程需要的发包参数
 	log.Println("===============GetCourseTabParams()=================")
 	formData := map[string]string{
 		"xszxzt": cfg.Index.xszxzt, // 1
@@ -188,7 +188,7 @@ func (a *APIClient) GetCourseTabParams(ctx context.Context, cfg *APIConfig, save
 			return ctx.Err()
 		default:
 		}
-		a.reportInitStage(InitPhaseListPre, "")
+		a.reportInitStage(InitPhaseTabParams, "")
 
 		resp, err := a.hedgeC.R().
 			SetContext(ctx).
@@ -231,8 +231,8 @@ func (a *APIClient) GetCourseTabParams(ctx context.Context, cfg *APIConfig, save
 				fmt.Println("完成请求然后解析出错？")
 				continue
 			}
-			a.reportInitStage(InitPhaseListPreParse, "")
-			parseListPreHtml(cfg, docNode)
+			a.reportInitStage(InitPhaseTabParamsParse, "")
+			parseTabParamsHtml(cfg, docNode)
 			htmlContent := utils.RemoveEmptyLines(resp.String())
 			if !save {
 				log.Println(htmlContent)

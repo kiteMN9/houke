@@ -28,10 +28,10 @@ const (
 	InitPhaseIndexWait InitPhase = "init.index-wait"
 	// InitPhaseIndexParse 解析首页里的页签与选课开关。
 	InitPhaseIndexParse InitPhase = "init.index-parse"
-	// InitPhaseListPre 请求课程列表前置参数。
-	InitPhaseListPre InitPhase = "init.list-pre"
-	// InitPhaseListPreParse 解析学分限制、轮次等选课规则。
-	InitPhaseListPreParse InitPhase = "init.list-pre-parse"
+	// InitPhaseTabParams 请求课程列表前置参数。
+	InitPhaseTabParams InitPhase = "init.list-pre"
+	// InitPhaseTabParamsParse 解析学分限制、轮次等选课规则。
+	InitPhaseTabParamsParse InitPhase = "init.list-pre-parse"
 )
 
 // InitStage 是一次初始化阶段快照。
