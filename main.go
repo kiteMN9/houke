@@ -15,7 +15,7 @@ import (
 	"school_sdk/web"
 )
 
-var version = "school_sdk_go 2.1.2"
+var version = "school_sdk_go 2.2.0"
 
 func main() {
 	code := run()
