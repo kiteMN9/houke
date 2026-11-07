@@ -16,7 +16,7 @@ func TestSendSMTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	msgCh := make(chan string, 1)
 	go serveFakeSMTP(ln, msgCh)
@@ -94,7 +94,7 @@ func serveFakeSMTP(ln net.Listener, msgCh chan<- string) {
 	if err != nil {
 		return
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	r := bufio.NewReader(conn)
 	w := bufio.NewWriter(conn)

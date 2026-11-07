@@ -88,7 +88,7 @@ func SendSMTP(ctx context.Context, cfg SMTPConfig, subject, htmlBody string) err
 	if err != nil {
 		return fmt.Errorf("连接 SMTP 服务器 %s 失败: %w", addr, err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(deadline)
 	}
@@ -100,6 +100,7 @@ func SendSMTP(ctx context.Context, cfg SMTPConfig, subject, htmlBody string) err
 			MinVersion: tls.VersionTLS12,
 		})
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			_ = tlsConn.Close()
 			return fmt.Errorf("SMTP TLS 握手失败: %w", err)
 		}
 		conn = tlsConn
@@ -109,7 +110,7 @@ func SendSMTP(ctx context.Context, cfg SMTPConfig, subject, htmlBody string) err
 	if err != nil {
 		return fmt.Errorf("连接 SMTP 服务器失败: %w", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	if !implicitTLS {
 		if ok, _ := client.Extension("STARTTLS"); ok {
@@ -177,10 +178,10 @@ func buildMessage(cfg SMTPConfig, subject, htmlBody string) []byte {
 	}
 
 	var b bytes.Buffer
-	fmt.Fprintf(&b, "From: %s\r\n", from)
-	fmt.Fprintf(&b, "To: %s\r\n", strings.Join(to, ", "))
-	fmt.Fprintf(&b, "Subject: %s\r\n", mime.QEncoding.Encode("utf-8", sanitizeHeader(subject)))
-	fmt.Fprintf(&b, "Date: %s\r\n", time.Now().Format(time.RFC1123Z))
+	_, _ = fmt.Fprintf(&b, "From: %s\r\n", from)
+	_, _ = fmt.Fprintf(&b, "To: %s\r\n", strings.Join(to, ", "))
+	_, _ = fmt.Fprintf(&b, "Subject: %s\r\n", mime.QEncoding.Encode("utf-8", sanitizeHeader(subject)))
+	_, _ = fmt.Fprintf(&b, "Date: %s\r\n", time.Now().Format(time.RFC1123Z))
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("Content-Type: text/html; charset=UTF-8\r\n")
 	b.WriteString("Content-Transfer-Encoding: base64\r\n")
