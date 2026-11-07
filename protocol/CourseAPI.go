@@ -169,7 +169,7 @@ func (a *APIClient) GetIndexParams(ctx context.Context, cfg *APIConfig, opts Ind
 // GetCourseTabParams 页签获取
 func (a *APIClient) GetCourseTabParams(ctx context.Context, cfg *APIConfig, save bool) error {
 	// 补齐搜索课程需要的发包参数
-	log.Println("===============getCourseList_pre()=================")
+	log.Println("===============GetCourseTabParams()=================")
 	formData := map[string]string{
 		"xszxzt": cfg.Index.xszxzt, // 1
 		"kspage": "0",
@@ -184,7 +184,7 @@ func (a *APIClient) GetCourseTabParams(ctx context.Context, cfg *APIConfig, save
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("getCourseListPre: ctx 已取消，退出")
+			log.Println("GetCourseTabParams: ctx 已取消，退出")
 			return ctx.Err()
 		default:
 		}
@@ -217,7 +217,7 @@ func (a *APIClient) GetCourseTabParams(ctx context.Context, cfg *APIConfig, save
 		if resp.IsStatusFailure() {
 			// 这里容易有 404 问题和
 			// 200 错误提示 系统运行异常，请稍后再试 问题
-			fmt.Println("ListPre:", resp.Status(), resp.String())
+			fmt.Println("GetCourseTabParams:", resp.Status(), resp.String())
 			continue
 		}
 		if a.LoginCheck(resp) {
@@ -242,7 +242,7 @@ func (a *APIClient) GetCourseTabParams(ctx context.Context, cfg *APIConfig, save
 			}
 			return nil
 		}
-		fmt.Println("ListPre:", resp.Status(), resp.String())
+		fmt.Println("GetCourseTabParams:", resp.Status(), resp.String())
 	}
 	// zdzys //"一门课程最多可选"+zdzys+"个志愿！"
 	// sfqzxk //"一门课程只能选一个教学班！"

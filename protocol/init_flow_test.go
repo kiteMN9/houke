@@ -42,7 +42,7 @@ func TestInitReportsSemanticStages(t *testing.T) {
 		t.Fatalf("GetIndexParams: %v", err)
 	}
 	if err := api.GetCourseTabParams(context.Background(), cfg, false); err != nil {
-		t.Fatalf("GetCourseListPre: %v", err)
+		t.Fatalf("GetCourseTabParams: %v", err)
 	}
 
 	want := []InitPhase{
