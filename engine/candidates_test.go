@@ -120,6 +120,30 @@ func TestCollectCandidatesTeacherOnly(t *testing.T) {
 	}
 }
 
+// 课程名不命中、但教师命中的课也必须能当候选：教师只在详情里，不能因为
+// 名字不匹配就跳过详情，否则"课程名 + 教师"的愿望永远报没有命中。
+// 真实案例：通识选修课列表里全是"公共艺术"类课程，愿望写"定向越野 / 乒乓球"
+// 加教师"殷海华"，殷老师教的《西方美术鉴赏》就卡在这条粗筛后面。
+func TestCollectCandidatesTeacherMatchesWhenCourseNameMisses(t *testing.T) {
+	var hits atomic.Int32
+	srv := detailServer(t, detailJSON, &hits)
+	e := newCandidateEngine(t, srv, []protocol.CourseListDic{courseListEntry("k1", "j1", "西方美术鉴赏")})
+
+	got, err := e.CollectCandidates(context.Background(), protocol.WishList{
+		WantClassList:   []string{"定向越野", "乒乓球"},
+		WantTeacherList: []string{"超星尔雅", "裴如意"},
+	})
+	if err != nil {
+		t.Fatalf("CollectCandidates: %v", err)
+	}
+	if hits.Load() != 2 {
+		t.Fatalf("详情请求数 = %d，期望 2（教师愿望必须为每门课抓详情）", hits.Load())
+	}
+	if len(got) != 1 || got[0].Kch_id != "k1" {
+		t.Fatalf("候选 = %+v，期望教师命中的 k1", got)
+	}
+}
+
 // 未初始化时没有选课参数，直接报错，避免发一堆注定失败的请求。
 func TestCollectCandidatesRequiresInit(t *testing.T) {
 	srv := detailServer(t, detailJSON, nil)

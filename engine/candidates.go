@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"sort"
-	"strings"
 
 	"school_sdk/protocol"
 )
@@ -34,7 +33,8 @@ func (e *Engine) CandidateSource(wants protocol.WishList) Source {
 // （详情按 kch_id 请求，返回该课程下所有教学班）。因此这里做三件事：
 //
 //  1. 缓存为空时先拉一次列表（Web 的列表页通常已经缓过，直接复用）；
-//  2. 对可能命中愿望、且还没拿到 Do_jxb_id 的课程，按优先级逐个拉详情并合并进缓存；
+//  2. 对可能命中愿望、且还没拿到 Do_jxb_id 的课程，按优先级逐个拉详情并合并进缓存
+//     （教师只在详情里，所以填了教师愿望时列表里每门课都要抓）；
 //  3. 回读缓存，按愿望清单过滤出"能提交"的候选。
 //
 // 满员过滤与排序不在这里做：那是 RunAuto 的职责，CollectCandidates 只保证
@@ -114,23 +114,28 @@ func (e *Engine) collectCandidates(ctx context.Context, wants protocol.WishList,
 //
 // 先抓最想要的课：自动选课经常在详情阶段被取消/超时，优先保证第一志愿可用。
 // 同一门课只请求一次，且已经有 Do_jxb_id 的跳过。
+//
+// 哪些课值得抓由 WishList.CouldMatch 决定。教师（Jsxx）只在详情里，愿望里填了
+// 教师时它就是"整张列表都要抓"——只看课程名会把教师命中的课漏在门外，最后报
+// "愿望清单没有命中可选的课程"（真实案例：愿望"定向越野 / 乒乓球" + 教师
+// "殷海华"，而殷老师教的是《西方美术鉴赏》，课程名一条都不含）。
 func detailTargets(wants protocol.WishList, list []protocol.CustomCourseDic) []string {
 	type target struct {
 		kchID string
 		rank  int
 	}
-	seen := make(map[string]bool, len(list))
+	seen := make(map[string]bool, len(list)) // 去重
 	targets := make([]target, 0, len(list))
 	for i := range list {
 		course := list[i]
 		if course.Kch_id == "" || course.Do_jxb_id != "" || seen[course.Kch_id] {
 			continue
 		}
-		if !matchesLoosely(wants, course) {
+		if !wants.CouldMatch(course) {
 			continue
 		}
 		seen[course.Kch_id] = true
-		targets = append(targets, target{kchID: course.Kch_id, rank: wants.Rank(course.Jxbmc)})
+		targets = append(targets, target{kchID: course.Kch_id, rank: rankOf(wants, course)})
 	}
 	sort.SliceStable(targets, func(i, j int) bool { return targets[i].rank < targets[j].rank })
 
@@ -139,24 +144,4 @@ func detailTargets(wants protocol.WishList, list []protocol.CustomCourseDic) []s
 		out[i] = targets[i].kchID
 	}
 	return out
-}
-
-// matchesLoosely 是抓详情之前的粗筛。
-//
-// 列表里还没有教师字段（Jsxx 来自详情），所以只填教师/类型的愿望必须放行；
-// 填了课程名时先按名字筛，避免为了几门课把整张课表都请求一遍详情。
-func matchesLoosely(wants protocol.WishList, course protocol.CustomCourseDic) bool {
-	if len(wants.WantClassList) == 0 {
-		return true
-	}
-	for _, class := range wants.WantClassList {
-		class = strings.TrimSpace(class)
-		if class == "" {
-			continue
-		}
-		if strings.Contains(course.Jxbmc, class) || strings.Contains(course.Kcmc, class) {
-			return true
-		}
-	}
-	return false
 }

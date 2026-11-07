@@ -140,9 +140,9 @@ go run . -webAddr 0.0.0.0:9000 # 换监听地址
 | `learnedRoutes` | []string | 空 | 登录过程中学到的 route（client 回传，不是用户偏好） |
 | `ticketJWT` | string | 空 | CAS2 门户 JWT 缓存；**不出前端**（`store.go:99,117`） |
 | `identity` | object | 空 | 扫码登录证明的身份：`{sub,name,type,org,orgCode}`。由 ticket 解析得来，是"这个账号是谁"的落盘形式（`ticketJWT` 会过期，身份不会）；再次扫码时按 `sub` + 学校编码匹配到它 |
-| `wantClasses` | []string | 空 | 自动选课愿望：课程名 |
-| `wantTeachers` | []string | 空 | 自动选课愿望：教师 |
-| `wantTypes` | []string | 空 | 自动选课愿望：课程类型 |
+| `wantClasses` | []string | 空 | 自动选课愿望：课程名（同时比教学班名与课程名，包含匹配；任一项命中即可） |
+| `wantTeachers` | []string | 空 | 自动选课愿望：教师。列表接口没有教师字段，只能从课程详情里拿到，所以填了教师时会对当前页签的每门课抓一次详情 |
+| `wantTypes` | []string | 空 | 自动选课愿望：课程类型（包含匹配，同时比 `kzmc` 课程性质与 `kclxmc` 课程类别）。填了类型时要求类型命中；同时填了教师则还要求教师命中 |
 | `createdAt` / `lastLogin` | time | — | 创建 / 最近登录时间 |
 
 示例（`wantClasses` 与 `password` 都请勿提交到仓库）：

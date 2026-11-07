@@ -92,6 +92,73 @@ func TestWishListMatchEmptyCourseType(t *testing.T) {
 	}
 }
 
+// 类型也要看课程类别（Kclxmc）：真实列表里"公共艺术"写在 Kzmc、"公共选修课"
+// 写在 Kclxmc，用户填"选修"或"公共选修课"都该命中。
+func TestWishListMatchCourseCategory(t *testing.T) {
+	item := CustomCourseDic{
+		Jxbmc:  "西方美术鉴赏(美育)-评论类-0002",
+		Kcmc:   "西方美术鉴赏(美育)-评论类",
+		Kzmc:   "公共艺术",
+		Kclxmc: "公共选修课",
+	}
+	for _, courseType := range []string{"公共艺术", "艺术", "公共选修课", "选修"} {
+		if !(WishList{WantTypeList: []string{courseType}}).Match(item) {
+			t.Fatalf("类型 %q 没命中：%+v", courseType, item)
+		}
+	}
+	if (WishList{WantTypeList: []string{"体育"}}).Match(item) {
+		t.Fatal("不同课程类型不该命中")
+	}
+}
+
+// CouldMatch 是抓详情前的粗筛：返回 false 的课一定匹配不上，返回 true 的还要
+// 等详情回来才能定论。教师（Jsxx）只在详情里，所以"课程名 + 教师"的愿望必须
+// 放行名字不命中的课——否则教师命中的课永远拿不到详情，最后报没有命中。
+func TestWishListCouldMatch(t *testing.T) {
+	art := CustomCourseDic{
+		Jxbmc:  "西方美术鉴赏(美育)-评论类-0002",
+		Kcmc:   "西方美术鉴赏(美育)-评论类",
+		Kzmc:   "公共艺术",
+		Kclxmc: "公共选修课",
+		Jsxx:   "360044/殷海华/副教授",
+	}
+	tests := []struct {
+		name string
+		wish WishList
+		want bool
+	}{
+		{"课程名命中", WishList{WantClassList: []string{"美术"}}, true},
+		{"课程名不命中", WishList{WantClassList: []string{"定向越野"}}, false},
+		{"课程名不命中但有教师", WishList{
+			WantClassList:   []string{"定向越野", "乒乓球"},
+			WantTeacherList: []string{"超星尔雅", "殷海华"},
+		}, true},
+		{"只有教师", WishList{WantTeacherList: []string{"殷海华"}}, true},
+		{"教师清单全空白不算条件", WishList{
+			WantClassList:   []string{"定向越野"},
+			WantTeacherList: []string{"  "},
+		}, false},
+		{"类型命中", WishList{WantTypeList: []string{"艺术"}}, true},
+		{"类型不命中", WishList{WantTypeList: []string{"体育"}}, false},
+		{"类型不命中时教师也救不了", WishList{
+			WantTypeList:    []string{"体育"},
+			WantTeacherList: []string{"殷海华"},
+		}, false},
+		{"空清单", WishList{}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.wish.CouldMatch(art); got != tc.want {
+				t.Fatalf("CouldMatch(%+v) = %v, want %v", tc.wish, got, tc.want)
+			}
+			// 粗筛必须是 Match 的超集：Match 认了的课不能在这里被挡掉。
+			if tc.wish.Match(art) && !tc.wish.CouldMatch(art) {
+				t.Fatalf("Match 命中但 CouldMatch 拒绝：%+v", tc.wish)
+			}
+		})
+	}
+}
+
 // Empty 按内容判断：只填空白条目等于没配置，保存路径会清洗掉它们，
 // 但直接传进来的请求体不一定。
 func TestWishListEmpty(t *testing.T) {

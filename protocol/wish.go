@@ -44,7 +44,7 @@ func hasNonBlank(items []string) bool {
 // WantClassList 里的每一项同时比对教学班名称（Jxbmc）和课程名称（Kcmc）：
 // CLI 的历史习惯是填教学班名（"定向越野-01班"），WebUI 的输入框却叫"课程名"，
 // 用户会填"高等数学"这种课程名。只比 Jxbmc 的话，课程名能筛出详情却匹配不上，
-// 最后报"愿望清单没有命中可选的课程"（见 matchesLoosely 的粗筛）。
+// 最后报"愿望清单没有命中可选的课程"（见 CouldMatch 的粗筛）。
 //
 // 空白条目一律跳过，且教师清单"只有空白项"等同于没填教师：Contains 的第二个
 // 参数是空串时恒为真，一个空行就会让类型 / 教师条件失效，把"只要艺术类"
@@ -63,7 +63,7 @@ func (w WishList) Match(item CustomCourseDic) bool {
 		teacherLimited := hasNonBlank(w.WantTeacherList)
 		for _, courseType := range w.WantTypeList {
 			courseType = strings.TrimSpace(courseType)
-			if courseType == "" || !matchCourseType(item.Kzmc, courseType) {
+			if courseType == "" || !matchesCourseType(item, courseType) {
 				continue
 			}
 			if !teacherLimited {
@@ -93,14 +93,67 @@ func (w WishList) Match(item CustomCourseDic) bool {
 	return false
 }
 
-// matchCourseType 判断课程类型是否命中愿望里的类型。列表还没带类型（Kzmc 为空）
-// 时只能靠愿望反向包含，历史行为如此；但空 Kzmc 不能反向包含出"全命中"，
-// 所以显式判空。
-func matchCourseType(kzmc, courseType string) bool {
-	if strings.Contains(kzmc, courseType) {
+// matchesCourseType 判断课程类型是否命中愿望里的类型。
+//
+// 列表侧能拿到两个类型字段：Kzmc（课程性质，如"公共艺术"）和 Kclxmc（课程类别，
+// 如"公共选修课"）。用户两个都可能填："艺术"写在 Kzmc 里，"选修"写在 Kclxmc 里，
+// 所以两个都算命中。包含匹配是双向的（历史行为）：既认字段包含愿望，也认愿望
+// 包含字段；但空字段不能反向包含出"全命中"，所以显式判空。
+func matchesCourseType(item CustomCourseDic, courseType string) bool {
+	//return typeFieldMatches(item.Kzmc, courseType) || typeFieldMatches(item.Kclxmc, courseType)
+	return typeFieldMatches(item.Kzmc, courseType) // Kclxmc 不是很有必要
+}
+
+// typeFieldMatches 是单个类型字段的包含匹配。
+func typeFieldMatches(field, courseType string) bool {
+	if strings.Contains(field, courseType) {
 		return true
 	}
-	return kzmc != "" && strings.Contains(courseType, kzmc)
+	return field != "" && strings.Contains(courseType, field)
+}
+
+// CouldMatch 是抓课程详情之前的粗筛：返回 false 的课一定匹配不上，返回 true
+// 的还要等详情回来才能定论。engine 用它决定"要不要为这门课请求 GetCourseDetail"。
+//
+// 需要这个粗筛，是因为课程列表里没有教师：教师（Jsxx）只出现在详情里。愿望里
+// 填了教师时，列表里任何一门课都可能是那位老师教的，必须全部抓详情；只看课程名
+// 会把教师命中的课挡在门外，最后报"愿望清单没有命中可选的课程"。真实案例：
+// 通识选修课列表里全是"公共艺术"类课程，愿望写的是"定向越野 / 乒乓球"（课程名）
+// 加"殷海华"（教师），殷老师教的《西方美术鉴赏》课程名一条都不含，于是永远
+// 拿不到详情，教师分支也就永远不可能命中。
+//
+// 有课程类型愿望时可以不抓详情先筛：Match 在有类型时要求类型命中，而类型只看
+// 列表侧字段（Kzmc / Kclxmc）。只有课程名一个条件时最省：列表里就能判定，
+// 不必为了几门课把整张课表都请求一遍详情。
+//
+// 本函数必须是 Match 的超集：CouldMatch 为 false 的课，Match 必然为 false。
+// 改 Match 的规则时这里要同步（wish_test.go 里有对照用例）。
+func (w WishList) CouldMatch(item CustomCourseDic) bool {
+	for _, class := range w.WantClassList {
+		class = strings.TrimSpace(class)
+		if class == "" {
+			continue
+		}
+		if strings.Contains(item.Jxbmc, class) || strings.Contains(item.Kcmc, class) {
+			return true
+		}
+	}
+	if hasNonBlank(w.WantTypeList) {
+		// 有类型条件时 Match 要求类型命中；教师命中不能替代类型命中，
+		// 所以类型不命中的课不必抓详情。
+		for _, courseType := range w.WantTypeList {
+			courseType = strings.TrimSpace(courseType)
+			if courseType == "" {
+				continue
+			}
+			if matchesCourseType(item, courseType) {
+				return true
+			}
+		}
+		return false
+	}
+	// 没有类型条件：只剩"只填教师"这一种可能，而教师只在详情里。
+	return hasNonBlank(w.WantTeacherList)
 }
 
 // Rank 返回课程在愿望清单中的优先级：越小越想要。

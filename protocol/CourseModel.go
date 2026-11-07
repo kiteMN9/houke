@@ -508,6 +508,7 @@ type CustomCourseDic struct {
 	Kch_id string `json:"kch_id"` // 课程号id
 	Kcmc   string `json:"kcmc"`   // 课程名称  艺术哲学：美是如何诞生的(艺术类)
 	Kklxdm string `json:"kklxdm"` // 关键参数，区分不同类型选课  '10'
+	Kclxmc string `json:"kclxmc"` // 课程类别名称  'kclxmc': '公共选修课'
 	Kzmc   string `json:"kzmc"`   // 课程性质  'kzmc': '艺术类'
 	XF     string `json:"xf"`     // 学分  1.5
 	Xxkbj  string `json:"xxkbj"`  // 选修课标记?

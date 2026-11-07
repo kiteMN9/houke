@@ -161,6 +161,7 @@ func applyCourseList(dst *CustomCourseDic, in *CourseListDic) {
 	dst.Kch_id = in.KchId
 	dst.Kcmc = in.Kcmc
 	dst.Kklxdm = in.Kklxdm
+	dst.Kclxmc = in.Kclxmc
 	dst.Kzmc = in.Kzmc
 	dst.XF = in.Xf
 	dst.Xxkbj = in.Xxkbj
