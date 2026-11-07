@@ -162,6 +162,89 @@ func TestRunAutoRequiresWish(t *testing.T) {
 	}
 }
 
+// 候选组装期间会话被 Reset：不能在旧候选上继续提交，必须返回租约失效。
+func TestRunAutoStopsWhenSessionChangesDuringSource(t *testing.T) {
+	eng := newTestEngine(t)
+	wants := protocol.WishList{WantClassList: []string{"定向越野"}}
+	candidates := []protocol.CustomCourseDic{{Jxbmc: "定向越野15", Do_jxb_id: "x"}}
+
+	calls := 0
+	source := func(context.Context) ([]protocol.CustomCourseDic, error) {
+		calls++
+		eng.Reset()
+		return candidates, nil
+	}
+	_, err := eng.RunAuto(context.Background(), Plan{
+		Wants:     wants,
+		MaxRounds: 3,
+		Interval:  time.Millisecond,
+	}, source, nil)
+	if !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("err = %v，期望 ErrSessionChanged", err)
+	}
+	if calls != 1 {
+		t.Fatalf("source 调用 %d 次，期望 1", calls)
+	}
+}
+
+// 进度回调里切换了会话（Reset / SelectTab）时，下一门提交前就要停，
+// 不能把旧队列再发一轮。
+func TestRunAutoStopsWhenSessionChangesBeforeChoose(t *testing.T) {
+	eng := newTestEngine(t)
+	wants := protocol.WishList{WantClassList: []string{"定向越野"}}
+	candidates := []protocol.CustomCourseDic{{Jxbmc: "定向越野15", Do_jxb_id: "x"}}
+
+	picked := false
+	_, err := eng.RunAuto(context.Background(), Plan{
+		Wants:     wants,
+		MaxRounds: 3,
+		Interval:  time.Millisecond,
+	}, staticSource(candidates), func(ev Event) {
+		switch ev.Kind {
+		case EventBegin:
+			eng.Reset()
+		case EventPick:
+			picked = true
+		}
+	})
+	if !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("err = %v，期望 ErrSessionChanged", err)
+	}
+	if picked {
+		t.Fatal("会话已经变更，仍然发出了选课请求")
+	}
+}
+
+// 候选组装一开始就发现会话已重置：按租约失效上报，而不是普通候选错误。
+func TestRunAutoWrapsSessionErrorFromSource(t *testing.T) {
+	eng := newTestEngine(t)
+	wants := protocol.WishList{WantClassList: []string{"定向越野"}}
+
+	_, err := eng.RunAuto(context.Background(), Plan{
+		Wants:     wants,
+		MaxRounds: 1,
+		Interval:  time.Millisecond,
+	}, func(context.Context) ([]protocol.CustomCourseDic, error) {
+		return nil, ErrSessionReset
+	}, nil)
+	if !errors.Is(err, ErrSessionChanged) {
+		t.Fatalf("err = %v，期望 ErrSessionChanged", err)
+	}
+}
+
+// Reset 之后不能再拿零参数去提交：Choose 必须在本地就拒绝。
+func TestChooseAfterResetDoesNotSubmit(t *testing.T) {
+	eng := newTestEngine(t)
+	eng.Reset()
+
+	_, err := eng.Choose(context.Background(), &protocol.CustomCourseDic{
+		Kch_id: "k1", Do_jxb_id: "d1",
+	})
+	if !errors.Is(err, ErrSessionReset) {
+		t.Fatalf("err = %v，期望 ErrSessionReset", err)
+	}
+}
+
 // staticSource 返回固定候选，用来在不碰"刷新"的情况下跑 RunAuto。
 func staticSource(list []protocol.CustomCourseDic) Source {
 	return func(context.Context) ([]protocol.CustomCourseDic, error) { return list, nil }

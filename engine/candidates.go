@@ -80,9 +80,9 @@ func (e *Engine) collectCandidates(ctx context.Context, wants protocol.WishList,
 		}
 		detail, err := e.GetCourseDetail(ctx, kchID)
 		if err != nil {
-			// 取消/登录失效是全局性问题，不能当成"这门课没拿到详情"跳过。
+			// 取消/登录失效/会话结束是全局性问题，不能当成"这门课没拿到详情"跳过。
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
-				errors.Is(err, protocol.ErrUnauthorized) {
+				errors.Is(err, protocol.ErrUnauthorized) || isSessionEnd(err) {
 				return nil, err
 			}
 			if firstErr == nil {

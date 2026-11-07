@@ -15,14 +15,15 @@ import (
 // 猜语义。最典型的是 401——"登录失败"和"会话已失效"都是 401，但前者不能
 // 触发"把徽标切成未登录 + 提示重新登录"，否则输错密码会被显示成掉线。
 const (
-	codeUnauthorized = "unauthorized" // 未登录 / 会话已失效，前端统一按"需要重新登录"处理
-	codeLoginFailed  = "login_failed" // 这次登录动作失败（密码错、流程失败），不改会话失效语义
-	codeNoPermission = "no_permission"
-	codeBusy         = "busy"          // 已有任务在跑（登录 / 初始化 / 自动选课）
-	codeSessionReset = "session_reset" // 初始化期间会话被登出 / 重登
-	codeCancelled    = "cancelled"
-	codeTimeout      = "timeout"
-	codeInternal     = "internal"
+	codeUnauthorized   = "unauthorized" // 未登录 / 会话已失效，前端统一按"需要重新登录"处理
+	codeLoginFailed    = "login_failed" // 这次登录动作失败（密码错、流程失败），不改会话失效语义
+	codeNoPermission   = "no_permission"
+	codeBusy           = "busy"            // 已有任务在跑（登录 / 初始化 / 自动选课）
+	codeSessionReset   = "session_reset"   // 初始化期间会话被登出 / 重登
+	codeSessionChanged = "session_changed" // 自动选课运行期间会话被重置或切换了页签
+	codeCancelled      = "cancelled"
+	codeTimeout        = "timeout"
+	codeInternal       = "internal"
 )
 
 // writeAPIError 是所有业务错误的统一出口。
@@ -59,6 +60,8 @@ func writeEngineError(c *gin.Context, err error) {
 		writeAPIError(c, http.StatusForbidden, codeNoPermission, "该账号无此功能权限")
 	case errors.Is(err, engine.ErrSessionReset):
 		writeAPIError(c, http.StatusConflict, codeSessionReset, "会话已重置，请重新初始化")
+	case errors.Is(err, engine.ErrSessionChanged):
+		writeAPIError(c, http.StatusConflict, codeSessionChanged, "会话已变更，请重新开始")
 	default:
 		writeAPIError(c, http.StatusInternalServerError, codeInternal, err.Error())
 	}

@@ -161,8 +161,20 @@ func (e *Engine) RunAuto(ctx context.Context, plan Plan, source Source, sink Sin
 		return zero, ErrNoWantedCourse
 	}
 
+	// 会话租约：开跑时记下代次，之后每个可能改变会话的动作前后都比较。
+	// Reset / 成功切换页签会递增代次，正常的参数刷新（Renew）不会。
+	gen := e.SessionGeneration()
+
 	candidates, err := source(ctx)
+	if e.SessionGeneration() != gen {
+		return zero, asSessionChanged(err)
+	}
 	if err != nil {
+		// 会话在候选组装期间结束（Reset / 页签消失）时，不能把它当成
+		// 一次普通的候选获取失败：自动选课已经没有可用的会话了。
+		if isSessionEnd(err) && !errors.Is(err, ErrNotInitialized) {
+			return zero, asSessionChanged(err)
+		}
 		return zero, err
 	}
 	if len(candidates) == 0 {
@@ -186,15 +198,25 @@ func (e *Engine) RunAuto(ctx context.Context, plan Plan, source Source, sink Sin
 		if err := ctx.Err(); err != nil {
 			return zero, err
 		}
+		if e.SessionGeneration() != gen {
+			return zero, ErrSessionChanged
+		}
 
 		// 先刷新再提交：这一轮的排序和"已满 x/y"都用刷新后的人数。
 		if time.Since(loadedAt) >= p.Refresh {
 			loadedAt = time.Now()
 			next, err := refreshQueue(ctx, source, wants)
+			if e.SessionGeneration() != gen {
+				return zero, asSessionChanged(err)
+			}
 			switch {
 			case err != nil:
 				if ctxErr := ctx.Err(); ctxErr != nil {
 					return zero, ctxErr
+				}
+				// 会话已经结束（重置 / 页签消失）时沿用旧队列没有意义。
+				if isSessionEnd(err) {
+					return zero, asSessionChanged(err)
 				}
 				// 登录失效时提交也一定失败，交给上层重新登录。
 				if errors.Is(err, protocol.ErrUnauthorized) {
@@ -225,19 +247,16 @@ func (e *Engine) RunAuto(ctx context.Context, plan Plan, source Source, sink Sin
 				Course:  course,
 				Message: pickMessage(round, course),
 			})
+			// sink 是同步调用的，可能刚在这里触发了 Reset / SelectTab。
+			if e.SessionGeneration() != gen {
+				return zero, ErrSessionChanged
+			}
 
 			result, err := e.Choose(ctx, &course)
-			if err != nil {
-				if ctxErr := ctx.Err(); ctxErr != nil {
-					return zero, ctxErr
-				}
-				// 会话已经彻底失效时重试没有意义，交给上层重新登录。
-				if errors.Is(err, protocol.ErrUnauthorized) {
-					return zero, err
-				}
-				emit(sink, Event{Round: round, Kind: EventFailed, Course: course, Message: err.Error()})
-				continue
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return zero, ctxErr
 			}
+			// 已经选上就认成功：即使提交期间会话换了代，这门课也已经落库。
 			if result.Flag == "1" {
 				emit(sink, Event{
 					Round:   round,
@@ -247,16 +266,42 @@ func (e *Engine) RunAuto(ctx context.Context, plan Plan, source Source, sink Sin
 				})
 				return result, nil
 			}
+			if e.SessionGeneration() != gen {
+				return zero, asSessionChanged(err)
+			}
+			if err != nil {
+				if isSessionEnd(err) {
+					return zero, asSessionChanged(err)
+				}
+				// 会话已经彻底失效时重试没有意义，交给上层重新登录。
+				if errors.Is(err, protocol.ErrUnauthorized) {
+					return zero, err
+				}
+				emit(sink, Event{Round: round, Kind: EventFailed, Course: course, Message: err.Error()})
+				continue
+			}
 			emit(sink, Event{Round: round, Kind: EventFailed, Course: course, Message: result.Msg})
 		}
 
 		if p.MaxRounds > 0 && round >= p.MaxRounds {
+			if e.SessionGeneration() != gen {
+				return zero, ErrSessionChanged
+			}
 			return zero, ErrNotChosen
 		}
 		if err := sleepCtx(ctx, p.Interval); err != nil {
 			return zero, err
 		}
 	}
+}
+
+// asSessionChanged 把底层"会话已经结束"的错误归一成自动选课的租约错误，
+// 同时保留原始原因，方便日志和任务详情定位是 Reset 还是页签消失。
+func asSessionChanged(err error) error {
+	if err == nil || errors.Is(err, ErrSessionChanged) {
+		return ErrSessionChanged
+	}
+	return fmt.Errorf("%w: %v", ErrSessionChanged, err)
 }
 
 // refreshQueue 取一次最新候选并排成队列。返回空队列表示"这次刷新没有可提交

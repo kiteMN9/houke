@@ -194,6 +194,12 @@ func (e *Engine) Inited() bool {
 	return e.session.Inited()
 }
 
+// SessionGeneration 返回当前会话代次，供自动选课做会话租约。
+// Reset 和成功切换页签都会递增；正常的参数刷新（Renew/Initialize）不会。
+func (e *Engine) SessionGeneration() uint64 {
+	return e.session.Generation()
+}
+
 // ModeName 返回当前页签名。
 func (e *Engine) ModeName() string {
 	return e.session.ModeName()
@@ -301,6 +307,11 @@ func call[T any](ctx context.Context, e *Engine, fn func() (T, error)) (T, error
 		return v, err
 	}
 	if rerr := e.session.Renew(ctx); rerr != nil {
+		// Reset / 页签消失属于"这次会话已经结束"，必须把错误交给上层；
+		// 其它重抓失败保持原来的降级行为，避免把一次抖动变成业务错误。
+		if isSessionEnd(rerr) {
+			return v, rerr
+		}
 		return v, err
 	}
 	return retryOnUnauthorized(ctx, e, fn)
@@ -350,6 +361,11 @@ func (e *Engine) Choose(ctx context.Context, co *protocol.CustomCourseDic) (prot
 		return r, err
 	}
 	if rerr := e.session.Renew(ctx); rerr != nil {
+		// 会话被重置或页签消失时不能把失败结果当普通未选上继续重试；
+		// 其它重抓失败保持原行为（返回本次提交结果，让上层按普通失败处理）。
+		if isSessionEnd(rerr) {
+			return r, rerr
+		}
 		return r, nil
 	}
 	return call(ctx, e, func() (protocol.ChooseCourseResult, error) {

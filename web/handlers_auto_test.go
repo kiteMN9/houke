@@ -196,6 +196,8 @@ func TestAutoErrorMapping(t *testing.T) {
 		body string
 	}{
 		{"not_chosen", context.Background(), engine.ErrNotChosen, http.StatusOK, "not_chosen"},
+		{"session_changed", context.Background(), engine.ErrSessionChanged, http.StatusConflict, "会话已变更"},
+		{"session_reset", context.Background(), engine.ErrSessionReset, http.StatusConflict, "会话已重置"},
 		{"no_wanted", context.Background(), engine.ErrNoWantedCourse, http.StatusBadRequest, "愿望清单"},
 		{"not_initialized", context.Background(), engine.ErrNotInitialized, http.StatusBadRequest, "请先调用 /init"},
 		{"unauthorized", context.Background(), fmt.Errorf("course: %w", protocol.ErrUnauthorized), http.StatusUnauthorized, "登录已失效"},

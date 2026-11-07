@@ -233,6 +233,12 @@ func (s *Server) autoError(c *gin.Context, ctx context.Context, err error) {
 		c.JSON(http.StatusOK, gin.H{"status": "cancelled"})
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		writeAPIError(c, http.StatusGatewayTimeout, codeTimeout, "自动选课超时")
+	case errors.Is(err, engine.ErrSessionChanged):
+		writeAPIError(c, http.StatusConflict, codeSessionChanged,
+			"会话已变更，自动选课已停止，请重新开始")
+	case errors.Is(err, engine.ErrSessionReset):
+		writeAPIError(c, http.StatusConflict, codeSessionReset,
+			"会话已重置，自动选课已停止，请重新初始化")
 	case errors.Is(err, engine.ErrNotChosen):
 		c.JSON(http.StatusOK, gin.H{"status": "not_chosen", "error": err.Error()})
 	case errors.Is(err, engine.ErrNoWantedCourse), errors.Is(err, engine.ErrNoCandidates):
@@ -257,6 +263,12 @@ func (s *Server) finishAutoTask(id string, ctx context.Context, err error, timeo
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		s.tasks.finish(id, taskKindAuto, taskStatusTimeout,
 			"自动选课超时（"+autoTimeoutText(timeout)+"）", "")
+	case errors.Is(err, engine.ErrSessionChanged):
+		s.tasks.finish(id, taskKindAuto, taskStatusFailed,
+			"自动选课中断：会话已变更", err.Error())
+	case errors.Is(err, engine.ErrSessionReset):
+		s.tasks.finish(id, taskKindAuto, taskStatusFailed,
+			"自动选课中断：会话已重置", err.Error())
 	case errors.Is(err, engine.ErrNotChosen):
 		s.tasks.finish(id, taskKindAuto, taskStatusFailed, "重试用尽仍未选上", err.Error())
 	case errors.Is(err, engine.ErrNoWantedCourse), errors.Is(err, engine.ErrNoCandidates):

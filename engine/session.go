@@ -13,6 +13,12 @@ import (
 // 会话被 Reset（登出 / force 刷新）后，正在进行中的初始化结果作废。
 var ErrSessionReset = errors.New("engine: 会话已重置")
 
+// ErrSessionChanged 表示自动选课运行期间会话已经换了一代（Reset 或成功切换页签）。
+//
+// 它不是一次普通的提交失败：继续跑下去会落在另一套课程集合/另一份参数上，
+// 自动选课必须停，而不是沿用旧队列重试。
+var ErrSessionChanged = errors.New("engine: 会话已变更")
+
 // 页签下标越界。
 var errBadTab = errors.New("engine: 无效的页签下标")
 
@@ -54,9 +60,12 @@ type session struct {
 	lastRenew time.Time
 
 	// mu 只保护下面已发布的快照；持锁路径不允许做网络 IO。
-	mu         sync.RWMutex
-	cfg        *protocol.APIConfig
-	generation uint64 // Reset 递增，用来丢弃"重置之前发起"的初始化结果
+	mu  sync.RWMutex
+	cfg *protocol.APIConfig
+	// generation 是会话代次：Reset 和成功切换页签都会递增。
+	// 它有两个用途：丢弃"变更之前发起"的初始化/刷新结果，以及给自动选课
+	// 提供租约——启动时记下代次，运行中一旦不一致就停止。
+	generation uint64
 
 	// wish 是高级选课的愿望清单：由上层（Web 配置 / Plan）设置，
 	// 跨 Reset 保留，并随每次 snapshot 覆盖到 cfg 副本上。
@@ -88,6 +97,27 @@ func (s *session) Inited() bool {
 	return s.inited.Load()
 }
 
+// Generation 返回当前会话代次。
+//
+// 自动选课把它当作会话租约：开始时记下值，之后每次提交/刷新前后都比较；
+// 值变了说明用户重置了会话或切了页签，不能再拿旧候选继续抢。
+func (s *session) Generation() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.generation
+}
+
+// isSessionEnd 判断错误是否意味着"这次会话已经不能继续用了"。
+//
+// 这类错误不能按"这一门没选上"继续重试：Reset 之后参数已经清空，页签消失
+// 之后旧队列对应的课程集合也不再有效。
+func isSessionEnd(err error) bool {
+	return errors.Is(err, ErrSessionReset) ||
+		errors.Is(err, ErrSessionChanged) ||
+		errors.Is(err, ErrNotInitialized) ||
+		errors.Is(err, errTabGone)
+}
+
 // snapshot 返回当前已发布配置的副本。
 // 请求方拿到后独占这份副本，整个请求期间都不需要再持有 session 的锁。
 //
@@ -101,6 +131,20 @@ func (s *session) snapshot() *protocol.APIConfig {
 	}
 	c := *s.cfg
 	return &c
+}
+
+// requestSnapshot 返回已初始化配置的副本；未初始化时返回 ErrSessionReset。
+//
+// 提交选课必须走这里：Reset 会把 cfg 清空，如果只做"先判 Inited 再 snapshot"，
+// 两步之间仍可能被 Reset 插进来，把零参数发到教务。
+func (s *session) requestSnapshot() (*protocol.APIConfig, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if !s.inited.Load() || s.cfg == nil {
+		return nil, ErrSessionReset
+	}
+	c := *s.cfg
+	return &c, nil
 }
 
 // SetWish 设置高级选课用的愿望清单。
@@ -169,7 +213,8 @@ func (s *session) Initialize(ctx context.Context) error {
 // Reset 清空初始化状态，下一次 Initialize 会重新抓取。
 //
 // 它不等待正在进行的初始化：只把 generation 加一，让那次初始化在发布前
-// 发现结果已过期。这样登出不会被 10 分钟的初始化拖住。
+// 发现结果已过期。这样登出不会被 10 分钟的初始化拖住；正在跑自动选课的
+// 任务也会在下一个检查点发现租约失效并退出。
 func (s *session) Reset() {
 	s.mu.Lock()
 	s.generation++
@@ -286,6 +331,7 @@ func (s *session) Window() protocol.WindowInfo {
 //
 // 和 Initialize 一样，参数抓取在私有副本上完成，成功后才发布；
 // 抓取期间其他请求继续用旧快照，不会看到写了一半的配置。
+// 发布成功会递增 generation：页签变了，正在跑的自动选课必须重新开始。
 func (s *session) SelectTab(ctx context.Context, idx int) error {
 	s.mu.RLock()
 	cfg := s.cfg
@@ -314,6 +360,7 @@ func (s *session) SelectTab(ctx context.Context, idx int) error {
 		return ErrSessionReset
 	}
 	s.cfg = next
+	s.generation++
 	return nil
 }
 
@@ -375,7 +422,10 @@ func (s *session) CacheCourseDetail(list []protocol.CourseDetail) {
 
 // Choose 执行一次选课。
 func (s *session) Choose(ctx context.Context, co *protocol.CustomCourseDic) (protocol.ChooseCourseResult, error) {
-	snapshot := s.snapshot()
+	snapshot, err := s.requestSnapshot()
+	if err != nil {
+		return protocol.ChooseCourseResult{}, err
+	}
 	return s.client.ChooseCourse(ctx, snapshot.Index, snapshot.Window, co)
 }
 

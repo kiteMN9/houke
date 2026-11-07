@@ -207,8 +207,12 @@ func TestSelectTabPublishesNewSnapshot(t *testing.T) {
 		t.Fatalf("Tabs = %d，期望 2", got)
 	}
 
+	before := s.Generation()
 	if err := s.SelectTab(context.Background(), 1); err != nil {
 		t.Fatalf("SelectTab: %v", err)
+	}
+	if got := s.Generation(); got != before+1 {
+		t.Fatalf("成功切换页签后 generation = %d，期望 %d", got, before+1)
 	}
 	if got := s.ModeName(); got != "tab1" {
 		t.Fatalf("ModeName = %q，期望 tab1", got)
@@ -218,6 +222,9 @@ func TestSelectTabPublishesNewSnapshot(t *testing.T) {
 	}
 	if err := s.SelectTab(context.Background(), 5); !errors.Is(err, errBadTab) {
 		t.Fatalf("越界下标应返回 errBadTab，得到 %v", err)
+	}
+	if got := s.Generation(); got != before+1 {
+		t.Fatalf("失败的页签切换不该递增 generation：%d", got)
 	}
 }
 
