@@ -372,6 +372,9 @@ Task.apply = function (snap, opts) {
     if (!fromStream && !running) {
         Task.maybeRefreshDetails();
     }
+    if (prev && prev.running && !running && next.kind === 'auto') {
+        reportTaskResult(next);
+    }
 };
 
 Task.clear = function () {
@@ -382,6 +385,12 @@ Task.clear = function () {
     if (panel) panel.hidden = true;
     const ev = $('#task-events');
     if (ev) ev.innerHTML = '';
+    // 账号/任务快照被清空时，自动选课区不能继续停在“进行中”形态。
+    const start = $('#btn-auto-start');
+    const cancel = $('#btn-auto-cancel');
+    if (start) start.disabled = !state.currentId;
+    if (cancel) cancel.disabled = true;
+    setAutoHint('');
 };
 
 /* ---------- 推送（SSE）：任务期间不轮询 ---------- */
@@ -1255,6 +1264,7 @@ function autoLimitBody(now) {
 
 async function startAutoChoose() {
     if (!state.currentId) { toast('请先选择账号', 'err'); return; }
+    const id = state.currentId;
 
     let limit;
     try {
@@ -1273,28 +1283,78 @@ async function startAutoChoose() {
         once:            $('#auto-once').checked,
         ...limit,
     };
+    // 后端现在只等"校验 + 登记任务"，通常几十毫秒就返回 202；真正的运行
+    // 由任务快照/SSE 驱动，不再用这个 promise 等 24 小时。
     $('#btn-auto-start').disabled = true;
-    setAutoHint('正在自动选课…');
+    setAutoHint('正在启动…');
     try {
-        const res = await API.autoChoose(state.currentId, body);
+        const res = await API.autoChoose(id, body);
+        if (state.currentId !== id) return;
         setAutoHint(autoResultText(res));
+        // 202 只代表任务已登记；立刻拉一次快照，让按钮进入"取消"形态。
+        invalidateStatus();
+        await refreshStatus({ quiet: true }).catch(() => {});
+        Task.ensure();
     } catch (e) {
+        if (state.currentId !== id) return;
         setAutoHint('');
-        toast('自动选课失败: ' + e.message, 'err');
-    } finally {
         $('#btn-auto-start').disabled = false;
+        toast('自动选课失败: ' + e.message, 'err');
+    }
+}
+
+// autoTaskText 把 task.result（或旧版直接返回的结果）翻成一句人话。
+function autoTaskText(res) {
+    if (!res) return '';
+    const r = res.result || res;
+    switch (r.status) {
+        case 'ok': {
+            const c = r.course || {};
+            const name = c.kcmc || c.jxbmc || '';
+            const cls = c.jxbmc || '';
+            return '已选上：' + name + (cls ? '（' + cls + '）' : '');
+        }
+        case 'not_chosen':  return '轮次用尽，未选上';
+        case 'cancelled':   return '已取消';
+        case 'timeout':     return r.error || '自动选课超时';
+        case 'session_changed': return '会话已变更，自动选课已停止，请重新开始';
+        case 'session_reset':   return '会话已重置，自动选课已停止，请重新初始化';
+        case 'no_wanted':       return '愿望清单没有命中可选的课程';
+        case 'no_candidates':   return '没有可用的候选课程';
+        case 'not_initialized': return '会话尚未初始化，自动选课已停止';
+        case 'unauthorized':    return '登录已失效，自动选课已停止';
+        case 'running':         return '已启动，后台运行中…';
+        default:                return r.error || '自动选课失败';
+    }
+}
+
+// renderAutoTask 用任务快照同步自动选课区的按钮与提示。
+// 这是"启动请求只负责启动"之后的关键：页面刷新、别的标签页取消、任务自然
+// 结束，都只能从 Task.last 推出来，不能再依赖 startAutoChoose 的返回值。
+function renderAutoTask() {
+    const start = $('#btn-auto-start');
+    const cancel = $('#btn-auto-cancel');
+    if (!start || !cancel) return;
+
+    const t = Task.last;
+    const isAuto = !!(t && t.kind === 'auto');
+    const running = isAuto && t.running;
+    // 登录/初始化也在跑时同样不能再启动自动选课（服务端会 409 busy）。
+    start.disabled = running || Task.running() || !state.currentId;
+    cancel.disabled = !running;
+    if (running) {
+        setAutoHint('自动选课进行中…' + (t.stageText ? ' ' + t.stageText : ''));
+    } else if (isAuto && t.result) {
+        setAutoHint(autoTaskText(t.result));
+    } else if (isAuto && t.status) {
+        setAutoHint('自动选课' + (TASK_STATUS_TEXT[t.status] || t.status));
     }
 }
 
 function autoResultText(res) {
     if (!res) return '';
-    if (res.status === 'ok') {
-        const c = res.course || {};
-        return '已选上：' + (c.kcmc || c.jxbmc || '') + '（' + (c.jxbmc || '') + '）';
-    }
-    if (res.status === 'not_chosen') return '轮次用尽，未选上';
-    if (res.status === 'cancelled') return '已取消';
-    return res.msg || res.status || '';
+    if (res.status === 'running') return '已启动，后台运行中…';
+    return autoTaskText(res);
 }
 
 // cancelAutoResultText 把取消接口的结果映射成提示。
@@ -1334,7 +1394,9 @@ async function cancelAutoChoose() {
         setAutoHint(prevHint);         // 取消没成功：把原来的提示还回去
         toast('取消失败: ' + e.message, 'err');
     } finally {
-        btn.disabled = false;
+        // 不能无条件 btn.disabled = false：任务已经收尾时，那会让“取消”
+        // 按钮在空任务上重新可点。交给快照统一决定。
+        if (state.currentId === id) renderAutoTask();
     }
 }
 
@@ -1502,7 +1564,8 @@ function renderStatus() {
     const busy = Task.running();
     if (busy) {
         badge.className = 'badge wait';
-        badge.textContent = Task.running('init') ? '初始化中…' : '登录中…';
+        badge.textContent = Task.running('init') ? '初始化中…'
+            : (Task.running('auto') ? '自动选课中…' : '登录中…');
         btnLogin.hidden  = false;
         btnLogout.hidden = true;
     } else if (st.loggedIn) {
@@ -1535,6 +1598,7 @@ function renderStatus() {
 
     // 二维码弹窗里的阶段文案/倒计时跟着任务快照/进度帧刷新（运行中约每秒一帧）
     syncQRStatus();
+    renderAutoTask();
 }
 
 /* =========================================================================
@@ -2705,6 +2769,15 @@ function reportTaskResult(t) {
     lastTaskToast = { id: t.id, status: t.status || '' };
 
     const label = TASK_KIND_TEXT[t.kind] || '任务';
+    if (t.kind === 'auto' && t.result) {
+        const text = autoTaskText(t.result);
+        if (t.result.status === 'ok') toast(text, 'ok');
+        else if (t.status === 'cancelled') toast(text, 'warn');
+        else toast(text, 'err');
+        Task.needsRefresh = false;
+        refreshStatus().catch(() => {});
+        return;
+    }
     const lastEv = (t.events && t.events.length) ? t.events[t.events.length - 1] : null;
     const text = (lastEv && lastEv.text) || (label + (TASK_STATUS_TEXT[t.status] || ''));
     switch (t.status) {
@@ -2768,14 +2841,16 @@ async function cancelInit() {
     await refreshStatus({ quiet: true }).catch(() => {});
 }
 
-// cancelCurrentTask 取消当前正在跑的任务（登录或初始化）。
+// cancelCurrentTask 取消当前正在跑的任务（登录、初始化或自动选课）。
 async function cancelCurrentTask() {
     if (!state.currentId) return;
     const id = state.currentId;
     const kind = Task.last && Task.last.kind;
     dismissInputDialog();
     try {
-        if (kind === 'init') {
+        if (kind === 'auto') {
+            await API.cancelAuto(id);
+        } else if (kind === 'init') {
             await Promise.allSettled([API.cancelInit(id), API.cancelLogin(id)]);
         } else {
             await API.cancelLogin(id);
@@ -2968,7 +3043,7 @@ async function handleLoginInput(value) {
 function setLoginBtnBusy(btn) {
     btn.classList.remove('primary');
     btn.classList.add('danger');
-    btn.textContent = '取消登录';
+    btn.textContent = Task.running('auto') ? '取消自动选课' : '取消登录';
 }
 function setLoginBtnIdle(btn) {
     btn.classList.remove('danger');

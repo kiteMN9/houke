@@ -3,7 +3,6 @@ package web
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -13,8 +12,6 @@ import (
 
 	"school_sdk/engine"
 	"school_sdk/protocol"
-
-	"github.com/gin-gonic/gin"
 )
 
 // newAutoRuntime 建一个账号并返回运行态；loggedIn 控制是否伪造登录态。
@@ -214,38 +211,38 @@ func TestAutoChooseRejectsInvalidLimit(t *testing.T) {
 	}
 }
 
-// autoError 决定前端看到的是"业务失败"还是"请求失败"。
-func TestAutoErrorMapping(t *testing.T) {
+// autoOutcome 决定任务收尾时前端看到的是业务失败还是运行中断。
+func TestAutoOutcome(t *testing.T) {
 	cases := []struct {
-		name string
-		ctx  context.Context
-		err  error
-		code int
-		body string
+		name       string
+		ctx        context.Context
+		err        error
+		taskStatus string
+		result     string
+		text       string
 	}{
-		{"not_chosen", context.Background(), engine.ErrNotChosen, http.StatusOK, "not_chosen"},
-		{"session_changed", context.Background(), engine.ErrSessionChanged, http.StatusConflict, "会话已变更"},
-		{"session_reset", context.Background(), engine.ErrSessionReset, http.StatusConflict, "会话已重置"},
-		{"no_wanted", context.Background(), engine.ErrNoWantedCourse, http.StatusBadRequest, "愿望清单"},
-		{"not_initialized", context.Background(), engine.ErrNotInitialized, http.StatusBadRequest, "请先调用 /init"},
-		{"unauthorized", context.Background(), fmt.Errorf("course: %w", protocol.ErrUnauthorized), http.StatusUnauthorized, "登录已失效"},
-		{"canceled", canceledContext(), context.Canceled, http.StatusOK, "cancelled"},
-		{"timeout", deadlineContext(), context.DeadlineExceeded, http.StatusGatewayTimeout, "自动选课超时"},
-		{"internal", context.Background(), errors.New("boom"), http.StatusInternalServerError, "boom"},
+		{"canceled", canceledContext(), context.Canceled, taskStatusCancelled, taskStatusCancelled, "已取消"},
+		{"timeout", deadlineContext(), context.DeadlineExceeded, taskStatusTimeout, taskStatusTimeout, "超时"},
+		{"session_changed", context.Background(), engine.ErrSessionChanged, taskStatusFailed, "session_changed", "会话已变更"},
+		{"session_reset", context.Background(), engine.ErrSessionReset, taskStatusFailed, "session_reset", "会话已重置"},
+		{"not_chosen", context.Background(), engine.ErrNotChosen, taskStatusFailed, "not_chosen", "未选上"},
+		{"no_wanted", context.Background(), engine.ErrNoWantedCourse, taskStatusFailed, "no_wanted", "愿望清单"},
+		{"no_candidates", context.Background(), engine.ErrNoCandidates, taskStatusFailed, "no_candidates", "候选课程"},
+		{"not_initialized", context.Background(), engine.ErrNotInitialized, taskStatusFailed, "not_initialized", "尚未初始化"},
+		{"unauthorized", context.Background(), protocol.ErrUnauthorized, taskStatusFailed, "unauthorized", "登录已失效"},
+		{"internal", context.Background(), errors.New("boom"), taskStatusFailed, "failed", "自动选课失败"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			gin.SetMode(gin.TestMode)
-			rec := httptest.NewRecorder()
-			c, _ := gin.CreateTestContext(rec)
-			s := &Server{}
-			s.autoError(c, tc.ctx, tc.err)
-
-			if rec.Code != tc.code {
-				t.Fatalf("status = %d, want %d, body = %s", rec.Code, tc.code, rec.Body.String())
+			got := autoOutcome(tc.ctx, tc.err, 24*time.Hour)
+			if got.taskStatus != tc.taskStatus {
+				t.Fatalf("taskStatus = %q，期望 %q", got.taskStatus, tc.taskStatus)
 			}
-			if !strings.Contains(rec.Body.String(), tc.body) {
-				t.Fatalf("body = %s，期望包含 %q", rec.Body.String(), tc.body)
+			if got.result == nil || got.result.Status != tc.result {
+				t.Fatalf("result = %+v，期望 status %q", got.result, tc.result)
+			}
+			if !strings.Contains(got.text, tc.text) {
+				t.Fatalf("text = %q，期望包含 %q", got.text, tc.text)
 			}
 		})
 	}

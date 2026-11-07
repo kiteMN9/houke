@@ -28,10 +28,6 @@ type accountRuntime struct {
 	initMu     sync.Mutex
 	initCancel context.CancelFunc
 
-	// 自动选课专用锁：与登录/初始化独立，避免长时间任务互相阻塞
-	autoMu     sync.Mutex
-	autoCancel context.CancelFunc
-
 	// Web 模式下等待用户输入的挂起请求
 	inputMu      sync.Mutex
 	pendingInput *pendingInput

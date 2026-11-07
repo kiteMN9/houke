@@ -124,12 +124,11 @@ func autoWants(req autoChooseReq) protocol.WishList {
 	}
 }
 
-// autoChoose 执行自动选课。
+// autoChoose 启动自动选课任务。
 //
-// 与 /choose 的区别是它跑的是 engine.Plan：候选（列表 + 详情里的 Do_jxb_id）
-// 由 engine.CandidateSource 提供，运行中按 refreshSeconds 周期重拉，再按愿望
-// 优先级反复尝试。整个过程写成任务事件，前端通过 /events 看进度；这个请求本身
-// 会一直挂到选上、取消、超时或轮次用尽（与 /init 的模型一致）。
+// 这个接口只负责校验和启动：参数、登录态、初始化、愿望清单、同账号任务冲突
+// 都在返回前处理；真正的 RunAuto 放到后台 goroutine，接口立即返回 202。
+// 运行进度/结果通过 /status 和 /events 推送，不再把 24 小时挂在 HTTP 响应上。
 func (s *Server) autoChoose(c *gin.Context) {
 	id := c.Param("id")
 	rt, err := s.store.runtime(id)
@@ -178,28 +177,46 @@ func (s *Server) autoChoose(c *gin.Context) {
 		Once:      req.Once,
 	}
 
-	// 与登录/初始化一致：独立于 HTTP 请求生命周期，靠 /auto-choose/cancel 取消；
-	// 预算由本次请求的时长/结束时间决定（默认 24 小时，不再固定 10 分钟）。
+	// 与登录/初始化一致：任务独立于 HTTP 请求生命周期，靠 /auto-choose/cancel 取消。
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
 
 	// 任务与取消函数原子登记：/status 一旦显示"自动选课中"，
 	// /auto-choose/cancel 就一定真的能取消。
-	if _, ok := s.tasks.startCancelable(id, taskKindAuto, cancel); !ok {
+	task, ok := s.tasks.startCancelable(id, taskKindAuto, cancel)
+	if !ok {
+		cancel()
 		writeAPIError(c, http.StatusConflict, codeBusy, "自动选课已在进行中")
 		return
 	}
-	rt.autoMu.Lock()
-	rt.autoCancel = cancel
-	rt.autoMu.Unlock()
-	defer func() {
-		rt.autoMu.Lock()
-		rt.autoCancel = nil
-		rt.autoMu.Unlock()
-	}()
 
+	// 先把启动事件写进任务，再返回 202，前端首帧就能看到"计划/组装候选"。
 	s.tasks.emit(id, taskEvent{Kind: "auto.plan", Stage: "auto.plan", Text: autoPlanText(startAt, timeout)})
 	s.tasks.emit(id, taskEvent{Kind: "auto.collect", Stage: "auto.collect", Text: "正在组装候选课程"})
+
+	// 关键：defer cancel() 必须跟着 goroutine 走。如果留在 handler 里，
+	// 接口一返回就会把刚启动的任务取消掉。
+	go s.runAutoChoose(rt, id, task.id, ctx, cancel, plan, wants, timeout, startAt)
+
+	c.JSON(http.StatusAccepted, gin.H{
+		"status": "running",
+		"task":   s.tasks.snapshot(id),
+	})
+}
+
+// runAutoChoose 是自动选课的后台执行体。所有运行期结果都写进任务快照，
+// 不再通过 HTTP 响应表达。
+func (s *Server) runAutoChoose(
+	rt *accountRuntime,
+	id string,
+	taskID uint64,
+	ctx context.Context,
+	cancel context.CancelFunc,
+	plan engine.Plan,
+	wants protocol.WishList,
+	timeout time.Duration,
+	startAt time.Time,
+) {
+	defer cancel()
 
 	// 候选交给 engine 的 Source：RunAuto 开跑前取一次，之后按 plan.Refresh 周期
 	// 重拉课程列表，已选人数和新开的教学班都能在运行中生效。
@@ -216,113 +233,124 @@ func (s *Server) autoChoose(c *gin.Context) {
 		}
 	})
 	if err != nil {
-		s.finishAutoTask(id, ctx, err, timeout)
+		outcome := autoOutcome(ctx, err, timeout)
+		s.tasks.finishWithResult(id, taskKindAuto, taskID, outcome.taskStatus, outcome.text, outcome.detail, outcome.result)
 		s.notifyAutoChooseEnd(id, nil, err, ctx, startAt)
-		s.autoError(c, ctx, err)
 		return
 	}
 
-	s.tasks.finish(id, taskKindAuto, taskStatusDone,
-		fmt.Sprintf("已选上《%s》", chosen.Kcmc), chosen.Jxbmc)
+	s.tasks.finishWithResult(id, taskKindAuto, taskID, taskStatusDone,
+		fmt.Sprintf("已选上《%s》", chosen.Kcmc), chosen.Jxbmc,
+		&taskResult{
+			Status: "ok",
+			Flag:   result.Flag,
+			Msg:    result.Msg,
+			Course: &chosen,
+		})
 	s.notifyAutoChooseEnd(id, &chosen, nil, ctx, startAt)
-	c.JSON(http.StatusOK, gin.H{
-		"status": "ok",
-		"flag":   result.Flag,
-		"msg":    result.Msg,
-		"course": chosen,
-	})
 }
 
-// autoError 把自动选课的错误翻译成对前端有意义的状态码。
+// autoOutcome 把 RunAuto 的结束原因翻译成任务状态 + 结构化结果。
 //
-// "没选上"不是服务端错误：轮次用尽、愿望没命中都返回 200 + status，
-// 让前端按"业务失败"展示；只有取消/超时/登录失效/内部错误才用非 200。
-func (s *Server) autoError(c *gin.Context, ctx context.Context, err error) {
-	switch {
-	case errors.Is(ctx.Err(), context.Canceled):
-		c.JSON(http.StatusOK, gin.H{"status": "cancelled"})
-	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		writeAPIError(c, http.StatusGatewayTimeout, codeTimeout, "自动选课超时")
-	case errors.Is(err, engine.ErrSessionChanged):
-		writeAPIError(c, http.StatusConflict, codeSessionChanged,
-			"会话已变更，自动选课已停止，请重新开始")
-	case errors.Is(err, engine.ErrSessionReset):
-		writeAPIError(c, http.StatusConflict, codeSessionReset,
-			"会话已重置，自动选课已停止，请重新初始化")
-	case errors.Is(err, engine.ErrNotChosen):
-		c.JSON(http.StatusOK, gin.H{"status": "not_chosen", "error": err.Error()})
-	case errors.Is(err, engine.ErrNoWantedCourse), errors.Is(err, engine.ErrNoCandidates):
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-	case errors.Is(err, engine.ErrNotInitialized):
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请先调用 /init 完成初始化"})
-	case errors.Is(err, protocol.ErrUnauthorized):
-		writeUnauthorized(c, "登录已失效，请重新登录")
-	default:
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-	}
+// 这里刻意不再返回 HTTP 状态码：异步化之后，运行期错误属于任务结果，
+// 不属于"启动请求"的响应。参数/权限错误仍在 handler 里同步返回 4xx。
+type autoTaskOutcome struct {
+	taskStatus string
+	text       string
+	detail     string
+	result     *taskResult
 }
 
-// finishAutoTask 按结束原因收尾自动选课任务（已被取消标记时保持原状态）。
-func (s *Server) finishAutoTask(id string, ctx context.Context, err error, timeout time.Duration) {
-	if !s.tasks.running(id, taskKindAuto) {
-		return
-	}
+func autoOutcome(ctx context.Context, err error, timeout time.Duration) autoTaskOutcome {
 	switch {
 	case errors.Is(ctx.Err(), context.Canceled):
-		s.tasks.finish(id, taskKindAuto, taskStatusCancelled, "自动选课已取消", "")
+		return autoTaskOutcome{
+			taskStatus: taskStatusCancelled,
+			text:       "自动选课已取消",
+			result:     &taskResult{Status: taskStatusCancelled},
+		}
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
-		s.tasks.finish(id, taskKindAuto, taskStatusTimeout,
-			"自动选课超时（"+autoTimeoutText(timeout)+"）", "")
+		text := "自动选课超时（" + autoTimeoutText(timeout) + "）"
+		return autoTaskOutcome{
+			taskStatus: taskStatusTimeout,
+			text:       text,
+			result:     &taskResult{Status: taskStatusTimeout, Error: text},
+		}
 	case errors.Is(err, engine.ErrSessionChanged):
-		s.tasks.finish(id, taskKindAuto, taskStatusFailed,
-			"自动选课中断：会话已变更", err.Error())
+		return autoTaskOutcome{
+			taskStatus: taskStatusFailed,
+			text:       "自动选课中断：会话已变更",
+			detail:     err.Error(),
+			result:     &taskResult{Status: "session_changed", Error: err.Error()},
+		}
 	case errors.Is(err, engine.ErrSessionReset):
-		s.tasks.finish(id, taskKindAuto, taskStatusFailed,
-			"自动选课中断：会话已重置", err.Error())
+		return autoTaskOutcome{
+			taskStatus: taskStatusFailed,
+			text:       "自动选课中断：会话已重置",
+			detail:     err.Error(),
+			result:     &taskResult{Status: "session_reset", Error: err.Error()},
+		}
 	case errors.Is(err, engine.ErrNotChosen):
-		s.tasks.finish(id, taskKindAuto, taskStatusFailed, "重试用尽仍未选上", err.Error())
-	case errors.Is(err, engine.ErrNoWantedCourse), errors.Is(err, engine.ErrNoCandidates):
-		s.tasks.finish(id, taskKindAuto, taskStatusFailed, "没有可用的候选课程", err.Error())
+		return autoTaskOutcome{
+			taskStatus: taskStatusFailed,
+			text:       "重试用尽仍未选上",
+			detail:     err.Error(),
+			result:     &taskResult{Status: "not_chosen", Error: err.Error()},
+		}
+	case errors.Is(err, engine.ErrNoWantedCourse):
+		return autoTaskOutcome{
+			taskStatus: taskStatusFailed,
+			text:       "愿望清单没有命中可选的课程",
+			detail:     err.Error(),
+			result:     &taskResult{Status: "no_wanted", Error: err.Error()},
+		}
+	case errors.Is(err, engine.ErrNoCandidates):
+		return autoTaskOutcome{
+			taskStatus: taskStatusFailed,
+			text:       "没有可用的候选课程",
+			detail:     err.Error(),
+			result:     &taskResult{Status: "no_candidates", Error: err.Error()},
+		}
 	case errors.Is(err, engine.ErrNotInitialized):
-		s.tasks.finish(id, taskKindAuto, taskStatusFailed, "自动选课中断：会话尚未初始化", "")
+		return autoTaskOutcome{
+			taskStatus: taskStatusFailed,
+			text:       "自动选课中断：会话尚未初始化",
+			result:     &taskResult{Status: "not_initialized"},
+		}
 	case errors.Is(err, protocol.ErrUnauthorized):
-		s.tasks.finish(id, taskKindAuto, taskStatusFailed, "自动选课中断：登录已失效", "")
+		return autoTaskOutcome{
+			taskStatus: taskStatusFailed,
+			text:       "自动选课中断：登录已失效",
+			result:     &taskResult{Status: "unauthorized"},
+		}
 	default:
 		detail := ""
 		if err != nil {
 			detail = err.Error()
 		}
-		s.tasks.finish(id, taskKindAuto, taskStatusFailed, "自动选课失败", detail)
+		return autoTaskOutcome{
+			taskStatus: taskStatusFailed,
+			text:       "自动选课失败",
+			detail:     detail,
+			result:     &taskResult{Status: "failed", Error: detail},
+		}
 	}
 }
 
 // cancelAutoChoose 取消正在进行的自动选课。
 func (s *Server) cancelAutoChoose(c *gin.Context) {
 	id := c.Param("id")
-	rt, err := s.store.runtime(id)
-	if err != nil {
+	if _, err := s.store.runtime(id); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
-	rt.autoMu.Lock()
-	cancel := rt.autoCancel
-	rt.autoMu.Unlock()
 
-	if cancel == nil {
-		// 运行态可能已被重建（典型场景：自动选课期间改了账号配置，Update 会
-		// 丢掉 runtime），此时取消函数仍登记在任务上，直接用任务里的那份，
-		// 避免"取消自动选课"变成无效按钮、任务继续跑到预算用尽（默认 24 小时）。
-		// 同样先 force 标记为已取消，再真正取消 ctx。
-		if s.tasks.takeCancel(id, taskKindAuto, true) {
-			c.JSON(http.StatusOK, gin.H{"status": "ok"})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"status": "noop"})
+	// 取消函数登记在任务上而不是运行态里：运行态被重建（例如自动选课期间
+	// 改了账号配置）也不会丢；takeCancel 会先 force 标记再调用 ctx cancel，
+	// 避免前端连点取消时看到任务仍然是 running。
+	if s.tasks.takeCancel(id, taskKindAuto, true) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 		return
 	}
-	// RunAuto 会在 ctx.Done 后返回，由 handler 自己收尾；这里先 force 标记，
-	// 避免前端连点取消时看到任务仍然是 running。
-	s.tasks.takeCancel(id, taskKindAuto, true)
-	cancel()
-	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	c.JSON(http.StatusOK, gin.H{"status": "noop"})
 }

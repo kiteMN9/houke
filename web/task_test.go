@@ -456,3 +456,29 @@ func TestInitTaskDropsHookEndpointEvents(t *testing.T) {
 		t.Errorf("阶段 = %q", snap.StageText)
 	}
 }
+
+// 取消后立刻开始下一次自动选课，旧 goroutine 的收尾不能结束新任务。
+func TestFinishWithResultIgnoresStaleTask(t *testing.T) {
+	ts := newTaskStore()
+	const id = "acc1"
+
+	first, ok := ts.startCancelable(id, taskKindAuto, func() {})
+	if !ok {
+		t.Fatal("第一次启动失败")
+	}
+	ts.finishWithResult(id, taskKindAuto, first.id, taskStatusCancelled, "旧任务已取消", "", &taskResult{Status: taskStatusCancelled})
+
+	second, ok := ts.startCancelable(id, taskKindAuto, func() {})
+	if !ok {
+		t.Fatal("第二次启动失败")
+	}
+	ts.finishWithResult(id, taskKindAuto, first.id, taskStatusFailed, "旧任务迟到的收尾", "", &taskResult{Status: "failed"})
+
+	snap := ts.snapshot(id)
+	if snap == nil || !snap.Running || snap.ID != second.id {
+		t.Fatalf("新任务被旧收尾误结束: %+v", snap)
+	}
+	if snap.Result != nil {
+		t.Fatalf("运行中的新任务不应带结果: %+v", snap.Result)
+	}
+}

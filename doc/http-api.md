@@ -27,7 +27,8 @@
 | `login_failed` | 401 | 登录动作失败（密码错、流程失败） | 只展示"登录失败"，**不**当成会话失效 |
 | `no_permission` | 403 | 学校返回"无功能权限"页 | 在结果区说明原因，不弹红色错误 |
 | `busy` | 409 | 同账号已有登录 / 初始化 / 自动选课在跑 | 提示等待或取消 |
-| `session_reset` | 409 | 初始化期间登出 / 重登，本次结果作废 | 提示重新初始化 |
+| `session_reset` | 409 | 初始化或自动选课期间会话被重置（登出 / 重登 / 强制初始化），本次结果作废 | 提示重新初始化 |
+| `session_changed` | 409 | 自动选课运行期间会话被重置或成功切换页签 | 提示重新开始；异步任务同时写入 `task.result.status` |
 | `cancelled` | 408 | 一次性请求被取消 | 按取消处理，不提示失败 |
 | `timeout` | 504 | 请求或长任务超时 | 展示超时文案 |
 | `internal` | 500 | 其他服务器错误 | 展示 `error` |
@@ -147,16 +148,26 @@ HTTP 200 + 一张“无功能权限”的 HTML 错误页，不是 JSON，也不�
 
 | 方法 | 路径 | 请求 | 响应 |
 |---|---|---|---|
-| POST | `/accounts/:id/auto-choose` | `{wantClasses?,wantTeachers?,wantTypes?,intervalSeconds?,refreshSeconds?,maxRounds?,once?,durationSeconds?,endAt?}` | 200 `{"status":"ok","flag":"1","msg":"…","course":{…}}` / 200 `{"status":"not_chosen","error":"…"}` / 200 `{"status":"cancelled"}` / 400 / 401 / 409 / 504 |
+| POST | `/accounts/:id/auto-choose` | `{wantClasses?,wantTeachers?,wantTypes?,intervalSeconds?,refreshSeconds?,maxRounds?,once?,durationSeconds?,endAt?}` | 202 `{"status":"running","task":{…}}` / 400 / 401 / 409 |
 | POST | `/accounts/:id/auto-choose/cancel` | — | `{"status":"ok"\|"noop"}` |
 
 语义：
 
+* **异步启动**：202 只表示任务已登记，真正的运行在后台 goroutine 里；请求不会挂到
+  选上/超时/取消。最终结果从 `GET /accounts/:id/status` 的 `task` 或
+  `GET /accounts/:id/events` 的 SSE 快照读取。
+* **结果在任务快照里**：`task.result` 是
+  `{status,flag,msg,course?,error?}`；`status` 可取 `ok` / `not_chosen` /
+  `cancelled` / `timeout` / `session_changed` / `session_reset` / `no_wanted` /
+  `no_candidates` / `not_initialized` / `unauthorized` / `failed`。
+  `task.status` 只表示任务生命周期（`running` / `done` / `failed` / `timeout` /
+  `cancelled`），两者不要混用。
 * **前置条件**：已登录（401）、已初始化（400）；请求里的三项清单先按保存路径的同一套规则清洗（trim、丢空行、去重），清洗后为空时回落到账号里已保存的清单，仍为空则 400。
   空白条目不会被当成"命中所有课程"（`protocol.WishList.Match` 会跳过它们）。
 * **预算**：`endAt` > `durationSeconds` > 默认 24h；非法参数在建任务**之前**就 400。
 * **节奏**：`intervalSeconds` 默认 1.5s（两轮提交之间）；`refreshSeconds` 默认 30s（重拉候选，让新放出的名额进入队列）。
-* **"没选上"不算错误**：返回 200 + `not_chosen`，由前端展示原因。
+* **运行期错误不再用 HTTP 状态码表达**：启动校验失败才回 4xx；运行中的
+  "没选上"、会话变更、未登录、超时等都写进 `task.result`，由前端按结果提示。
 * **取消是幂等的**：没有在跑的任务时返回 200 + `noop`，调用方要把 `noop` 当成
   "已经没有在跑的任务"来收尾，不能停留在"正在取消…"这类进行中提示。
 * **长任务互斥**：同账号同一时刻只能有一个任务（`login` / `init` / `auto` 三者互斥），第二个请求回 409。

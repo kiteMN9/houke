@@ -16,6 +16,8 @@
 
 ### 新增
 
+- **自动选课异步化**：`POST /accounts/:id/auto-choose` 只做校验和登记，立即返回 202；运行结果写入任务快照的 `result`，前端通过 SSE / `/status` 驱动按钮和结果展示，不再把一个最长 24 小时的 HTTP 请求挂在前端。
+- **自动选课会话租约**：`RunAuto` 在启动、候选组装、刷新和每次提交前后比较会话代次；`Reset` 或成功切换页签后立即停止，不再用旧候选或零参数继续提交。运行期会话变更写入 `result.status=session_changed/session_reset`。
 - **优雅退出**：第一次 Ctrl+C（或 SIGTERM）取消运行中的登录 / 初始化 / 自动选课任务、断开 SSE 长连接、关闭 listener 并等待在途请求（上限 3 秒），日志落盘后以退出码 0 结束；再按一次 Ctrl+C 强制退出（退出码 1）。
 - `web.Server` 新增 `Listen` / `Serve(ctx, ln)` / `Shutdown(ctx)`，替换无法关停的 `Run`；`http.Server` 使用服务级 `BaseContext`，退出时 SSE 等长连接会随请求上下文一起结束。
 - `web.taskStore.cancelAll()`：退出时把仍在跑的长任务标记为已取消，并向 SSE 推一帧收尾事件。
@@ -24,6 +26,7 @@
 
 ### 测试
 
+- 新增 `web/auto_async_test.go`：`/auto-choose` 立即返回 202，任务在后台收尾并把结果写入任务快照；`web/handlers_auto_test.go` 的 `TestAutoOutcome` 覆盖异步结果映射。
 - 新增 `web/shutdown_test.go`（退出取消任务、`Serve` 随 ctx 结束、SSE 不阻塞退出）与 `utils/logger_exit_test.go`（退出前 Flush / Close 落盘且可重复调用）。
 - `protocol/wish_test.go` 补空白课程类型 / 教师、教师清单全空白与空 `Kzmc` 的用例；`web/handlers_auto_test.go` 覆盖 `/auto-choose` 请求体清单的 trim、去空行、去重。
 

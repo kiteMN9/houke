@@ -80,6 +80,10 @@ type accountTask struct {
 	rev    uint64
 	reqs   int // 任务期间发出的 HTTP 请求总数（让用户看到"确实在动"）
 
+	// result 是任务结束时给调用方读的结构化结果（目前自动选课使用）。
+	// 运行期间为 nil；finishWithResult 会与 status 一起原子写入。
+	result *taskResult
+
 	// 取消函数：仅当任务正在运行时非 nil。
 	cancel context.CancelFunc
 
@@ -152,9 +156,20 @@ func (ts *taskStore) startCancelable(id, kind string, cancel context.CancelFunc)
 
 // finish 结束任务。text 是给用户看的结果描述。
 func (ts *taskStore) finish(id, kind, status, text, detail string) {
+	ts.finishWithResult(id, kind, 0, status, text, detail, nil)
+}
+
+// finishWithResult 结束任务并原子写入结构化结果。
+//
+// taskID 非 0 时只结束这一次任务：异步任务被取消后可能已经开始了下一次任务，
+// 旧 goroutine 的收尾不能把新任务一起结束。
+//
+// 结果必须和 status / 收尾事件在同一次加锁里写入：否则订阅者可能先收到
+// 一帧"已完成但没有 result"的快照，再补一帧带结果的，前端要处理中间态。
+func (ts *taskStore) finishWithResult(id, kind string, taskID uint64, status, text, detail string, result *taskResult) {
 	ts.mu.Lock()
 	t := ts.tasks[id]
-	if t == nil || t.kind != kind || !t.running {
+	if t == nil || t.kind != kind || !t.running || (taskID != 0 && t.id != taskID) {
 		ts.mu.Unlock()
 		return
 	}
@@ -162,6 +177,7 @@ func (ts *taskStore) finish(id, kind, status, text, detail string) {
 	t.status = status
 	t.endedAt = time.Now()
 	t.cancel = nil
+	t.result = result
 	t.emitLocked(taskEvent{
 		Kind:   "task." + status,
 		Stage:  "task." + status,
@@ -205,6 +221,7 @@ func (ts *taskStore) takeCancel(id, kind string, force bool) bool {
 		t.running = false
 		t.status = taskStatusCancelled
 		t.endedAt = time.Now()
+		t.result = &taskResult{Status: taskStatusCancelled}
 		t.emitLocked(taskEvent{
 			Kind:  "task.cancelled",
 			Stage: "task.cancelled",
@@ -295,6 +312,7 @@ func (ts *taskStore) cancelAll() int {
 		t.running = false
 		t.status = taskStatusCancelled
 		t.endedAt = now
+		t.result = &taskResult{Status: taskStatusCancelled}
 		if t.cancel != nil {
 			cancels = append(cancels, t.cancel)
 			t.cancel = nil
@@ -551,6 +569,19 @@ type taskEventView struct {
 	Repeat    int    `json:"repeat,omitempty"` // 连续重复次数（>1 时前端显示 ×N）
 }
 
+// taskResult 是一次任务的结构化结果。
+//
+// task.status 仍表示生命周期（running/done/failed/timeout/cancelled），
+// result.status 表示业务结果（ok/not_chosen/session_changed…），两者分开，
+// 前端不必从 HTTP 状态码反推"到底是没选上还是服务坏了"。
+type taskResult struct {
+	Status string                    `json:"status"`
+	Flag   string                    `json:"flag,omitempty"`
+	Msg    string                    `json:"msg,omitempty"`
+	Course *protocol.CustomCourseDic `json:"course,omitempty"`
+	Error  string                    `json:"error,omitempty"`
+}
+
 type taskView struct {
 	Running   bool            `json:"running"`
 	ID        uint64          `json:"id"`
@@ -566,6 +597,7 @@ type taskView struct {
 	EventSeq  int             `json:"eventSeq"`
 	Requests  int             `json:"requests"`
 	Events    []taskEventView `json:"events"`
+	Result    *taskResult     `json:"result,omitempty"`
 }
 
 // snapshot 生成快照。从未跑过任务的账号返回 nil。
@@ -625,6 +657,7 @@ func (t *accountTask) viewLocked(now time.Time) *taskView {
 		EventSeq:  len(t.events),
 		Requests:  t.reqs,
 		Events:    views,
+		Result:    t.result,
 	}
 }
 
