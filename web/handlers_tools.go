@@ -89,7 +89,6 @@ type toolsDebugAccount struct {
 	UserAgent      string    `json:"userAgent"`
 	Timeout        string    `json:"timeout"`
 	LoginTimeout   string    `json:"loginTimeout"`
-	Want           string    `json:"want,omitempty"`
 	Hedging        bool      `json:"hedging"`
 	HedgingDelay   string    `json:"hedgingDelay"`
 	Routes         []string  `json:"routes"`
@@ -156,7 +155,6 @@ func (s *Server) toolsDebug(c *gin.Context) {
 			UserAgent:      acc.UserAgent,
 			Timeout:        acc.Timeout.String(),
 			LoginTimeout:   stored.LoginTimeout,
-			Want:           stored.Want,
 			Hedging:        acc.Hedging,
 			HedgingDelay:   acc.HedgingDelay.String(),
 			Routes:         nonNilStrings(acc.Routes),

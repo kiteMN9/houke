@@ -133,7 +133,6 @@ go run . -webAddr 0.0.0.0:9000 # 换监听地址
 | `loginTimeout` | string | `"10m"` | 登录/初始化长任务的最长等待时间 |
 | `autoRelogin` | bool | `true` | 会话失效时是否自动重登一次；关闭后点具体功能遇到失效只提示手动登录（初始化也不会预登录） |
 | `autoNotify` | bool | `true` | 自动选课结束时是否给该账号发结果邮件；服务端 `smtp.notifyAutoChoose` 仍是总开关，这里只能再关闭。WebUI 自动选课页可热切换 |
-| `want` | string | `want.xlsx` | 旧愿望清单路径，兼容保留；当前无调用方 |
 | `hedging` | bool | `false` | 是否启用请求对冲（同一请求延迟后重发） |
 | `hedgingDelay` | string | `"21s"` | 对冲间隔，仅 `hedging=true` 时生效 |
 | `routes` | []string | `[]` | 用户自定义 `route` cookie 候选；空 = 用内置两条 |
@@ -194,7 +193,6 @@ go run . -webAddr 0.0.0.0:9000 # 换监听地址
 | BaseURL | `https://jwglxt.ycit.edu.cn/` | `config/defaults.go:19` |
 | 单请求超时 | `43s` | `:20` |
 | 对冲间隔 | `21s` | `:21` |
-| 愿望清单路径 | `want.xlsx` | `:22` |
 | User-Agent | `FireFoxUA`（Firefox 157 / Win10） | `config/useragent.go:8,13` |
 | 登录任务超时 | `10m` | `web/account.go:16` |
 | 自动重登 | `true` | `web/account.go`（`Account.autoReloginEnabled`） |

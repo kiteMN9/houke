@@ -22,9 +22,6 @@ func TestDefaultIsUsable(t *testing.T) {
 	if d.HedgingDelay != Duration(DefaultHedgingDelay) {
 		t.Errorf("HedgingDelay = %v, want %v", d.HedgingDelay, DefaultHedgingDelay)
 	}
-	if d.Want != DefaultWant {
-		t.Errorf("Want = %q, want %q", d.Want, DefaultWant)
-	}
 	if d.UserAgent != DefaultUA {
 		t.Errorf("UserAgent = %q, want %q", d.UserAgent, DefaultUA)
 	}

@@ -38,7 +38,6 @@ type Account struct {
 	UserAgent    string   `json:"userAgent"`
 	Timeout      string   `json:"timeout"`
 	LoginTimeout string   `json:"loginTimeout"` // 登录/初始化任务的最长等待时间（Go duration）
-	Want         string   `json:"want,omitempty"`
 	Hedging      bool     `json:"hedging"`      // 是否启用请求对冲（hedging）
 	HedgingDelay string   `json:"hedgingDelay"` // 对冲请求之间的间隔
 	Routes       []string `json:"routes"`       // 自定义 route cookie 列表（空 = 使用内置默认）
@@ -241,7 +240,6 @@ func (a *Account) toSettings() config.Settings {
 	d.CasPassword = a.CasPassword
 	d.UserAgent = config.NormalizeUA(a.UserAgent)
 	d.Timeout = settingsDuration(a.Timeout, d.Timeout)
-	d.Want = a.Want
 	d.Hedging = a.Hedging
 	d.HedgingDelay = settingsDuration(a.HedgingDelay, d.HedgingDelay)
 	d.Routes = slices.Clone(a.Routes)

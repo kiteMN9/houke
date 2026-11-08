@@ -19,7 +19,6 @@ const (
 	DefaultBaseURL      = "https://jwglxt.ycit.edu.cn/"
 	DefaultTimeout      = 43 * time.Second
 	DefaultHedgingDelay = 21 * time.Second
-	DefaultWant         = "want.xlsx"
 )
 
 // Default 返回一份可以直接使用的配置（不含任何凭据）。
@@ -31,7 +30,6 @@ func Default() Settings {
 		BaseURL:      DefaultBaseURL,
 		UserAgent:    DefaultUA,
 		Timeout:      Duration(DefaultTimeout),
-		Want:         DefaultWant,
 		HedgingDelay: Duration(DefaultHedgingDelay),
 	}
 }

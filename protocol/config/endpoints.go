@@ -45,7 +45,7 @@ const (
 
 // 选课
 const (
-	Gndmmk_xsxk              = "N253512"                                    // 功能模块代码
+	GndmmkXsxk               = "N253512"                                    // 功能模块代码
 	ChooseCourseIndex        = "/xsxk/zzxkyzb_cxZzxkYzbIndex.html"          // 选课基础页面
 	ChooseCourseTabParams    = "/xsxk/zzxkyzb_cxZzxkYzbDisplay.html"        // 课程页签参数
 	ChooseCourseCourseList   = "/xsxk/zzxkyzb_cxZzxkYzbPartDisplay.html"    // 搜索课程接口

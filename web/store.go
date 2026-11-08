@@ -361,9 +361,6 @@ func (s *AccountStore) Update(id string, patch *Account) (*Account, error) {
 	if patch.LoginTimeout != "" {
 		a.LoginTimeout = patch.LoginTimeout
 	}
-	if patch.Want != "" {
-		a.Want = patch.Want
-	}
 	if patch.HedgingDelay != "" {
 		a.HedgingDelay = patch.HedgingDelay
 	}

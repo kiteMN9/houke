@@ -17,7 +17,6 @@ type Settings struct {
 	CasPassword  string   `json:"casPassword,omitempty"`
 	UserAgent    string   `json:"ua"`
 	Timeout      Duration `json:"timeout"`
-	Want         string   `json:"want,omitempty"`
 	Hedging      bool     `json:"hedging,omitempty"`
 	HedgingDelay Duration `json:"hedgingDelay"`
 	Routes       []string `json:"routes"` // 用户指定；不 omitempty，保证 [] 与 nil 可区分
