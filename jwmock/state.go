@@ -121,7 +121,7 @@ func (s *Server) Snapshot() State {
 		LoginFailures: s.loginFailures,
 		Sessions:      len(s.sessions),
 		Scenario:      cloneScenario(s.scenario),
-		Enrolled:      make(map[string]int, len(s.opts.Courses)),
+		Enrolled:      make(map[string]int, len(s.courses)),
 		Requests:      append([]RequestLog(nil), s.requests...),
 	}
 	now := time.Now()
@@ -154,7 +154,7 @@ func (s *Server) Snapshot() State {
 	}
 	sort.Strings(st.Chosen)
 
-	for _, seed := range s.opts.Courses {
+	for _, seed := range s.courses {
 		st.Enrolled[seed.JxbID] = s.enrolledLocked(seed)
 	}
 	return st

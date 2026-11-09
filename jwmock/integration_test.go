@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -583,5 +584,143 @@ func TestControlPlane(t *testing.T) {
 	postJSON(t, ctrl+"/revoke", `{}`, &revoked)
 	if !revoked.OK {
 		t.Fatal("revoke 响应缺少 ok=true")
+	}
+}
+
+// TestTabSwitching 验证多页签：首页渲染多个页签、Initialize 能解析出来、
+// SelectTab 会切换参数与课程集合，并且能在第二个页签里完成选课。
+func TestTabSwitching(t *testing.T) {
+	opts := jwmock.Options{
+		Tabs: []jwmock.Tab{
+			{
+				Name: "主修", Kklxdm: "01", XkkzID: "XKKZ-MAIN", XkkzXh: "XH-MAIN", NjdmID: "2025", ZyhID: "07201", Xklc: "1", Xklcmc: "第1轮", Xkkssj: "2025-09-01 08:00:00", Xkjssj: "2025-09-10 23:59:59",
+				Courses: []jwmock.Seed{
+					{JxbID: "JXB-MAIN-01", JxbMc: "主修课程A-01班", KchID: "KCH-MAIN", Kch: "MAIN101", Kcmc: "主修课程A", Xf: "2", Sksj: "周一第1-2节", Capacity: 5},
+				},
+			},
+			{
+				Name: "通识选修课", Kklxdm: "10", XkkzID: "XKKZ-GEN", XkkzXh: "XH-GEN", NjdmID: "2025", ZyhID: "07201", Xklc: "2", Xklcmc: "第2轮", Xkkssj: "2025-09-11 08:00:00", Xkjssj: "2025-09-20 23:59:59",
+				Courses: []jwmock.Seed{
+					{JxbID: "JXB-GEN-01", JxbMc: "通识课程B-01班", KchID: "KCH-GEN", Kch: "GEN101", Kcmc: "通识课程B", Xf: "2", Sksj: "周二第1-2节", Capacity: 5},
+				},
+			},
+			{
+				Name: "特殊课程", Kklxdm: "09", XkkzID: "XKKZ-SPECIAL", XkkzXh: "XH-SPECIAL", NjdmID: "2025", ZyhID: "07201", Xklc: "1", Xklcmc: "第1轮", Xkkssj: "2025-09-21 08:00:00", Xkjssj: "2025-09-30 23:59:59",
+				Courses: []jwmock.Seed{
+					{JxbID: "JXB-SPECIAL-01", JxbMc: "特殊课程C-01班", KchID: "KCH-SPECIAL", Kch: "SPEC101", Kcmc: "特殊课程C", Xf: "1", Sksj: "周五第1-2节", Capacity: 5},
+				},
+			},
+		},
+	}
+	srv, base := startMock(t, opts)
+	if got := srv.Options().Courses; len(got) != 0 {
+		t.Fatalf("页签配套课程时全局课程应为空，实际 %+v", got)
+	}
+	for i, tab := range srv.Options().Tabs {
+		if len(tab.Courses) != 1 {
+			t.Fatalf("页签 %d 配套课程数: got %d, want 1", i, len(tab.Courses))
+		}
+	}
+	eng := newEngine(t, base, jwmock.DefaultUsername, jwmock.DefaultPassword)
+	mustLogin(t, eng)
+
+	tabs := eng.Tabs()
+	if len(tabs) != 3 {
+		t.Fatalf("Tabs: got %d, want 3 (%+v)", len(tabs), tabs)
+	}
+	if tabs[0].Kklxmc != "主修" || tabs[1].Kklxmc != "通识选修课" || tabs[2].Kklxmc != "特殊课程" {
+		t.Fatalf("页签名称: %+v", tabs)
+	}
+	if tabs[1].Kklxdm != "10" || tabs[1].XkkzId != "XKKZ-GEN" || tabs[1].XkkzXh != "XH-GEN" {
+		t.Fatalf("第二个页签字段不对: %+v", tabs[1])
+	}
+
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	list, err := eng.GetCourseList(ctx)
+	if err != nil {
+		t.Fatalf("GetCourseList(主修): %v", err)
+	}
+	if len(list) != 1 || list[0].Kcmc != "主修课程A" {
+		t.Fatalf("主修页签课程: %+v", list)
+	}
+
+	if err := eng.SelectTab(ctx, 1); err != nil {
+		t.Fatalf("SelectTab(1): %v", err)
+	}
+	if w := eng.Window(); w.Xkkssj != "2025-09-11 08:00:00" || w.Xkjssj != "2025-09-20 23:59:59" {
+		t.Fatalf("切页签后的时间窗: %+v", w)
+	}
+	list, err = eng.GetCourseList(ctx)
+	if err != nil {
+		t.Fatalf("GetCourseList(通识): %v", err)
+	}
+	if len(list) != 1 || list[0].Kcmc != "通识课程B" {
+		t.Fatalf("通识页签课程: %+v", list)
+	}
+
+	res, runErr, events := runAuto(t, eng, engine.Plan{
+		Wants:     want("通识课程B"),
+		Interval:  20 * time.Millisecond,
+		MaxRounds: 3,
+	})
+	if runErr != nil || res.Flag != "1" {
+		t.Fatalf("第二个页签自动选课: flag=%q err=%v events=%+v", res.Flag, runErr, events)
+	}
+
+	if err := eng.SelectTab(ctx, 2); err != nil {
+		t.Fatalf("SelectTab(2): %v", err)
+	}
+	list, err = eng.GetCourseList(ctx)
+	if err != nil {
+		t.Fatalf("GetCourseList(特殊): %v", err)
+	}
+	if len(list) != 1 || list[0].Kcmc != "特殊课程C" {
+		t.Fatalf("特殊页签课程: %+v", list)
+	}
+
+	if ids := selectedIDs(t, eng); len(ids) != 1 || ids[0] != "JXB-GEN-01" {
+		t.Fatalf("已选课程: %v", ids)
+	}
+}
+
+// TestTabCoursesValidation 验证页签课程配置的约束：页签课程与全局课程共享
+// JxbID 命名空间，重复即启动失败。
+func TestTabCoursesValidation(t *testing.T) {
+	_, err := jwmock.New(jwmock.Options{
+		Tabs: []jwmock.Tab{
+			{Name: "页签A", Kklxdm: "10", Courses: []jwmock.Seed{{JxbID: "JXB-DUP"}}},
+			{Name: "页签B", Kklxdm: "09", Courses: []jwmock.Seed{{JxbID: "JXB-DUP"}}},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "教学班重复") {
+		t.Fatalf("重复 JxbID 应报错，实际: %v", err)
+	}
+}
+
+// TestExampleConfig 确保随仓库提供的 config.example.json 能被 -config 直接加载，
+// 并且页签带着自己的课程。
+func TestExampleConfig(t *testing.T) {
+	raw, err := os.ReadFile("config.example.json")
+	if err != nil {
+		t.Fatalf("读取 config.example.json: %v", err)
+	}
+	var opts jwmock.Options
+	if err := json.Unmarshal(raw, &opts); err != nil {
+		t.Fatalf("解析 config.example.json: %v", err)
+	}
+	srv, err := jwmock.New(opts)
+	if err != nil {
+		t.Fatalf("按示例配置启动: %v", err)
+	}
+	tabs := srv.Options().Tabs
+	if len(tabs) != 2 {
+		t.Fatalf("示例页签数: got %d, want 2", len(tabs))
+	}
+	for i, tab := range tabs {
+		if len(tab.Courses) == 0 {
+			t.Fatalf("示例页签 %d(%s) 没有配套课程", i, tab.Name)
+		}
 	}
 }

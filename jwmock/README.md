@@ -16,6 +16,9 @@ go run ./jwmock/cmd/mockjw
 
 # 自定义监听地址 / 业务前缀 / 账号
 go run ./jwmock/cmd/mockjw -addr 127.0.0.1:8099 -base /jwglxt -user 20250001 -pass test123
+
+# 页签 + 页签课程配套配置
+go run ./jwmock/cmd/mockjw -config ./jwmock/config.example.json
 ```
 
 然后启动 houke，新建账号：
@@ -34,6 +37,64 @@ go run ./jwmock/cmd/mockjw -addr 127.0.0.1:8099 -base /jwglxt -user 20250001 -pa
 | JXB-MATH-02 | 高等数学-02班 | 李强 | 4 | 周二第1-2节 | 2 | 2（满） |
 | JXB-ENG-01 | 大学英语-01班 | 王芳 | 3 | 周三第3-4节 | 40 | 5 |
 | JXB-ART-01 | 西方美术鉴赏-01班 | 殷海华 | 2 | 周五第5-6节 | 30 | 0 |
+
+## 多页签与课程配置
+
+真实教务首页通常有多个页签（主修 / 通识选修课 / 特殊课程…），每个页签有各自的
+课程类型代码、选课规则 id、轮次和课程集合。页签和课程建议成对配置：课程直接写在
+页签的 `Courses` 里。
+
+最简单的方式是用一份 JSON 启动（参考 `jwmock/config.example.json`）：
+
+```bash
+go run ./jwmock/cmd/mockjw -config ./jwmock/config.example.json
+```
+
+```json
+{
+  "users": [{"username": "20250001", "password": "test123"}],
+  "tabs": [
+    {
+      "name": "通识选修课", "kklxdm": "10",
+      "xkkzId": "5BB99FCEFADD11B8E065FCFCFE1D0407", "xkkzXh": "...",
+      "njdmId": "2025", "zyhId": "07201",
+      "xklc": "2", "xklcmc": "第2轮",
+      "xkkssj": "2025-09-11 08:00:00", "xkjssj": "2025-09-20 23:59:59",
+      "courses": [
+        {"jxbId": "JXB-ART-01", "jxbMc": "西方美术鉴赏-01班", "kchId": "KCH-ART",
+         "kch": "ART101", "kcmc": "西方美术鉴赏", "kklxdm": "10",
+         "xf": "2", "sksj": "周五第5-6节", "capacity": 30, "enrolled": 0}
+      ]
+    }
+  ]
+}
+```
+
+同样可以用代码配置：
+
+```go
+srv, err := jwmock.New(jwmock.Options{
+    Tabs: []jwmock.Tab{
+        {
+            Name: "通识选修课", Kklxdm: "10",
+            XkkzID: "...", XkkzXh: "...", NjdmID: "2025", ZyhID: "07201",
+            Xklc: "2", Xklcmc: "第2轮",
+            Courses: []jwmock.Seed{
+                {JxbID: "JXB-GEN-01", KchID: "KCH-GEN", Kcmc: "西方哲学智慧", Kklxdm: "10", ...},
+            },
+        },
+    },
+})
+```
+
+- 首页按真实参数顺序渲染所有页签的 `queryCourse(this,'kklxdm','xkkz_id','njdm_id','zyh_id'[,'xkkz_xh'])`，
+  `Initialize` 后可通过 `engine.Tabs()` 读到。
+- `SelectTab(idx)` 会带当前页签的 `xkkz_id` / `xkkz_xh` 重新 POST `ChooseCourseTabParams`，
+  mock 返回该页签自己的 `xklc/xklcmc/xkkssj/xkjssj`，`engine.Window()` 随页签变化。
+- 课程列表优先返回页签自己的 `Courses`；页签没配 `Courses` 时才回退到 `Options.Courses`
+  （单页签不过滤，多页签按 `kklxdm` 过滤，用于兼容旧配置）。
+- 页签课程和 `Options.Courses` 共享 JxbID 命名空间，重复会在 `New` 时直接报错。
+- `-config` 会忽略 `-base` / `-user` / `-pass` / `-window-closed`，这些字段都写进 JSON。
 
 ## 控制面
 
@@ -135,6 +196,7 @@ go test ./jwmock/ -v
 ```
 
 集成测试用 `httptest` + 真实 `engine` 跑通「登录 → 初始化 → 列表/详情 → 自动选课 →
-已选 → 退课」，并覆盖：满员跳过、名额分阶段放出、选课窗口关闭/全局拒绝/学分上限/
-容量满、重复选课、时间冲突、门数上限、瞬时失败重试、多账号抢最后一个名额、
-被踢后自动重登、参数过期恢复、5xx/429 重试和控制面。整套约 24 秒。
+已选 → 退课」，并覆盖：多页签切换（Tabs/SelectTab/切页签后列表与时间窗/页签配套课程）、
+页签课程配置校验（JxbID 重复报错）、满员跳过、名额分阶段放出、选课窗口关闭/全局拒绝/
+学分上限/容量满、重复选课、时间冲突、门数上限、瞬时失败重试、多账号抢最后一个名额、
+被踢后自动重登、参数过期恢复、5xx/429 重试和控制面。整套约 28 秒。

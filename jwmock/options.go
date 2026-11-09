@@ -30,8 +30,15 @@ type Options struct {
 	BasePath string `json:"basePath,omitempty"`
 	// Users 是账号表；为空时使用 20250001/test123。
 	Users []User `json:"users,omitempty"`
-	// Courses 是教学班目录；为空时使用内置的演示课程。
+	// Courses 是不属于任何页签时的教学班目录；为空时使用内置的演示课程。
+	//
+	// 配置了页签时，优先把课程写进各页签的 Courses。
 	Courses []Seed `json:"courses,omitempty"`
+	// Tabs 是选课首页的页签；为空时使用一个默认的“主修”页签。
+	//
+	// 页签建议用 Courses 一起配置它自己的课程。页签没有配 Courses 时才回退到
+	// Options.Courses：单页签不过滤，多页签按 kklxdm 过滤（兼容旧配置）。
+	Tabs []Tab `json:"tabs,omitempty"`
 	// WindowClosed 为 true 时初始状态不在选课时间内（列表/详情可看，提交被拒）。
 	WindowClosed bool `json:"windowClosed,omitempty"`
 }
@@ -55,6 +62,29 @@ type Seed struct {
 	Jsxx     string `json:"jsxx"`
 	Capacity int    `json:"capacity"`
 	Enrolled int    `json:"enrolled"`
+}
+
+// Tab 描述选课首页上的一个页签（主修 / 通识选修课 / 特殊课程…）。
+//
+// 真实教务的页签由课程类型代码（kklxdm）、选课规则 id（xkkz_id）、学籍过滤
+// （njdm_id）、专业过滤（zyh_id）和可选的 xkkz_xh 组成；不同页签可以属于
+// 不同轮次（xklc/xklcmc），也可以各自有选课时间窗（xkkssj/xkjssj）。
+type Tab struct {
+	Name   string `json:"name"`
+	Kklxdm string `json:"kklxdm"`
+	XkkzID string `json:"xkkzId"`
+	XkkzXh string `json:"xkkzXh,omitempty"`
+	NjdmID string `json:"njdmId"`
+	ZyhID  string `json:"zyhId"`
+	Xklc   string `json:"xklc"`
+	Xklcmc string `json:"xklcmc"`
+	Xkkssj string `json:"xkkssj,omitempty"`
+	Xkjssj string `json:"xkjssj,omitempty"`
+	// Courses 是该页签配套的课程；为空时才回退到 Options.Courses 按 kklxdm 过滤。
+	//
+	// 页签与课程建议成对配置：不同页签的课程集合、轮次和时间窗通常都不一样，
+	// 分开配置容易出现“页签配了、课程忘了”的情况。
+	Courses []Seed `json:"courses,omitempty"`
 }
 
 // Scenario 是运行中可替换的选课场景。
@@ -124,9 +154,6 @@ func (o Options) withDefaults() (Options, error) {
 		seenUser[o.Users[i].Username] = true
 	}
 
-	if len(o.Courses) == 0 {
-		o.Courses = defaultSeeds()
-	}
 	seenJxb := make(map[string]bool, len(o.Courses))
 	for i := range o.Courses {
 		seed := o.Courses[i].withDefaults()
@@ -139,7 +166,69 @@ func (o Options) withDefaults() (Options, error) {
 		seenJxb[seed.JxbID] = true
 		o.Courses[i] = seed
 	}
+
+	if len(o.Tabs) == 0 {
+		o.Tabs = defaultTabs()
+	}
+	seenKklx := make(map[string]bool, len(o.Tabs))
+	for i := range o.Tabs {
+		tab := o.Tabs[i].withDefaults()
+		for _, field := range []string{tab.Kklxdm, tab.XkkzID, tab.XkkzXh, tab.NjdmID, tab.ZyhID} {
+			if strings.ContainsAny(field, "'<>") {
+				return o, fmt.Errorf("jwmock: 页签 %d 的字段不能包含引号或尖括号: %q", i, field)
+			}
+		}
+		if seenKklx[tab.Kklxdm] {
+			return o, fmt.Errorf("jwmock: 页签 kklxdm 重复: %s", tab.Kklxdm)
+		}
+		seenKklx[tab.Kklxdm] = true
+
+		tabCourses := make([]Seed, 0, len(tab.Courses))
+		for j := range tab.Courses {
+			seed := tab.Courses[j]
+			if strings.TrimSpace(seed.Kklxdm) == "" {
+				seed.Kklxdm = tab.Kklxdm
+			}
+			seed = seed.withDefaults()
+			if seed.JxbID == "" {
+				return o, fmt.Errorf("jwmock: 页签 %q 的第 %d 门课缺少 JxbID", tab.Name, j)
+			}
+			if seenJxb[seed.JxbID] {
+				return o, fmt.Errorf("jwmock: 教学班重复: %s", seed.JxbID)
+			}
+			seenJxb[seed.JxbID] = true
+			tabCourses = append(tabCourses, seed)
+		}
+		tab.Courses = tabCourses
+		o.Tabs[i] = tab
+	}
+
+	// 全局课程和页签课程都没有时才使用演示课程，避免页签配置被默认课程污染。
+	if len(o.Courses) == 0 && !hasTabCourses(o.Tabs) {
+		seeds := defaultSeeds()
+		for i := range seeds {
+			seed := seeds[i].withDefaults()
+			if seed.JxbID == "" {
+				return o, fmt.Errorf("jwmock: 第 %d 门课缺少 JxbID", i)
+			}
+			if seenJxb[seed.JxbID] {
+				return o, fmt.Errorf("jwmock: 教学班重复: %s", seed.JxbID)
+			}
+			seenJxb[seed.JxbID] = true
+			seeds[i] = seed
+		}
+		o.Courses = seeds
+	}
 	return o, nil
+}
+
+func hasTabCourses(tabs []Tab) bool {
+	for _, tab := range tabs {
+		if len(tab.Courses) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (s Seed) withDefaults() Seed {
@@ -181,6 +270,83 @@ func (s Seed) withDefaults() Seed {
 		s.Enrolled = s.Capacity
 	}
 	return s
+}
+
+const (
+	defaultTabStart = "2025-09-01 08:00:00"
+	defaultTabEnd   = "2025-09-30 23:59:59"
+)
+
+func (t Tab) withDefaults() Tab {
+	t.Name = strings.TrimSpace(t.Name)
+	t.Kklxdm = strings.TrimSpace(t.Kklxdm)
+	t.XkkzID = strings.TrimSpace(t.XkkzID)
+	t.XkkzXh = strings.TrimSpace(t.XkkzXh)
+	t.NjdmID = strings.TrimSpace(t.NjdmID)
+	t.ZyhID = strings.TrimSpace(t.ZyhID)
+	t.Xklc = strings.TrimSpace(t.Xklc)
+	t.Xklcmc = strings.TrimSpace(t.Xklcmc)
+	t.Xkkssj = strings.TrimSpace(t.Xkkssj)
+	t.Xkjssj = strings.TrimSpace(t.Xkjssj)
+	if t.Kklxdm == "" {
+		t.Kklxdm = "10"
+	}
+	if t.Name == "" {
+		t.Name = "页签" + t.Kklxdm
+	}
+	if t.XkkzID == "" {
+		t.XkkzID = "mock-xkkz-" + t.Kklxdm
+	}
+	if t.NjdmID == "" {
+		t.NjdmID = "2024"
+	}
+	if t.ZyhID == "" {
+		t.ZyhID = "zy-001"
+	}
+	if t.Xklc == "" {
+		t.Xklc = "1"
+	}
+	if t.Xklcmc == "" {
+		t.Xklcmc = "第一轮"
+	}
+	if t.Xkkssj == "" {
+		t.Xkkssj = defaultTabStart
+	}
+	if t.Xkjssj == "" {
+		t.Xkjssj = defaultTabEnd
+	}
+	return t
+}
+
+// defaultTabs 保留旧版的单页签布局：课程都挂在“主修”页签下。
+func defaultTabs() []Tab {
+	return []Tab{defaultTab()}
+}
+
+func defaultTab() Tab {
+	return Tab{
+		Name:   "主修",
+		Kklxdm: "10",
+		XkkzID: "mock-xkkz-id",
+		NjdmID: "2024",
+		ZyhID:  "zy-001",
+		Xklc:   "1",
+		Xklcmc: "第一轮",
+		Xkkssj: defaultTabStart,
+		Xkjssj: defaultTabEnd,
+	}
+}
+
+// allCourses 返回全局课程与所有页签课程的总目录。
+//
+// withDefaults 已经保证 JxbID 在全局和页签之间唯一，这里只需拼接。
+func (o Options) allCourses() []Seed {
+	out := make([]Seed, 0, len(o.Courses))
+	out = append(out, o.Courses...)
+	for _, tab := range o.Tabs {
+		out = append(out, tab.Courses...)
+	}
+	return out
 }
 
 // defaultSeeds 是默认课程表：一门课两个教学班（一个尚有名额、一个已满），

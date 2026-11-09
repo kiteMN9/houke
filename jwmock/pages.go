@@ -1,6 +1,10 @@
 package jwmock
 
-import "fmt"
+import (
+	"fmt"
+	"html"
+	"strings"
+)
 
 // loginPage 是账号密码登录页：没有字符验证码，也没有滑块标记。
 func loginPage(base string) string {
@@ -29,17 +33,33 @@ func menuPage() string {
 }
 
 // indexPage 是选课首页，包含 GetIndexParams 需要的全部隐藏字段和页签。
-func indexPage(name, now string) string {
+//
+// 页签 onclick 用真实教务的参数顺序：
+// queryCourse(this,'kklxdm','xkkz_id','njdm_id','zyh_id'[,'xkkz_xh'])
+func indexPage(name, now string, tabs []Tab) string {
+	if len(tabs) == 0 {
+		tabs = defaultTabs()
+	}
+	first := tabs[0]
+	var items strings.Builder
+	for i, tab := range tabs {
+		class := ""
+		if i == 0 {
+			class = ` class="active"`
+		}
+		fmt.Fprintf(&items, `<li%s><a href="javascript:void(0)" onclick="%s">%s</a></li>`+"\n",
+			class, tabOnclick(tab), html.EscapeString(tab.Name))
+	}
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>学生选课</title></head>
 <body>
 <h2>学生选课</h2>
-<input type="hidden" id="firstXkkzId" name="firstXkkzId" value="mock-xkkz-id">
-<input type="hidden" id="firstXkkzXh" name="firstXkkzXh" value="">
-<input type="hidden" id="firstKklxdm" name="firstKklxdm" value="10">
-<input type="hidden" id="firstKklxmc" name="firstKklxmc" value="主修">
-<input type="hidden" id="firstNjdmId" name="firstNjdmId" value="2024">
-<input type="hidden" id="firstZyhId" name="firstZyhId" value="zy-001">
+<input type="hidden" id="firstXkkzId" name="firstXkkzId" value="%s">
+<input type="hidden" id="firstXkkzXh" name="firstXkkzXh" value="%s">
+<input type="hidden" id="firstKklxdm" name="firstKklxdm" value="%s">
+<input type="hidden" id="firstKklxmc" name="firstKklxmc" value="%s">
+<input type="hidden" id="firstNjdmId" name="firstNjdmId" value="%s">
+<input type="hidden" id="firstZyhId" name="firstZyhId" value="%s">
 <input type="hidden" id="bh_id" name="bh_id" value="20240001">
 <input type="hidden" id="xkxnm" name="xkxnm" value="2025">
 <input type="hidden" id="xkxqm" name="xkxqm" value="3">
@@ -53,7 +73,7 @@ func indexPage(name, now string) string {
 <input type="hidden" id="xsbj" name="xsbj" value="01">
 <input type="hidden" id="xslbdm" name="xslbdm" value="01">
 <input type="hidden" id="xszxzt" name="xszxzt" value="1">
-<input type="hidden" id="xxdm" name="xxdm" value="mock">
+<input type="hidden" id="xxdm" name="xxdm" value="mockSchool">
 <input type="hidden" id="zxfs" name="zxfs" value="">
 <input type="hidden" id="tkzgcs_qt" name="tkzgcs_qt" value="">
 <input type="hidden" id="currentsj" name="currentsj" value="%s">
@@ -62,21 +82,34 @@ func indexPage(name, now string) string {
 <h5>总学分最低 <font color="red">2.0</font><font color="red">10.0</font></h5>
 <font id="yxxfs">0.0</font>
 <ul>
-  <li><a href="javascript:void(0)" onclick="queryCourse(this,'10','mock-xkkz-id','2024','zy-001')">主修</a></li>
-</ul>
-</body></html>`, now, name)
+%s</ul>
+</body></html>`,
+		first.XkkzID, first.XkkzXh, first.Kklxdm, html.EscapeString(first.Name),
+		first.NjdmID, first.ZyhID, now, html.EscapeString(name), items.String())
+}
+
+// tabOnclick 生成页签链接的 queryCourse 参数串；参数顺序与真实教务一致。
+func tabOnclick(tab Tab) string {
+	args := fmt.Sprintf("'%s','%s','%s','%s'", tab.Kklxdm, tab.XkkzID, tab.NjdmID, tab.ZyhID)
+	if tab.XkkzXh != "" {
+		args += fmt.Sprintf(",'%s'", tab.XkkzXh)
+	}
+	return "queryCourse(this," + args + ")"
 }
 
 // tabPage 是页签参数页，GetCourseTabParams 从这里读取选课限制参数。
-func tabPage() string {
-	return `<!DOCTYPE html>
+//
+// 不同页签可以返回不同的轮次（xklc/xklcmc）和选课时间窗，便于测试切页签后
+// Window() 与选课窗口判断的变化。
+func tabPage(tab Tab) string {
+	return fmt.Sprintf(`<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>选课参数</title></head>
 <body>
 <input type="hidden" id="bklx_id" name="bklx_id" value="1">
 <input type="hidden" id="rwlx" name="rwlx" value="1">
 <input type="hidden" id="xkly" name="xkly" value="1">
-<input type="hidden" id="xklc" name="xklc" value="1">
-<input type="hidden" id="xklcmc" name="xklcmc" value="第一轮">
+<input type="hidden" id="xklc" name="xklc" value="%s">
+<input type="hidden" id="xklcmc" name="xklcmc" value="%s">
 <input type="hidden" id="sfkknj" name="sfkknj" value="0">
 <input type="hidden" id="rlkz" name="rlkz" value="1">
 <input type="hidden" id="cdrlkz" name="cdrlkz" value="1">
@@ -99,7 +132,7 @@ func tabPage() string {
 <input type="hidden" id="jdlx" name="jdlx" value="1">
 <input type="hidden" id="syts" name="syts" value="2">
 <input type="hidden" id="syxs" name="syxs" value="2">
-<input type="hidden" id="xkkssj" name="xkkssj" value="2025-09-01 08:00:00">
-<input type="hidden" id="xkjssj" name="xkjssj" value="2025-09-30 23:59:59">
-</body></html>`
+<input type="hidden" id="xkkssj" name="xkkssj" value="%s">
+<input type="hidden" id="xkjssj" name="xkjssj" value="%s">
+</body></html>`, tab.Xklc, tab.Xklcmc, tab.Xkkssj, tab.Xkjssj)
 }

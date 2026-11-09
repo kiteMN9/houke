@@ -1,0 +1,71 @@
+{
+  "basePath": "/jwglxt",
+  "users": [
+    {
+      "username": "20250001",
+      "password": "test123"
+    }
+  ],
+  "tabs": [
+    {
+      "name": "通识选修课",
+      "kklxdm": "10",
+      "xkkzId": "5BB99FCEFADD11B8E065FCFCFE1D0407",
+      "xkkzXh": "A1B2C3D4E5F60718293A4B5C6D7E8F90",
+      "njdmId": "2025",
+      "zyhId": "07201",
+      "xklc": "2",
+      "xklcmc": "第2轮",
+      "xkkssj": "2025-09-11 08:00:00",
+      "xkjssj": "2025-09-20 23:59:59",
+      "courses": [
+        {
+          "jxbId": "JXB-ART-01",
+          "jxbMc": "西方美术鉴赏-01班",
+          "kchId": "KCH-ART",
+          "kch": "ART101",
+          "kcmc": "西方美术鉴赏",
+          "kklxdm": "10",
+          "kclxmc": "公共选修课",
+          "kzmc": "公共艺术",
+          "xf": "2",
+          "sksj": "周五第5-6节",
+          "jxdd": "艺术楼A101",
+          "jsxx": "320057/殷海华/副教授",
+          "capacity": 30,
+          "enrolled": 0
+        }
+      ]
+    },
+    {
+      "name": "特殊课程",
+      "kklxdm": "09",
+      "xkkzId": "5BB9DF3065DB62C2E065FCFCFE1D0407",
+      "xkkzXh": "0F1E2D3C4B5A69788796A5B4C3D2E1F0",
+      "njdmId": "2025",
+      "zyhId": "07201",
+      "xklc": "1",
+      "xklcmc": "第1轮",
+      "xkkssj": "2025-09-01 08:00:00",
+      "xkjssj": "2025-09-10 23:59:59",
+      "courses": [
+        {
+          "jxbId": "JXB-SPEC-01",
+          "jxbMc": "创新创业实践-01班",
+          "kchId": "KCH-SPEC",
+          "kch": "SPEC101",
+          "kcmc": "创新创业实践",
+          "kklxdm": "09",
+          "kclxmc": "特殊课程",
+          "kzmc": "创新创业",
+          "xf": "1",
+          "sksj": "周六第3-4节",
+          "jxdd": "创客空间B201",
+          "jsxx": "410023/李强/讲师",
+          "capacity": 20,
+          "enrolled": 3
+        }
+      ]
+    }
+  ]
+}

@@ -64,11 +64,65 @@ type chosenRow struct {
 
 func (s *Server) handleIndex(c *gin.Context) {
 	c.Data(http.StatusOK, "text/html; charset=utf-8",
-		[]byte(indexPage("模拟学生", time.Now().Format("2006-01-02 15:04:05"))))
+		[]byte(indexPage("模拟学生", time.Now().Format("2006-01-02 15:04:05"), s.opts.Tabs)))
 }
 
 func (s *Server) handleTabParams(c *gin.Context) {
-	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(tabPage()))
+	tab := s.tabForRequest(c.PostForm("xkkz_id"), c.PostForm("xkkz_xh"), c.PostForm("kklxdm"))
+	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(tabPage(tab)))
+}
+
+// tabForRequest 按页签参数定位页签：先 xkkz_id，再 xkkz_xh，最后 kklxdm。
+func (s *Server) tabForRequest(xkkzID, xkkzXh, kklxdm string) Tab {
+	tabs := s.opts.Tabs
+	if len(tabs) == 0 {
+		return defaultTab()
+	}
+	xkkzID = strings.TrimSpace(xkkzID)
+	xkkzXh = strings.TrimSpace(xkkzXh)
+	kklxdm = strings.TrimSpace(kklxdm)
+	if xkkzID != "" {
+		for _, tab := range tabs {
+			if tab.XkkzID == xkkzID {
+				return tab
+			}
+		}
+	}
+	if xkkzXh != "" {
+		for _, tab := range tabs {
+			if tab.XkkzXh == xkkzXh {
+				return tab
+			}
+		}
+	}
+	if kklxdm != "" {
+		for _, tab := range tabs {
+			if tab.Kklxdm == kklxdm {
+				return tab
+			}
+		}
+	}
+	return tabs[0]
+}
+
+// coursesForTab 返回页签下的课程。
+//
+// 优先使用页签自己的 Courses（页签与课程成对配置）；没有配时才回退到
+// Options.Courses：单页签返回全部，多页签按 kklxdm 过滤。
+func (s *Server) coursesForTab(tab Tab) []Seed {
+	if len(tab.Courses) > 0 {
+		return tab.Courses
+	}
+	if len(s.opts.Tabs) <= 1 {
+		return s.opts.Courses
+	}
+	out := make([]Seed, 0, len(s.opts.Courses))
+	for _, seed := range s.opts.Courses {
+		if seed.Kklxdm == tab.Kklxdm {
+			out = append(out, seed)
+		}
+	}
+	return out
 }
 
 func (s *Server) handleCourseList(c *gin.Context) {
@@ -78,9 +132,12 @@ func (s *Server) handleCourseList(c *gin.Context) {
 		return
 	}
 
+	tab := s.tabForRequest(c.PostForm("xkkz_id"), c.PostForm("xkkz_xh"), c.PostForm("kklxdm"))
+	courses := s.coursesForTab(tab)
+
 	s.mu.Lock()
-	rows := make([]courseListRow, 0, len(s.opts.Courses))
-	for _, seed := range s.opts.Courses {
+	rows := make([]courseListRow, 0, len(courses))
+	for _, seed := range courses {
 		rows = append(rows, courseListRow{
 			JxbID:     seed.JxbID,
 			JxbMc:     seed.JxbMc,
@@ -118,8 +175,8 @@ func (s *Server) handleCourseDetail(c *gin.Context) {
 
 	kchID := strings.TrimSpace(c.PostForm("kch_id"))
 	s.mu.Lock()
-	rows := make([]courseDetailRow, 0, len(s.opts.Courses))
-	for _, seed := range s.opts.Courses {
+	rows := make([]courseDetailRow, 0, len(s.courses))
+	for _, seed := range s.courses {
 		if kchID != "" && seed.KchID != kchID {
 			continue
 		}

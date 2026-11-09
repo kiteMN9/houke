@@ -17,6 +17,7 @@ import (
 // Server 是本地正方教务模拟服务。它实现 http.Handler，可以直接 httptest.NewServer。
 type Server struct {
 	opts      Options
+	courses   []Seed
 	key       *rsa.PrivateKey
 	seedIndex map[string]Seed
 	router    *gin.Engine
@@ -42,12 +43,14 @@ func New(opts Options) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("jwmock: 生成 RSA 密钥: %w", err)
 	}
+	all := o.allCourses()
 	s := &Server{
 		opts:      o,
+		courses:   all,
 		key:       key,
-		seedIndex: make(map[string]Seed, len(o.Courses)),
+		seedIndex: make(map[string]Seed, len(all)),
 	}
-	for _, seed := range o.Courses {
+	for _, seed := range all {
 		s.seedIndex[seed.JxbID] = seed
 	}
 	s.resetLocked()
@@ -59,6 +62,9 @@ func New(opts Options) (*Server, error) {
 
 // BasePath 返回业务前缀（例如 /jwglxt）。
 func (s *Server) BasePath() string { return s.opts.BasePath }
+
+// Options 返回生效配置的副本（含默认值、页签和页签配套课程）。
+func (s *Server) Options() Options { return s.opts }
 
 // Handler 返回底层 http.Handler。
 func (s *Server) Handler() http.Handler { return s.router }
