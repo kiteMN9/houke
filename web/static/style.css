@@ -752,9 +752,22 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
  * 课程表：紧凑排版
  * ========================================================================= */
 
-.course-table { table-layout: auto; }
+/* 固定列宽：教师列只留放得下「解明华/教授;刘波涛/讲师」两位教师的宽度，
+   更长的教师串自己换行；剩余宽度由「课程」和「时间 / 地点」两列平分，
+   时间列不会再被教师列挤成逐字换行。窗口太窄时整张表横向滚动，不再压缩列宽。 */
+#courses-container { overflow-x: auto; }
+.course-table { table-layout: fixed; min-width: 900px; }
 .course-table th { padding: 8px 10px; }
 .course-table td { padding: 7px 10px; }
+
+/* 教师列：宽度按两位教师（"解明华/教授;刘波涛/讲师"）定死，长串换行 */
+.course-table .col-teacher {
+    width: 172px;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    overflow-wrap: anywhere;
+}
 
 .col-idx {
     width: 34px;
@@ -773,14 +786,14 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
 
 /* 关键：容量列不换行、不压缩 */
 .col-cap {
-    width: 110px;
-    min-width: 110px;
+    width: 92px;
+    min-width: 92px;
     white-space: nowrap;
     text-align: center;
     font-variant-numeric: tabular-nums;
 }
 
-.col-act { width: 76px; text-align: right; }
+.col-act { width: 72px; text-align: right; }
 
 /* 课程名 + 教学班标签 */
 .c-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -797,11 +810,12 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
     white-space: nowrap;
 }
 
-.c-code {
-    font-size: 11px;
-    color: var(--muted);
-    font-variant-numeric: tabular-nums;
-    margin-top: 1px;
+/* 定宽表格中，教学班标签可能比列还长：省略号截断，不要撑破单元格 */
+.course-table .c-tag {
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 /* 容量数字 */
@@ -828,16 +842,6 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
 }
 
 .group-title { display: flex; align-items: center; gap: 8px; font-size: 14px; }
-
-.group-title .tag {
-    font-size: 11px;
-    padding: 1px 7px;
-    border-radius: 4px;
-    background: #e0e7ff;
-    color: #3730a3;
-    font-weight: 500;
-    font-variant-numeric: tabular-nums;
-}
 
 .group-meta {
     display: flex;
@@ -879,7 +883,7 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
 }
 
 .col-credit {
-    width: 110px;
+    width: 122px;
     font-size: 12px;
     white-space: nowrap;
 }

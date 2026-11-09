@@ -1704,7 +1704,6 @@ function renderCourseGroupHead(courses) {
     return `<div class="group-head">
         <div class="group-title">
             <b>${esc(kcmc)}</b>
-            ${kchId ? `<span class="tag">${esc(kchId)}</span>` : ''}
         </div>
         <div class="group-meta">
             ${meta.map(m => `<span>${m}</span>`).join('')}
@@ -1749,8 +1748,7 @@ function renderCourseRow(co, i, board) {
             `<div class="c-line">` +
             `<span class="c-title">${esc(main)}</span>` +
             (sub ? `<span class="c-tag">${esc(sub)}</span>` : '') +
-            `</div>` +
-            (kchId ? `<div class="c-code">${esc(kchId)}</div>` : '');
+            `</div>`;
     }
 
     // 教师单元格
@@ -1820,9 +1818,13 @@ function renderCourses() {
     let html = '';
     if (board) html += renderCourseGroupHead(state.courses);
 
-    html += '<table class="course-table"><thead><tr>' +
+    html += '<table class="course-table"><colgroup>' +
+        '<col class="col-idx"><col class="col-name">' +
+        '<col class="col-teacher"><col class="col-time">' +
+        '<col class="col-cap"><col class="col-credit"><col class="col-act">' +
+        '</colgroup><thead><tr>' +
         '<th class="col-idx">#</th>' +
-        (board ? '<th>教学班</th>' : '<th>课程 / 教学班</th>') +
+        (board ? '<th class="col-name">教学班</th>' : '<th class="col-name">课程 / 教学班</th>') +
         '<th class="col-teacher">教师</th>' +
         '<th class="col-time">时间 / 地点</th>' +
         '<th class="col-cap">已选 / 容量</th>' +
