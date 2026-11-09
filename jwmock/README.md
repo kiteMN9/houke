@@ -96,6 +96,58 @@ srv, err := jwmock.New(jwmock.Options{
 - 页签课程和 `Options.Courses` 共享 JxbID 命名空间，重复会在 `New` 时直接报错。
 - `-config` 会忽略 `-base` / `-user` / `-pass` / `-window-closed`，这些字段都写进 JSON。
 
+## 从 HAR 生成配置（样本数据）
+
+课程多（几十上百门）时手工写配置不现实，可以直接拿浏览器抓包（HAR）生成：
+`jwmock/tools/har2config.py` 从 HAR 里提取列表接口 `zzxkyzb_cxZzxkYzbPartDisplay` 和详情接口
+`zzxkyzb_cxJxbWithKchZzxkYzb`，按 `jxb_id` 合并后输出一份 `-config` 能直接用的 JSON。
+
+```bash
+# 在 houke 仓库根目录；不给 --har 时自动选 jwmock/real_data 下最新的 *通识选修课*.har
+python jwmock/tools/har2config.py
+
+# 指定样本 / 输出位置，并把统计与告警写成报告
+python jwmock/tools/har2config.py \
+  --har jwmock/real_data/xxx_(jw通识选修课).har \
+  --out jwmock/config.json \
+  --report jwmock/real_data/_work/har2config.txt
+
+# 用生成的配置启动
+go run ./jwmock/cmd/mockjw -config ./jwmock/config.json
+```
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `--har` | 自动挑最新的通识选修课样本 | 可以传多次，多个 HAR 取并集 |
+| `--out` | `jwmock/config.json` | 输出的配置路径 |
+| `--tab-name` | `通识选修课` | 生成的页签名称 |
+| `--base-path` | `/jwglxt` | 写进配置的业务前缀 |
+| `--username` / `--password` | `20250001` / `test123` | 写进配置的登录账号 |
+| `--report` | 不写 | 额外输出 UTF-8 统计/告警报告 |
+
+合并规则（语义对齐 `protocol.CourseMerge`，但保留接口原文，不做展示层转换）：
+
+- 列表响应的 `tmpList` 按 `jxb_id` 去重，后出现覆盖先出现；分页/重复请求的同一门课自动合并。
+- 详情响应是数组，只更新列表里已存在的 `jxb_id`（last wins）；详情多出来的教学班不并入并告警。
+- `sksj` / `jxdd` / `jsxx` 保留 HAR 原文（`sksj` 保留 `<br/>`，`jsxx` 保留「工号/姓名/职称」），
+  不套用 `CourseMerge` 的 `<br/>`→逗号、去工号、去「校」等转换。
+- `capacity` 取详情 `jxbrl`，`enrolled` 取列表 `yxzrs`（超过容量会截断并告警）；列表缺详情的课
+  `capacity` 写 0，mock 启动时回退默认 30。
+- 列表 `kclxmc` 为空时用详情 `kclbmc` 兜底。
+- 页签 `kklxdm` / `xkkzId` / `njdmId` / `zyhId` 取自列表请求表单，`xklc` 取自详情请求表单，
+  `xklcmc` 按 `xklc` 推导成「第N轮」；HAR 里没有 `xkkzXh` / `xkkssj` / `xkjssj` 就不写，
+  走 mock 默认值（选课窗口默认 2025-09-01 08:00:00 ~ 2025-09-30 23:59:59）。
+
+注意：
+
+- HAR 里的真实数据放在 `jwmock/real_data/`（已 gitignore），生成的 `jwmock/config.json` 也在忽略列表里，
+  不要把真实配置提交进仓库。
+- 抓包前关掉浏览器的网页翻译：被翻译过的响应会变成英文，脚本会按「详情疑似被浏览器自动翻译」告警。
+- 样本里没有选课时间窗字段，生成的页签不会限制选课时间；需要复现「不在选课时间」时再手工补
+  `xkkssj` / `xkjssj`。
+- 一次生成一个页签（`kklxdm` 来自样本）；多页签场景可以各生成一份，再把 `tabs` 合并。
+  多个 HAR 的页签参数（`xkkz_id` / `zyh_id` / `xklc` 等）不一致时脚本会告警并取第一个非空值。
+
 ## 控制面
 
 控制面固定挂在 `/__mock` 下（不受业务前缀影响），用于运行中改场景。
