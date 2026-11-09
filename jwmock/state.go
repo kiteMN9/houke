@@ -3,33 +3,32 @@ package jwmock
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
-// cookieName 与真实正方一致；客户端只需要一个能带回来的会话 cookie。
-const cookieName = "JSESSIONID"
+const (
+	cookieName    = "JSESSIONID"
+	controlPrefix = "/__mock"
+	maxRequests   = 200
+)
 
-// controlPrefix 是控制面前缀，不随 Options.BasePath 变化。
-const controlPrefix = "/__mock"
-
-// sessionState 是一次登录产生的会话。
 type sessionState struct {
-	ID      string
 	User    string
 	Revoked bool
 }
 
-// faultState 是 Fault 的运行态：remaining < 0 表示不限次数。
 type faultState struct {
 	Fault
 	remaining int
 }
 
-// RequestLog 是控制面 GET /__mock/requests 返回的一条请求记录。
+// RequestLog 是控制面里能看到的最近请求。
 type RequestLog struct {
 	At     time.Time `json:"at"`
 	Method string    `json:"method"`
@@ -38,23 +37,25 @@ type RequestLog struct {
 	Status int       `json:"status"`
 }
 
-// State 是控制面 GET /__mock/state 返回的快照。
+// State 是 /__mock/state 的快照。
 type State struct {
-	Logins        int          `json:"logins"`
-	LoginFailures int          `json:"loginFailures"`
-	Sessions      int          `json:"sessions"`
-	Revoked       int          `json:"revoked"`
-	Chosen        []string     `json:"chosen"`
-	Scenario      Scenario     `json:"scenario"`
-	ScenarioAgeMs int64        `json:"scenarioAgeMs"`
-	Requests      []RequestLog `json:"requests"`
+	Logins        int                 `json:"logins"`
+	LoginFailures int                 `json:"loginFailures"`
+	Sessions      int                 `json:"sessions"`
+	Revoked       int                 `json:"revoked"`
+	Chosen        []string            `json:"chosen"`
+	ChosenByUser  map[string][]string `json:"chosenByUser,omitempty"`
+	Enrolled      map[string]int      `json:"enrolled"`
+	Scenario      Scenario            `json:"scenario"`
+	ScenarioAgeMs int64               `json:"scenarioAgeMs"`
+	Requests      []RequestLog        `json:"requests"`
 }
 
-// resetLocked 把可变状态恢复到 New 时的样子；调用方必须持有 s.mu（New 除外）。
+// resetLocked 清空会话、选择、场景和流水，恢复到初始化状态。
 func (s *Server) resetLocked() {
 	s.sessions = make(map[string]*sessionState)
-	s.chosen = make(map[string]bool)
-	s.scenario = Scenario{LoginMode: s.opts.LoginMode, KaptchaCode: s.opts.KaptchaCode}
+	s.chosen = make(map[string]map[string]bool)
+	s.scenario = Scenario{WindowClosed: s.opts.WindowClosed}
 	s.scenarioAt = time.Now()
 	s.faults = nil
 	s.requests = nil
@@ -62,24 +63,31 @@ func (s *Server) resetLocked() {
 	s.loginFailures = 0
 }
 
-// Reset 清空会话、已选课程、请求流水和场景，恢复初始状态。
+// Reset 清空所有运行状态；账号和课程目录不变。
 func (s *Server) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.resetLocked()
 }
 
-// SetScenario 整体替换当前场景（未填 LoginMode / KaptchaCode 时沿用默认值）。
+// SetScenario 整体替换当前场景。空字段表示恢复默认（例如 RejectAll=""）。
 func (s *Server) SetScenario(sc Scenario) error {
-	switch sc.LoginMode {
-	case "":
-		sc.LoginMode = s.opts.LoginMode
-	case LoginNone, LoginKaptcha, LoginSlider:
-	default:
-		return fmt.Errorf("jwmock: 未知登录形态 %q", sc.LoginMode)
+	if sc.MaxCredits < 0 {
+		return fmt.Errorf("jwmock: MaxCredits 不能为负")
 	}
-	if sc.KaptchaCode == "" {
-		sc.KaptchaCode = s.opts.KaptchaCode
+	if sc.MaxCourses < 0 {
+		return fmt.Errorf("jwmock: MaxCourses 不能为负")
+	}
+	if sc.ParamExpire < 0 {
+		return fmt.Errorf("jwmock: ParamExpire 不能为负")
+	}
+	for i, f := range sc.Faults {
+		if f.PathContains == "" {
+			return fmt.Errorf("jwmock: Faults[%d] 缺少 PathContains", i)
+		}
+		if f.DelayMs < 0 {
+			return fmt.Errorf("jwmock: Faults[%d] DelayMs 不能为负", i)
+		}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -89,7 +97,7 @@ func (s *Server) SetScenario(sc Scenario) error {
 	for _, f := range sc.Faults {
 		remaining := f.Count
 		if remaining <= 0 {
-			remaining = -1
+			remaining = -1 // 不限次数
 		}
 		s.faults = append(s.faults, faultState{Fault: f, remaining: remaining})
 	}
@@ -100,137 +108,166 @@ func (s *Server) SetScenario(sc Scenario) error {
 func (s *Server) Scenario() Scenario {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.scenario
+	return cloneScenario(s.scenario)
 }
 
-// RevokeSessions 把所有已登录会话标记为失效，返回失效的会话数。
-//
-// 下一次业务请求会收到 302 到登录页（带 kickout=1），客户端据此判断被踢。
-func (s *Server) RevokeSessions() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	n := 0
-	for _, st := range s.sessions {
-		if !st.Revoked {
-			st.Revoked = true
-			n++
-		}
-	}
-	return n
-}
-
-// Snapshot 返回当前状态快照，供测试断言或控制面查看。
+// Snapshot 返回当前运行状态，供控制面和测试断言使用。
 func (s *Server) Snapshot() State {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	st := State{
 		Logins:        s.logins,
 		LoginFailures: s.loginFailures,
 		Sessions:      len(s.sessions),
-		Scenario:      s.scenario,
-		ScenarioAgeMs: time.Since(s.scenarioAt).Milliseconds(),
-		Chosen:        make([]string, 0, len(s.chosen)),
+		Scenario:      cloneScenario(s.scenario),
+		Enrolled:      make(map[string]int, len(s.opts.Courses)),
 		Requests:      append([]RequestLog(nil), s.requests...),
+	}
+	now := time.Now()
+	if !s.scenarioAt.IsZero() {
+		st.ScenarioAgeMs = now.Sub(s.scenarioAt).Milliseconds()
 	}
 	for _, sess := range s.sessions {
 		if sess.Revoked {
 			st.Revoked++
 		}
 	}
-	for id := range s.chosen {
-		st.Chosen = append(st.Chosen, id)
+
+	chosenSet := make(map[string]bool)
+	for user, set := range s.chosen {
+		ids := make([]string, 0, len(set))
+		for jxb := range set {
+			ids = append(ids, jxb)
+			chosenSet[jxb] = true
+		}
+		sort.Strings(ids)
+		if len(ids) > 0 {
+			if st.ChosenByUser == nil {
+				st.ChosenByUser = make(map[string][]string)
+			}
+			st.ChosenByUser[user] = ids
+		}
+	}
+	for jxb := range chosenSet {
+		st.Chosen = append(st.Chosen, jxb)
+	}
+	sort.Strings(st.Chosen)
+
+	for _, seed := range s.opts.Courses {
+		st.Enrolled[seed.JxbID] = s.enrolledLocked(seed)
 	}
 	return st
 }
 
-// loginModeLocked 返回当前生效的登录形态；调用方持有 s.mu。
-func (s *Server) loginModeLocked() LoginMode {
-	if s.scenario.LoginMode != "" {
-		return s.scenario.LoginMode
-	}
-	return s.opts.LoginMode
-}
-
-// kaptchaCodeLocked 返回当前生效的字符验证码；调用方持有 s.mu。
-func (s *Server) kaptchaCodeLocked() string {
-	if s.scenario.KaptchaCode != "" {
-		return s.scenario.KaptchaCode
-	}
-	return s.opts.KaptchaCode
-}
-
-// sessionLocked 从请求 cookie 里解析出仍然有效的会话；调用方持有 s.mu。
-func (s *Server) sessionLocked(r *http.Request) *sessionState {
-	c, err := r.Cookie(cookieName)
-	if err != nil || c.Value == "" {
-		return nil
-	}
-	st := s.sessions[c.Value]
-	if st == nil || st.Revoked {
-		return nil
-	}
-	return st
-}
-
-// loggedIn 报告请求是否带着有效会话。
-func (s *Server) loggedIn(r *http.Request) bool {
+// RevokeSessions 把当前所有会话标记为失效，返回受影响的会话数。
+func (s *Server) RevokeSessions() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.sessionLocked(r) != nil
-}
-
-// requireLogin 在未登录时写 302 并返回 false。
-//
-// 客户端把“302 且 Location 含登录页”判定为掉线，因此这里必须真的跳登录页，
-// 不能靠 200 + 错误文案糊弄。
-func (s *Server) requireLogin(w http.ResponseWriter, r *http.Request) bool {
-	if s.loggedIn(r) {
-		return true
+	n := 0
+	for _, sess := range s.sessions {
+		if !sess.Revoked {
+			sess.Revoked = true
+			n++
+		}
 	}
-	s.kick(w)
-	return false
+	return n
 }
 
-// kick 模拟“会话失效/被踢”：302 到登录页，带 kickout=1。
-func (s *Server) kick(w http.ResponseWriter) {
-	w.Header().Set("Location", s.opts.BasePath+"/xtgl/login_slogin.html?kickout=1")
-	w.WriteHeader(http.StatusFound)
-}
+// ---- 以下方法都要求调用方已持有 s.mu ----
 
-// redirect 写 302 到 BasePath 下的某个相对路径。
-func (s *Server) redirect(w http.ResponseWriter, rel string) {
-	w.Header().Set("Location", s.opts.BasePath+rel)
-	w.WriteHeader(http.StatusFound)
-}
-
-// enrolledLocked 返回某教学班此刻的已选人数。
-//
-// 先取 Seed.Enrolled 或最近一个已生效的 EnrolledPhase 值，再加上本进程里
-// 真正选上的人数。调用方持有 s.mu。
+// enrolledLocked 返回教学班的当前已选人数：阶段基线 + 所有账号的选择数。
 func (s *Server) enrolledLocked(seed Seed) int {
+	return s.baseEnrolledLocked(seed) + s.chosenCountLocked(seed.JxbID)
+}
+
+// baseEnrolledLocked 返回场景阶段给出的已选人数基线；没有阶段命中时用种子值。
+func (s *Server) baseEnrolledLocked(seed Seed) int {
 	base := seed.Enrolled
-	since := time.Since(s.scenarioAt)
-	for _, p := range s.scenario.EnrolledPhases {
-		if since < time.Duration(p.AfterMs)*time.Millisecond {
+	elapsed := time.Since(s.scenarioAt).Milliseconds()
+	for _, phase := range s.scenario.EnrolledPhases {
+		if elapsed < int64(phase.AfterMs) {
 			continue
 		}
-		if v, ok := p.Enrolled[seed.JxbID]; ok {
+		if v, ok := phase.Enrolled[seed.JxbID]; ok {
 			base = v
 		}
-	}
-	if s.chosen[seed.JxbID] {
-		base++
 	}
 	if base < 0 {
 		base = 0
 	}
+	if base > seed.Capacity {
+		base = seed.Capacity
+	}
 	return base
 }
 
-// takeParamExpire 消耗一次“参数过期”注入。
-func (s *Server) takeParamExpire() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *Server) chosenCountLocked(jxbID string) int {
+	n := 0
+	for _, set := range s.chosen {
+		if set[jxbID] {
+			n++
+		}
+	}
+	return n
+}
+
+func (s *Server) userChosenLocked(user string) map[string]bool {
+	set := s.chosen[user]
+	if set == nil {
+		set = make(map[string]bool)
+		s.chosen[user] = set
+	}
+	return set
+}
+
+// creditsLocked 返回该账号已选课程的学分总和。
+func (s *Server) creditsLocked(user string) float64 {
+	var sum float64
+	for jxb := range s.chosen[user] {
+		if seed, ok := s.seedIndex[jxb]; ok {
+			sum += parseCredit(seed.Xf)
+		}
+	}
+	return sum
+}
+
+// timeConflictLocked 判断目标教学班是否与已选课程的上课时间相同。
+func (s *Server) timeConflictLocked(user string, target Seed) bool {
+	if target.Sksj == "" {
+		return false
+	}
+	for jxb := range s.chosen[user] {
+		seed, ok := s.seedIndex[jxb]
+		if ok && seed.Sksj != "" && seed.Sksj == target.Sksj {
+			return true
+		}
+	}
+	return false
+}
+
+// sameCourseLocked 判断该账号是否已选过同一门课的其他教学班。
+func (s *Server) sameCourseLocked(user string, target Seed) bool {
+	for jxb := range s.chosen[user] {
+		seed, ok := s.seedIndex[jxb]
+		if ok && seed.KchID == target.KchID && seed.JxbID != target.JxbID {
+			return true
+		}
+	}
+	return false
+}
+
+// rejectionLocked 返回按教学班配置的固定拒绝文案。
+func (s *Server) rejectionLocked(seed Seed) string {
+	for _, key := range []string{"DO-" + seed.JxbID, seed.JxbID} {
+		if msg, ok := s.scenario.RejectByJxb[key]; ok && msg != "" {
+			return msg
+		}
+	}
+	return ""
+}
+
+func (s *Server) takeParamExpireLocked() bool {
 	if s.scenario.ParamExpire <= 0 {
 		return false
 	}
@@ -238,8 +275,8 @@ func (s *Server) takeParamExpire() bool {
 	return true
 }
 
-// consumeFault 找出第一个命中的故障并消耗一次；返回延迟与状态码。
-func (s *Server) consumeFault(rel string) (time.Duration, int) {
+// consumeFault 返回本次请求要注入的延迟和状态码，并扣减次数。
+func (s *Server) consumeFault(path, rel string) (time.Duration, int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.faults {
@@ -247,7 +284,7 @@ func (s *Server) consumeFault(rel string) (time.Duration, int) {
 		if f.remaining == 0 {
 			continue
 		}
-		if f.PathContains != "" && !strings.Contains(rel, f.PathContains) {
+		if !strings.Contains(path, f.PathContains) && !strings.Contains(rel, f.PathContains) {
 			continue
 		}
 		if f.remaining > 0 {
@@ -258,48 +295,83 @@ func (s *Server) consumeFault(rel string) (time.Duration, int) {
 	return 0, 0
 }
 
-// record 追加一条请求流水（只保留最近 200 条）。
-func (s *Server) record(r *http.Request, status int) {
+func (s *Server) record(c *gin.Context, status int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.requests = append(s.requests, RequestLog{
+	entry := RequestLog{
 		At:     time.Now(),
-		Method: r.Method,
-		Path:   r.URL.Path,
-		Query:  r.URL.RawQuery,
+		Method: c.Request.Method,
+		Path:   c.Request.URL.Path,
+		Query:  c.Request.URL.RawQuery,
 		Status: status,
-	})
-	if len(s.requests) > 200 {
-		s.requests = s.requests[len(s.requests)-200:]
+	}
+	s.requests = append(s.requests, entry)
+	if len(s.requests) > maxRequests {
+		s.requests = s.requests[len(s.requests)-maxRequests:]
 	}
 }
 
-// newSessionID 生成不可猜的会话 id。
-func newSessionID() string {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return fmt.Sprintf("fallback-%d", time.Now().UnixNano())
+func (s *Server) newSessionID() string {
+	var buf [16]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		panic(err)
 	}
-	return hex.EncodeToString(b[:])
+	return hex.EncodeToString(buf[:])
 }
 
-// writeJSON 写 UTF-8 JSON。
-func writeJSON(w http.ResponseWriter, code int, v any) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(v)
+func cloneScenario(sc Scenario) Scenario {
+	out := sc
+	if sc.RejectByJxb != nil {
+		out.RejectByJxb = make(map[string]string, len(sc.RejectByJxb))
+		for k, v := range sc.RejectByJxb {
+			out.RejectByJxb[k] = v
+		}
+	}
+	if sc.RejectNext != nil {
+		out.RejectNext = make(map[string]int, len(sc.RejectNext))
+		for k, v := range sc.RejectNext {
+			out.RejectNext[k] = v
+		}
+	}
+	out.Faults = append([]Fault(nil), sc.Faults...)
+	if sc.EnrolledPhases != nil {
+		out.EnrolledPhases = make([]EnrolledPhase, len(sc.EnrolledPhases))
+		for i, p := range sc.EnrolledPhases {
+			out.EnrolledPhases[i] = EnrolledPhase{AfterMs: p.AfterMs, Enrolled: make(map[string]int, len(p.Enrolled))}
+			for k, v := range p.Enrolled {
+				out.EnrolledPhases[i].Enrolled[k] = v
+			}
+		}
+	}
+	return out
 }
 
-// writeHTML 写 UTF-8 HTML。
-func writeHTML(w http.ResponseWriter, body string) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(body))
+func parseCredit(xf string) float64 {
+	var f float64
+	if _, err := fmt.Sscanf(strings.TrimSpace(xf), "%f", &f); err != nil {
+		return 0
+	}
+	return f
 }
 
-// writeText 写纯文本。
-func writeText(w http.ResponseWriter, body string) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(body))
+func (s *Server) seedByID(jxbID string) (Seed, bool) {
+	seed, ok := s.seedIndex[jxbID]
+	return seed, ok
 }
+
+func normalizeJxbID(v string) string {
+	return strings.TrimSpace(strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(v)), "DO-"))
+}
+
+// sortedChosen 返回该账号已选教学班的副本。
+func sortedChosen(set map[string]bool) []string {
+	ids := make([]string, 0, len(set))
+	for id := range set {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// 编译期断言：Server 必须能直接当 http.Handler 用（测试用 httptest.NewServer）。
+var _ http.Handler = (*Server)(nil)

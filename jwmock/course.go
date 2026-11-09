@@ -3,10 +3,12 @@ package jwmock
 import (
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
-// courseListRow 是课程列表里的一行（对应 protocol.CourseListDic 用到的字段）。
 type courseListRow struct {
 	JxbID     string `json:"jxb_id"`
 	JxbMc     string `json:"jxbmc"`
@@ -26,7 +28,6 @@ type courseListRow struct {
 	Day       string `json:"day"`
 }
 
-// courseDetailRow 是课程详情里的一行（对应 protocol.CourseDetail 用到的字段）。
 type courseDetailRow struct {
 	DoJxbID string `json:"do_jxb_id"`
 	JxbID   string `json:"jxb_id"`
@@ -46,7 +47,6 @@ type courseDetailRow struct {
 	Xf      string `json:"xf"`
 }
 
-// chosenRow 是“已选课程”里的一行（对应 protocol.ChosenDic 用到的字段）。
 type chosenRow struct {
 	DoJxbID string `json:"do_jxb_id"`
 	JxbID   string `json:"jxb_id"`
@@ -62,36 +62,19 @@ type chosenRow struct {
 	Yxzrs   string `json:"yxzrs"`
 }
 
-// handleChooseCourseIndex 输出选课首页参数（含公开参数、页签、学分）。
-func (s *Server) handleChooseCourseIndex(w http.ResponseWriter, r *http.Request) {
-	if !s.requireLogin(w, r) {
-		return
-	}
-	writeHTML(w, indexPage("模拟学生", time.Now().Format("2006-01-02 15:04:05")))
+func (s *Server) handleIndex(c *gin.Context) {
+	c.Data(http.StatusOK, "text/html; charset=utf-8",
+		[]byte(indexPage("模拟学生", time.Now().Format("2006-01-02 15:04:05"))))
 }
 
-// handleChooseCourseTabParams 输出页签对应的选课参数。
-func (s *Server) handleChooseCourseTabParams(w http.ResponseWriter, r *http.Request) {
-	if !s.requireLogin(w, r) {
-		return
-	}
-	writeHTML(w, tabPage())
+func (s *Server) handleTabParams(c *gin.Context) {
+	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(tabPage()))
 }
 
-// handleChooseCourseCourseList 输出课程列表。
-//
-// 注意：参数过期必须返回不带 tmpList 的 {"msg":...,"flag":...}；只要响应里
-// 出现 tmpList 键，客户端就会把它当成正常列表。
-func (s *Server) handleChooseCourseCourseList(w http.ResponseWriter, r *http.Request) {
-	if !s.requireLogin(w, r) {
-		return
-	}
-	_ = r.ParseForm()
+func (s *Server) handleCourseList(c *gin.Context) {
 	if s.takeParamExpire() {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"msg":  "参数已过期，请刷新页面重试",
-			"flag": "0",
-		})
+		// 参数过期响应故意不带 tmpList：客户端会先判断 tmpList 再判断 msg/flag。
+		c.JSON(http.StatusOK, gin.H{"msg": "参数已过期，请刷新页面重试", "flag": "0"})
 		return
 	}
 
@@ -119,7 +102,7 @@ func (s *Server) handleChooseCourseCourseList(w http.ResponseWriter, r *http.Req
 	}
 	s.mu.Unlock()
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	c.JSON(http.StatusOK, gin.H{
 		"tmpList": rows,
 		"sfxsjc":  "0",
 		"msg":     "",
@@ -127,37 +110,30 @@ func (s *Server) handleChooseCourseCourseList(w http.ResponseWriter, r *http.Req
 	})
 }
 
-// handleChooseCourseCourseDetail 输出某门课的详情数组。
-//
-// 客户端按 form 里的 kch_id 查询；返回 "0" 会触发参数过期重抓。
-func (s *Server) handleChooseCourseCourseDetail(w http.ResponseWriter, r *http.Request) {
-	if !s.requireLogin(w, r) {
-		return
-	}
-	_ = r.ParseForm()
+func (s *Server) handleCourseDetail(c *gin.Context) {
 	if s.takeParamExpire() {
-		writeText(w, `"0"`)
+		c.Data(http.StatusOK, "application/json; charset=utf-8", []byte(`"0"`))
 		return
 	}
-	kchID := r.PostForm.Get("kch_id")
 
+	kchID := strings.TrimSpace(c.PostForm("kch_id"))
 	s.mu.Lock()
-	rows := make([]courseDetailRow, 0, 1)
+	rows := make([]courseDetailRow, 0, len(s.opts.Courses))
 	for _, seed := range s.opts.Courses {
 		if kchID != "" && seed.KchID != kchID {
 			continue
 		}
-		enrolled := s.enrolledLocked(seed)
+		enrolled := strconv.Itoa(s.enrolledLocked(seed))
 		rows = append(rows, courseDetailRow{
 			DoJxbID: "DO-" + seed.JxbID,
 			JxbID:   seed.JxbID,
 			JxbMc:   seed.JxbMc,
-			Jxbrs:   strconv.Itoa(enrolled),
+			Jxbrs:   enrolled,
 			Jxbrl:   strconv.Itoa(seed.Capacity),
 			Sksj:    seed.Sksj,
 			Jxdd:    seed.Jxdd,
 			Jsxx:    seed.Jsxx,
-			Yxzrs:   strconv.Itoa(enrolled),
+			Yxzrs:   enrolled,
 			XqhID:   "1",
 			Xqumc:   "主校区",
 			Kcxzmc:  "专业选修课",
@@ -169,98 +145,91 @@ func (s *Server) handleChooseCourseCourseDetail(w http.ResponseWriter, r *http.R
 	}
 	s.mu.Unlock()
 
-	writeJSON(w, http.StatusOK, rows)
+	c.JSON(http.StatusOK, rows)
 }
 
-// handleChooseCourse 处理选课。
-//
-// 判定顺序：拒绝文案 > 同课程重复 > 名额已满 > 成功。
-func (s *Server) handleChooseCourse(w http.ResponseWriter, r *http.Request) {
-	if !s.requireLogin(w, r) {
-		return
-	}
-	_ = r.ParseForm()
-	jxbIDs := r.PostForm.Get("jxb_ids")
-	kchID := r.PostForm.Get("kch_id")
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	seed, ok := s.seedByJxbLocked(jxbIDs)
-	if !ok && kchID != "" {
-		for _, c := range s.opts.Courses {
-			if c.KchID == kchID {
-				seed, ok = c, true
-				break
-			}
-		}
-	}
+// handleChoose 按真实选课接口的优先级判定：会话 -> 时间窗口 -> 固定拒绝 -> 重复 ->
+// 容量 -> 时间冲突 -> 学分上限 -> 门数上限 -> 瞬时失败 -> 成功。
+func (s *Server) handleChoose(c *gin.Context) {
+	user, ok := s.userOf(c)
 	if !ok {
-		writeJSON(w, http.StatusOK, map[string]string{"flag": "0", "msg": "教学班不存在"})
+		s.kick(c)
 		return
 	}
+	jxbIDs := c.PostForm("jxb_ids")
+	kchID := c.PostForm("kch_id")
 
-	if msg := s.rejectMessageLocked(seed); msg != "" {
-		writeJSON(w, http.StatusOK, map[string]string{"flag": "0", "msg": msg})
-		return
-	}
-	for _, c := range s.opts.Courses {
-		if c.KchID == seed.KchID && s.chosen[c.JxbID] {
-			writeJSON(w, http.StatusOK, map[string]string{
-				"flag": "0",
-				"msg":  "该课程已选，不能重复选择！",
-			})
-			return
-		}
-	}
-	if s.enrolledLocked(seed) >= seed.Capacity {
-		writeJSON(w, http.StatusOK, map[string]string{
-			"flag": "0",
-			"msg":  "该教学班人数已满，请选择其他教学班！",
-		})
-		return
-	}
-
-	s.chosen[seed.JxbID] = true
-	writeJSON(w, http.StatusOK, map[string]string{"flag": "1", "msg": "选课成功"})
-}
-
-// rejectMessageLocked 返回按教学班/全局配置的拒绝文案；没有配置时返回空。
-func (s *Server) rejectMessageLocked(seed Seed) string {
-	if len(s.scenario.RejectByJxb) > 0 {
-		if msg, ok := s.scenario.RejectByJxb["DO-"+seed.JxbID]; ok {
-			return msg
-		}
-		if msg, ok := s.scenario.RejectByJxb[seed.JxbID]; ok {
-			return msg
-		}
-	}
-	return s.scenario.RejectAll
-}
-
-// seedByJxbLocked 按 jxb_id 或 do_jxb_id 找教学班。
-func (s *Server) seedByJxbLocked(jxb string) (Seed, bool) {
-	for _, seed := range s.opts.Courses {
-		if seed.JxbID == jxb || "DO-"+seed.JxbID == jxb {
-			return seed, true
-		}
-	}
-	return Seed{}, false
-}
-
-// handleCourseSelectedList 输出已选课程。
-func (s *Server) handleCourseSelectedList(w http.ResponseWriter, r *http.Request) {
-	if !s.requireLogin(w, r) {
-		return
-	}
-	_ = r.ParseForm()
 	s.mu.Lock()
-	rows := make([]chosenRow, 0, len(s.chosen))
-	for _, seed := range s.opts.Courses {
-		if !s.chosen[seed.JxbID] {
+	flag, msg := s.chooseLocked(user, jxbIDs, kchID)
+	s.mu.Unlock()
+
+	c.JSON(http.StatusOK, gin.H{"flag": flag, "msg": msg})
+}
+
+func (s *Server) chooseLocked(user, jxbIDs, kchID string) (string, string) {
+	seed, ok := s.findSeedLocked(jxbIDs, kchID)
+	if !ok {
+		return "0", "教学班不存在或已失效"
+	}
+	sc := s.scenario
+	if sc.WindowClosed {
+		return "0", "当前不在选课时间内"
+	}
+	if msg := s.rejectionLocked(seed); msg != "" {
+		return "0", msg
+	}
+	if sc.RejectAll != "" {
+		return "0", sc.RejectAll
+	}
+
+	set := s.userChosenLocked(user)
+	if set[seed.JxbID] {
+		return "0", "该教学班已选，不能重复选择！"
+	}
+	if s.sameCourseLocked(user, seed) {
+		return "0", "该课程已选，不能重复选择！"
+	}
+	if seed.Capacity > 0 && s.enrolledLocked(seed) >= seed.Capacity {
+		return "0", "该教学班人数已满，请选择其他教学班！"
+	}
+	if s.timeConflictLocked(user, seed) {
+		return "0", "该教学班与已选课程时间冲突！"
+	}
+	if sc.MaxCredits > 0 && s.creditsLocked(user)+parseCredit(seed.Xf) > sc.MaxCredits {
+		return "0", "超过学分上限！"
+	}
+	if sc.MaxCourses > 0 && len(set) >= sc.MaxCourses {
+		return "0", "选课门数已达上限！"
+	}
+	if n := s.scenario.RejectNext[seed.JxbID]; n > 0 {
+		s.scenario.RejectNext[seed.JxbID] = n - 1
+		msg := s.scenario.RejectNextMsg
+		if msg == "" {
+			msg = "系统繁忙，请稍后再试"
+		}
+		return "0", msg
+	}
+
+	set[seed.JxbID] = true
+	return "1", "选课成功"
+}
+
+func (s *Server) handleSelected(c *gin.Context) {
+	user, ok := s.userOf(c)
+	if !ok {
+		s.kick(c)
+		return
+	}
+
+	s.mu.Lock()
+	set := s.chosen[user]
+	rows := make([]chosenRow, 0, len(set))
+	for _, jxb := range sortedChosen(set) {
+		seed, ok := s.seedIndex[jxb]
+		if !ok {
 			continue
 		}
-		enrolled := s.enrolledLocked(seed)
+		enrolled := strconv.Itoa(s.enrolledLocked(seed))
 		rows = append(rows, chosenRow{
 			DoJxbID: "DO-" + seed.JxbID,
 			JxbID:   seed.JxbID,
@@ -272,53 +241,72 @@ func (s *Server) handleCourseSelectedList(w http.ResponseWriter, r *http.Request
 			Kklxdm:  seed.Kklxdm,
 			Sksj:    seed.Sksj,
 			Jsxx:    seed.Jsxx,
-			Jxbrs:   strconv.Itoa(seed.Capacity),
-			Yxzrs:   strconv.Itoa(enrolled),
+			Jxbrs:   enrolled,
+			Yxzrs:   enrolled,
 		})
 	}
 	s.mu.Unlock()
-	writeJSON(w, http.StatusOK, rows)
+
+	c.JSON(http.StatusOK, rows)
 }
 
-// handleQuitCourse 退课；成功时返回 JSON 字符串 "1"。
-func (s *Server) handleQuitCourse(w http.ResponseWriter, r *http.Request) {
-	if !s.requireLogin(w, r) {
+func (s *Server) handleQuit(c *gin.Context) {
+	user, ok := s.userOf(c)
+	if !ok {
+		s.kick(c)
 		return
 	}
-	_ = r.ParseForm()
-	jxb := r.PostForm.Get("jxb_ids")
+	jxbIDs := c.PostForm("jxb_ids")
+	kchID := c.PostForm("kch_id")
 
+	removed := false
 	s.mu.Lock()
-	seed, ok := s.seedByJxbLocked(jxb)
-	if ok && s.chosen[seed.JxbID] {
-		delete(s.chosen, seed.JxbID)
-		s.mu.Unlock()
-		writeJSONString(w, `"1"`)
-		return
+	if seed, ok := s.findSeedLocked(jxbIDs, kchID); ok {
+		if set, ok := s.chosen[user]; ok && set[seed.JxbID] {
+			delete(set, seed.JxbID)
+			removed = true
+		}
 	}
 	s.mu.Unlock()
-	writeJSONString(w, `"4"`)
-}
 
-// writeJSONString 输出一段已经是 JSON 的原文（退课接口返回的是裸字符串）。
-func writeJSONString(w http.ResponseWriter, body string) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(body))
-}
-
-// handleSimpleDoJxb 是“按课程查教学班”的简化接口；当前模拟端用不到，返回空数组。
-func (s *Server) handleSimpleDoJxb(w http.ResponseWriter, r *http.Request) {
-	if !s.requireLogin(w, r) {
-		return
+	body := `"1"`
+	if !removed {
+		body = `"4"`
 	}
-	writeJSON(w, http.StatusOK, []any{})
+	c.Data(http.StatusOK, "application/json; charset=utf-8", []byte(body))
 }
 
-// handleCourseRegistered 是“已登记课程”接口；当前模拟端用不到，返回空数组。
-func (s *Server) handleCourseRegistered(w http.ResponseWriter, r *http.Request) {
-	if !s.requireLogin(w, r) {
-		return
+func (s *Server) handleSimple(c *gin.Context) {
+	c.Data(http.StatusOK, "application/json; charset=utf-8", []byte("[]"))
+}
+
+func (s *Server) handleRegistered(c *gin.Context) {
+	c.Data(http.StatusOK, "application/json; charset=utf-8", []byte("[]"))
+}
+
+func (s *Server) takeParamExpire() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.takeParamExpireLocked()
+}
+
+// findSeedLocked 支持 DO-JXB-x / JXB-x / kch_id 三种定位方式。
+func (s *Server) findSeedLocked(jxbIDs, kchID string) (Seed, bool) {
+	for _, part := range strings.Split(jxbIDs, ",") {
+		id := normalizeJxbID(part)
+		if id == "" {
+			continue
+		}
+		if seed, ok := s.seedIndex[id]; ok {
+			return seed, true
+		}
 	}
-	writeJSON(w, http.StatusOK, []any{})
+	if kchID != "" {
+		for _, seed := range s.opts.Courses {
+			if seed.KchID == kchID {
+				return seed, true
+			}
+		}
+	}
+	return Seed{}, false
 }
