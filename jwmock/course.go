@@ -181,7 +181,7 @@ func (s *Server) handleCourseDetail(c *gin.Context) {
 			continue
 		}
 		enrolled := strconv.Itoa(s.enrolledLocked(seed))
-		rows = append(rows, courseDetailRow{
+		item := courseDetailRow{
 			DoJxbID: "DO-" + seed.JxbID,
 			JxbID:   seed.JxbID,
 			JxbMc:   seed.JxbMc,
@@ -192,13 +192,17 @@ func (s *Server) handleCourseDetail(c *gin.Context) {
 			Jsxx:    seed.Jsxx,
 			Yxzrs:   enrolled,
 			XqhID:   "1",
-			Xqumc:   "主校区",
+			Xqumc:   "南校区",
 			Kcxzmc:  "专业选修课",
 			Kkxymc:  "模拟学院",
 			Jxms:    "",
 			Kclbmc:  "理论课",
 			Xf:      seed.Xf,
-		})
+		}
+		if seed.Xqumc != "" {
+			item.Xqumc = seed.Xqumc
+		}
+		rows = append(rows, item)
 	}
 	s.mu.Unlock()
 

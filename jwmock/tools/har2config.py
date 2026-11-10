@@ -288,8 +288,8 @@ def merge_rows(
     # 浏览器翻译检测（093 那种详情被译成英文的 HAR 不适合当样本）。
     if st["detail_rows"] and st["translated_details"] > st["detail_rows"] * 0.3:
         report.warn(
-            f"{path.name}: 详情疑似被浏览器自动翻译（{st['translated_details']}/{st['detail_rows']} 行 sksj 含 ASCII 字母），"
-            "建议关闭网页翻译后重新抓包"
+            f"{path.name}: 详情疑似切换语言（{st['translated_details']}/{st['detail_rows']} 行 sksj 含 ASCII 字母），"
+            "建议切换语言后重新抓包"
         )
     report.line()
 
@@ -349,6 +349,7 @@ def build_courses(
             "sksj": field(detail.get("sksj")),
             "jxdd": field(detail.get("jxdd")),
             "jsxx": field(detail.get("jsxx")),
+            "xqumc": field(detail.get("xqumc", "")),
         }
         # 空字符串不输出，让 jwmock 用自身默认值。
         course = {key: value for key, value in course.items() if value != ""}

@@ -60,6 +60,7 @@ type Seed struct {
 	Sksj     string `json:"sksj"`
 	Jxdd     string `json:"jxdd"`
 	Jsxx     string `json:"jsxx"`
+	Xqumc    string `json:"xqumc"`
 	Capacity int    `json:"capacity"`
 	Enrolled int    `json:"enrolled"`
 }
