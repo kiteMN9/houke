@@ -1755,15 +1755,33 @@ function renderCourseRow(co, i, board) {
     const teachCell = teach ? esc(teach) : '<span class="muted">—</span>';
 
     // 时间 / 地点单元格
+    // 真实排课分两行：时间在上、地点（校区 · 教室）在下；“北区 · -- · --”这类
+    // 未排课的占位数据仍用一行展示，避免无意义的空行。
     let timeCell;
     if (loaded) {
         const parts = [];
         if (xqumc) parts.push(esc(xqumc));
         if (sksj)  parts.push(esc(sksj));
         if (jxdd)  parts.push(esc(jxdd));
-        timeCell = parts.length
-            ? `<div class="time-line">${parts.join(' · ')}</div>`
-            : '<span class="muted">—</span>';
+
+        const isDash = v => !v || v.trim() === '--';
+        const hasTime  = sksj && !isDash(sksj);
+        const hasPlace = jxdd && !isDash(jxdd);
+
+        if (hasTime && hasPlace) {
+            const locParts = [];
+            if (xqumc) locParts.push(esc(xqumc));
+            locParts.push(esc(jxdd));
+            timeCell =
+                `<div class="time-cell">` +
+                `<div class="time-line">${esc(sksj)}</div>` +
+                `<div class="time-line">${locParts.join(' · ')}</div>` +
+                `</div>`;
+        } else {
+            timeCell = parts.length
+                ? `<div class="time-line">${parts.join(' · ')}</div>`
+                : '<span class="muted">—</span>';
+        }
     } else {
         timeCell = '<span class="muted">—</span>';
     }

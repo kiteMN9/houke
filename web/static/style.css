@@ -867,6 +867,9 @@ dialog::backdrop { background: rgba(15, 23, 42, .5); }
 .time-line { white-space: pre-line; }
 .multiline { white-space: pre-line; }
 
+/* 时间 / 地点分两行：时间在上、地点在下（占位数据仍是一行） */
+.time-cell { display: flex; flex-direction: column; gap: 1px; }
+
 /* 已选课程：教师列常常是一长串（"320075/吴静/讲师;…"），自动布局会把时间列
    挤到逐字换行。固定列宽后剩余宽度全给时间列，教师列自己换行。 */
 .chosen-table { table-layout: fixed; }
