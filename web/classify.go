@@ -3,6 +3,8 @@ package web
 import (
 	"net/url"
 	"strings"
+
+	"school_sdk/protocol/config"
 )
 
 // 这一组函数把 client.ProtocolHook 上报的原始请求 URL 翻译成人类可读的任务阶段。
@@ -53,21 +55,24 @@ func requestPath(rawURL string) string {
 }
 
 // classifyChoose 选课/初始化相关端点（初始化与选课阶段会密集访问）。
+//
+// 路径一律取 endpoints.go 里的常量：这里写死字面量的话，教务换一次地址
+// （例如详情接口多出 jk）就会悄悄对不上，请求只能落到未知端点的兜底。
 func classifyChoose(path string) (stage, text string, ok bool) {
 	switch {
-	case strings.HasSuffix(path, "/zzxkyzb_cxZzxkYzbIndex.html"):
+	case strings.HasSuffix(path, config.ChooseCourseIndex):
 		return "init.index", "正在打开选课页", true
-	case strings.HasSuffix(path, "/zzxkyzb_cxZzxkYzbDisplay.html"):
-		return "init.prepare", "正在抓取选课参数", true
-	case strings.HasSuffix(path, "/zzxkyzb_cxZzxkYzbPartDisplay.html"):
+	case strings.HasSuffix(path, config.ChooseCourseTabParams):
+		return "init.prepare", "正在抓取选课页签参数", true
+	case strings.HasSuffix(path, config.ChooseCourseCourseList):
 		return "init.courses", "正在加载课程列表", true
-	case strings.HasSuffix(path, "/zzxkyzb_cxJxbWithKchZzxkYzb.html"):
+	case strings.HasSuffix(path, config.ChooseCourseCourseDetail):
 		return "init.detail", "正在加载教学班详情", true
-	case strings.HasSuffix(path, "/zzxkyzb_cxZzxkYzbChoosedDisplay.html"):
+	case strings.HasSuffix(path, config.CourseSelectedList):
 		return "init.selected", "正在查询已选课程", true
-	case strings.HasSuffix(path, "/zzxkyzbjk_xkBcZyZzxkYzb.html"):
+	case strings.HasSuffix(path, config.ChooseCourse):
 		return "course.choose", "正在提交选课请求", true
-	case strings.HasSuffix(path, "/zzxkyzb_tuikBcZzxkYzb.html"):
+	case strings.HasSuffix(path, config.QuitCourse):
 		return "course.quit", "正在提交退课请求", true
 	}
 	return "", "", false

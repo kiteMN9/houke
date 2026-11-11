@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"school_sdk/protocol"
+	"school_sdk/protocol/config"
 )
 
 // 正方在选课参数（xkkz_id / xkkz_xh）过期时的标准回应。
@@ -46,18 +47,20 @@ func newRenewFixture(t *testing.T) *renewFixture {
 	f.chooseBodies.Store([]string{paramExpiredJSON})
 
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 路径必须取 endpoints.go 里的常量：教务换过一次课程详情地址（多出 jk），
+		// 这里写死字面量就会悄悄对不上，测试会以“详情返回空”这种难查的方式失败。
 		switch {
-		case strings.HasSuffix(r.URL.Path, "/zzxkyzb_cxZzxkYzbIndex.html"):
+		case strings.HasSuffix(r.URL.Path, config.ChooseCourseIndex):
 			f.indexHits.Add(1)
 			_, _ = io.WriteString(w, indexOKHTML)
-		case strings.HasSuffix(r.URL.Path, "/zzxkyzb_cxZzxkYzbDisplay.html"):
+		case strings.HasSuffix(r.URL.Path, config.ChooseCourseTabParams):
 			f.preHits.Add(1)
 			_, _ = io.WriteString(w, indexOKHTML)
-		case strings.HasSuffix(r.URL.Path, "/zzxkyzb_cxZzxkYzbPartDisplay.html"):
+		case strings.HasSuffix(r.URL.Path, config.ChooseCourseCourseList):
 			_, _ = io.WriteString(w, nextBody(f.listBodies, f.listCalls.Add(1)))
-		case strings.HasSuffix(r.URL.Path, "/zzxkyzb_cxJxbWithKchZzxkYzb.html"):
+		case strings.HasSuffix(r.URL.Path, config.ChooseCourseCourseDetail):
 			_, _ = io.WriteString(w, nextBody(f.detailBodies, f.detailCall.Add(1)))
-		case strings.HasSuffix(r.URL.Path, "/zzxkyzbjk_xkBcZyZzxkYzb.html"):
+		case strings.HasSuffix(r.URL.Path, config.ChooseCourse):
 			_, _ = io.WriteString(w, nextBody(f.chooseBodies, f.chooseCall.Add(1)))
 		default:
 			_, _ = io.WriteString(w, indexOKHTML)
@@ -70,10 +73,7 @@ func newRenewFixture(t *testing.T) *renewFixture {
 // nextBody 取第 n 次请求该回的 body；超出序列长度时一直用最后一个。
 func nextBody(holder atomic.Value, n int32) string {
 	bodies := holder.Load().([]string)
-	i := int(n) - 1
-	if i < 0 {
-		i = 0
-	}
+	i := max(int(n)-1, 0)
 	if i >= len(bodies) {
 		i = len(bodies) - 1
 	}
@@ -224,7 +224,7 @@ const indexTabsV3 = `<html><body>
 func newTabsSession(t *testing.T, body *atomic.Value, indexHits *atomic.Int32) *session {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/zzxkyzb_cxZzxkYzbIndex.html") {
+		if strings.HasSuffix(r.URL.Path, config.ChooseCourseIndex) {
 			indexHits.Add(1)
 			_, _ = io.WriteString(w, body.Load().(string))
 			return

@@ -3,24 +3,30 @@ package web
 import (
 	"strings"
 	"testing"
+
+	"school_sdk/protocol/config"
 )
 
+// 用例里的地址一律由 endpoints.go 的常量拼出来：路径写死的话，教务换一次地址
+// 实现和测试会一起漂——要么测不到真实路径，要么测试先红。
 func TestClassifyRequest(t *testing.T) {
+	const base = "https://jwglxt.ycit.edu.cn"
 	cases := []struct {
 		url     string
 		stage   string
 		logWant bool
 	}{
-		{"https://jwglxt.ycit.edu.cn/xsxk/zzxkyzb_cxZzxkYzbIndex.html?gnmkdm=N253512", "init.index", true},
-		{"https://jwglxt.ycit.edu.cn/xsxk/zzxkyzb_cxZzxkYzbDisplay.html", "init.prepare", true},
-		{"https://jwglxt.ycit.edu.cn/xsxk/zzxkyzb_cxJxbWithKchZzxkYzb.html", "init.detail", true},
-		{"https://jwglxt.ycit.edu.cn/xsxk/zzxkyzb_cxZzxkYzbChoosedDisplay.html", "init.selected", true},
-		{"https://jwglxt.ycit.edu.cn/xsxk/zzxkyzbjk_xkBcZyZzxkYzb.html", "course.choose", true},
-		{"https://jwglxt.ycit.edu.cn/xsxk/zzxkyzb_tuikBcZzxkYzb.html", "course.quit", true},
+		{base + config.ChooseCourseIndex + "?gnmkdm=" + config.GndmmkXsxk, "init.index", true},
+		{base + config.ChooseCourseTabParams, "init.prepare", true},
+		{base + config.ChooseCourseCourseList, "init.courses", true},
+		{base + config.ChooseCourseCourseDetail, "init.detail", true},
+		{base + config.CourseSelectedList, "init.selected", true},
+		{base + config.ChooseCourse, "course.choose", true},
+		{base + config.QuitCourse, "course.quit", true},
 		// 登录端点不再由 URL 分类：阶段由 protocol 上报，这里只当未知请求计数
-		{"https://jwglxt.ycit.edu.cn/xtgl/login_slogin.html", "http:/xtgl/login_slogin.html", false},
+		{base + "/xtgl/login_slogin.html", "http:/xtgl/login_slogin.html", false},
 		// 未知端点：不应该写日志，但要有阶段文案
-		{"https://jwglxt.ycit.edu.cn/some/unknown_thing.html", "http:/some/unknown_thing.html", false},
+		{base + "/some/unknown_thing.html", "http:/some/unknown_thing.html", false},
 		{"", "", false},
 	}
 
@@ -41,7 +47,7 @@ func TestClassifyRequest(t *testing.T) {
 // 阶段文案里不能出现查询串，避免把敏感参数带进事件流。
 func TestClassifyRequestDoesNotLeakQuery(t *testing.T) {
 	stage, text, detail, _ := classifyRequest(
-		"https://jwglxt.ycit.edu.cn/xsxk/zzxkyzb_cxZzxkYzbIndex.html?token=SECRET&password=PW")
+		"https://jwglxt.ycit.edu.cn" + config.ChooseCourseIndex + "?token=SECRET&password=PW")
 	for _, s := range []string{stage, text, detail} {
 		if strings.Contains(s, "SECRET") || strings.Contains(s, "PW") || strings.Contains(s, "?") {
 			t.Errorf("阶段信息泄漏了查询串: %q", s)
