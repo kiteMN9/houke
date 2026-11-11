@@ -56,7 +56,7 @@ func (s *Server) handleMenu(c *gin.Context) {
 }
 
 func (s *Server) handleLoginStatus(c *gin.Context) {
-	c.String(http.StatusOK, "1")
+	c.String(http.StatusOK, "")
 }
 
 func (s *Server) handleStudentName(c *gin.Context) {

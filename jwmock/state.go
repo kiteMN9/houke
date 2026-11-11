@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"net/http"
 	"sort"
 	"strings"
@@ -323,24 +324,18 @@ func cloneScenario(sc Scenario) Scenario {
 	out := sc
 	if sc.RejectByJxb != nil {
 		out.RejectByJxb = make(map[string]string, len(sc.RejectByJxb))
-		for k, v := range sc.RejectByJxb {
-			out.RejectByJxb[k] = v
-		}
+		maps.Copy(out.RejectByJxb, sc.RejectByJxb)
 	}
 	if sc.RejectNext != nil {
 		out.RejectNext = make(map[string]int, len(sc.RejectNext))
-		for k, v := range sc.RejectNext {
-			out.RejectNext[k] = v
-		}
+		maps.Copy(out.RejectNext, sc.RejectNext)
 	}
 	out.Faults = append([]Fault(nil), sc.Faults...)
 	if sc.EnrolledPhases != nil {
 		out.EnrolledPhases = make([]EnrolledPhase, len(sc.EnrolledPhases))
 		for i, p := range sc.EnrolledPhases {
 			out.EnrolledPhases[i] = EnrolledPhase{AfterMs: p.AfterMs, Enrolled: make(map[string]int, len(p.Enrolled))}
-			for k, v := range p.Enrolled {
-				out.EnrolledPhases[i].Enrolled[k] = v
-			}
+			maps.Copy(out.EnrolledPhases[i].Enrolled, p.Enrolled)
 		}
 	}
 	return out

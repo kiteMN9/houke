@@ -101,10 +101,10 @@ func (s *Server) buildRouter() *gin.Engine {
 	priv.POST(config.ChooseCourse, s.handleChoose)
 	priv.POST(config.CourseSelectedList, s.handleSelected)
 	priv.POST(config.QuitCourse, s.handleQuit)
-	priv.GET(config.ChooseSimpleDoJxb, s.handleSimple)
-	priv.POST(config.ChooseSimpleDoJxb, s.handleSimple)
-	priv.GET(config.CourseRegistered, s.handleRegistered)
-	priv.POST(config.CourseRegistered, s.handleRegistered)
+	//priv.GET(config.ChooseSimpleDoJxb, s.handleSimple)
+	//priv.POST(config.ChooseSimpleDoJxb, s.handleSimple)
+	//priv.GET(config.CourseRegistered, s.handleRegistered)
+	//priv.POST(config.CourseRegistered, s.handleRegistered)
 
 	// 控制面固定挂在 /__mock 下，不受 BasePath 影响，也不参与故障注入。
 	ctrl := r.Group(controlPrefix)

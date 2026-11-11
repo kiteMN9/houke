@@ -337,13 +337,13 @@ func (s *Server) handleQuit(c *gin.Context) {
 	c.Data(http.StatusOK, "application/json; charset=utf-8", []byte(body))
 }
 
-func (s *Server) handleSimple(c *gin.Context) {
-	c.Data(http.StatusOK, "application/json; charset=utf-8", []byte("[]"))
-}
+//func (s *Server) handleSimple(c *gin.Context) {
+//	c.Data(http.StatusOK, "application/json; charset=utf-8", []byte("[]"))
+//}
 
-func (s *Server) handleRegistered(c *gin.Context) {
-	c.Data(http.StatusOK, "application/json; charset=utf-8", []byte("[]"))
-}
+//func (s *Server) handleRegistered(c *gin.Context) {
+//	c.Data(http.StatusOK, "application/json; charset=utf-8", []byte("[]"))
+//}
 
 func (s *Server) takeParamExpire() bool {
 	s.mu.Lock()

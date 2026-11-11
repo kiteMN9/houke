@@ -3,8 +3,8 @@
 """从正方教务 HAR 生成 jwmock 配置。
 
 数据来源（与 protocol/CourseMerge.go 的两个接口对应）：
-  * zzxkyzb_cxZzxkYzbPartDisplay —— 课程列表（响应的 tmpList），教学班全集；
-  * zzxkyzb_cxJxbWithKchZzxkYzb   —— 课程详情（JSON 数组），补充容量/教师/时间地点。
+  * _cxZzxkYzbPartDisplay.html —— 课程列表（响应的 tmpList），教学班全集；
+  * _cxJxbWithKchZzxkYzb.html   —— 课程详情（JSON 数组），补充容量/教师/时间地点。
 
 合并规则与 protocol/CourseMerge.go 一致：
   1. 列表按 jxb_id 去重：后出现的覆盖先出现的，输出顺序取首次出现的位置；
@@ -30,8 +30,8 @@ import sys
 from pathlib import Path
 from urllib.parse import parse_qsl
 
-LIST_ENDPOINT = "zzxkyzb_cxZzxkYzbPartDisplay"
-DETAIL_ENDPOINT = "zzxkyzb_cxJxbWithKchZzxkYzb"
+LIST_ENDPOINT = "_cxZzxkYzbPartDisplay.html"
+DETAIL_ENDPOINT = "_cxJxbWithKchZzxkYzb.html"
 ENDPOINTS = (LIST_ENDPOINT, DETAIL_ENDPOINT)
 
 # 页签字段 ← 请求表单字段。xklc 只出现在详情请求表单里（列表请求不带）。
@@ -441,7 +441,7 @@ def build_tab(
 def main(argv: list[str] | None = None) -> int:
     repo = Path(__file__).resolve().parents[2]
     parser = argparse.ArgumentParser(
-        description="从正方教务 HAR 导出 jwmock 配置（合并 zzxkyzb_cxZzxkYzbPartDisplay 与 zzxkyzb_cxJxbWithKchZzxkYzb，按 jxb_id 合并）",
+        description="从正方教务 HAR 导出 jwmock 配置（合并 _cxZzxkYzbPartDisplay.html 与 _cxJxbWithKchZzxkYzb.html，按 jxb_id 合并）",
     )
     parser.add_argument(
         "--har",
