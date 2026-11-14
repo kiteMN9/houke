@@ -302,50 +302,196 @@ type RuntimeState struct {
 	xztk       bool // 限制退课
 }
 
-// ModeStore zzxkYzb.js
+// ModeStore cxZzxkYzbIndex.html -> zzxkYzb.js
 // function queryCourse(a_element,kklxdm,xkkz_id,njdm_id,zyh_id,xkkz_xh){}
 type ModeStore struct {
-	Kklxmc  string
-	Kklxdm  string
-	Xkkz_id string
-	Njdm_id string
-	Zyh_id  string
-	Xkkz_xh string
+	Kklxmc  string // 当前课程类型名称
+	Kklxdm  string // 课程类型代码，区分不同类型选课 10 06 09...
+	Xkkz_id string // 选课控制id
+	Njdm_id string // 年级代码
+	Zyh_id  string // 专业号id
+	Xkkz_xh string // zf9.0新参数
+}
+
+type ChooseCourseResult struct {
+	Flag string `json:"flag"`
+	Msg  string `json:"msg"`
+}
+
+type CourseListDic struct {
+	Date               string `json:"date"`               // '二○二五年二月二十六日'
+	DateDigit          string `json:"dateDigit"`          // '2025年2月26日'
+	DateDigitSeparator string `json:"dateDigitSeparator"` // '2025-2-26'
+	Day                string `json:"day"`
+	Month              string `json:"month"`
+	Year               string `json:"year"` // '2025'
+
+	Blyxrs    string `json:"blyxrs"` // 本轮已选人数
+	Blzyl     string `json:"blzyl"`
+	Cxbj      string `json:"cxbj"` // 重修标记 0
+	Fxbj      string `json:"fxbj"`
+	Jgpxzd    string `json:"jgpxzd"`
+	JxbId     string `json:"jxb_id"` // 教学班id，用于连接List和Detail
+	Jxbmc     string `json:"jxbmc"`  // 教学班名称  "艺术哲学：美是如何诞生的(艺术类)-0001"
+	Jxbxf     string `json:"jxbxf"`
+	Jxbzls    string `json:"jxbzls"`           // 'jxbzls': '1'
+	Kch       string `json:"kch"`              // 课程号  '9000000398'
+	KchId     string `json:"kch_id"`           // 课程号 id
+	Kclxmc    string `json:"kclxmc,omitempty"` // 公共选修课
+	Kcmc      string `json:"kcmc"`             // 课程名称  "艺术哲学：美是如何诞生的(艺术类)"
+	Kcrow     string `json:"kcrow"`            // RowNum int 行号
+	Kklxdm    string `json:"kklxdm"`           // 课程类型代码，区分不同类型选课  '10'
+	Kzmc      string `json:"kzmc"`             // 课程性质  "艺术类"
+	Listnav   string `json:"listnav"`
+	LocaleKey string `json:"localeKey"`
+	PageTotal int    `json:"pageTotal"`
+	Pageable  bool   `json:"pageable"`
+
+	Rangeable   bool   `json:"rangeable"`
+	Rwzxs       string `json:"rwzxs"`
+	Sftj        string `json:"sftj"`
+	TotalResult string `json:"totalResult"`
+	Xf          string `json:"xf"`    // 学分  "1.5"
+	Xxkbj       string `json:"xxkbj"` // 选修课标记?
+	Yxzrs       string `json:"yxzrs"` // 已选总人数  "70"
+	Zcongbj     string `json:"zcongbj"`
+
+	QueryModel QueryModel `json:"queryModel"`
+	UserModel  UserModel  `json:"userModel"`
+}
+
+type CourseListResult struct {
+	TmpList []CourseListDic `json:"tmpList"` // 搜索课程返回的清单
+	Sfxsjc  string          `json:"sfxsjc"`
+	Msg     string          `json:"msg"`
+	Flag    string          `json:"flag"` // 成功 flag=1
+}
+
+// CourseDetail zzxkyzb_cxJxbWithKchZzxkYzb.html
+type CourseDetail struct {
+	Date               string `json:"date"`               //'date': '二○二五年二月二十日'
+	DateDigit          string `json:"dateDigit"`          //'dateDigit': '2025年2月20日'
+	DateDigitSeparator string `json:"dateDigitSeparator"` //'dateDigitSeparator': '2025-2-20'
+	Day                string `json:"day"`                //'day': '20'
+	Month              string `json:"month"`
+	Year               string `json:"year"` // year: 2025
+
+	Bxbj  string `json:"bxbj"`
+	Dsfrl string `json:"dsfrl"`
+	Fxbj  string `json:"fxbj"`
+
+	DoJxbId   string `json:"do_jxb_id"`
+	FjxbId    string `json:"fjxb_id"`
+	Jgpxzd    string `json:"jgpxzd"`
+	Jsxx      string `json:"jsxx"`   // 教师信息 440015/裴如意/副教授
+	JxbId     string `json:"jxb_id"` // 教学班id，用于连接List和Detial 以 jxb_id 为课程唯一标识符
+	Jxbmc     string `json:"jxbmc"`
+	Jxbrs     string `json:"jxbrs"` // 教学班人数
+	Jxdd      string `json:"jxdd"`  // 教学地点 知行楼108
+	Listnav   string `json:"listnav"`
+	LocaleKey string `json:"localeKey"`
+	PageTotal int    `json:"pageTotal"`
+	Pageable  bool   `json:"pageable"`
+
+	Rangeable   bool   `json:"rangeable"`
+	Sjsfsj      string `json:"sjsfsj"`
+	Sksj        string `json:"sksj"` // 上课时间 星期二第1-2节{2-13周}
+	TotalResult string `json:"totalResult"`
+
+	Xsdm string `json:"xsdm"`
+	Xsmc string `json:"xsmc"`
+
+	Jxbrl  string `json:"jxbrl"`  // 教学班容量
+	Xqumc  string `json:"xqumc"`  // 校区名称 北校区 南校区
+	Xqh_id string `json:"xqh_id"` // 校区号 3
+	Kcxzmc string `json:"kcxzmc"` // 课程性质名称: 必修
+	Kkxymc string `json:"kkxymc"` // kkxymc: 外国语学院
+	Jxms   string `json:"jxms"`   // jxms: 理论
+	Kclbmc string `json:"kclbmc"` // kclbmc: 公共必修课
+	Xf     string `json:"xf"`
+	Yqmc   string `json:"yqmc"` //'yqmc': '--'
+
+	Yxzrs string `json:"yxzrs"` // 已选总人数 9.0正方
+
+	QueryModel QueryModel `json:"queryModel"`
+	UserModel  UserModel  `json:"userModel"`
+
+	//Jsm       string `json:"jsm"`    // Teacher 参考自 GCCTool
+	//Jsmc      string `json:"jsmc"`   // Room 参考自 GCCTool
+	//Zrs         string `json:"zrs"` // 总人数 参考自 GCCTool 盐工无
+}
+
+// CustomCourseDic 这个实际上和已选课程高度重合
+type CustomCourseDic struct {
+	Date               string `json:"date"`               // 二○二五年二月二十六日
+	DateDigit          string `json:"dateDigit"`          // 2025年2月26日
+	DateDigitSeparator string `json:"dateDigitSeparator"` // 2025-2-26
+	Day                string `json:"day"`                // 26
+	Month              string `json:"month"`
+	Year               string `json:"year"` // 2025
+
+	Cxbj   string `json:"cxbj"`   // 重修标记 '0'
+	Jxb_id string `json:"jxb_id"` // 教学班id，用于连接 List 和 Detail
+	Jxbmc  string `json:"jxbmc"`  // 教学班名称  艺术哲学：美是如何诞生的(艺术类)-0001
+	Jxbzls string `json:"jxbzls"` // '1'
+	Kch    string `json:"kch"`    // 课程号
+	Kch_id string `json:"kch_id"` // 课程号id
+	Kcmc   string `json:"kcmc"`   // 课程名称  艺术哲学：美是如何诞生的(艺术类)
+	Kklxdm string `json:"kklxdm"` // 关键参数，区分不同类型选课  '10'
+	Kclxmc string `json:"kclxmc"` // 课程类别名称  'kclxmc': '公共选修课'
+	Kzmc   string `json:"kzmc"`   // 课程性质  'kzmc': '艺术类'
+	XF     string `json:"xf"`     // 学分  1.5
+	Xxkbj  string `json:"xxkbj"`  // 选修课标记?
+	Yxzrs  string `json:"yxzrs"`  // 已选人数  'yxzrs': '70'
+
+	Do_jxb_id string `json:"do_jxb_id"` //
+	Jxbrl     string `json:"jxbrl"`     // 'jxbrl': '66'
+	Sksj      string `json:"sksj"`      //'sksj': '星期二第1-2节{2-13周}
+	Jxdd      string `json:"jxdd"`      // 'jxdd': '知行楼108',
+	Jsxx      string `json:"jsxx"`      //jsxx': '440015/裴如意/副教授'
+	Xqumc     string `json:"xqumc"`     //'xqumc': '北校区'
+	Xqh_id    string `json:"xqh_id"`    //'xqh_id': '3'
+	Kcxzmc    string `json:"kcxzmc"`    // 'kcxzmc': '必修'
+	Kkxymc    string `json:"kkxymc"`    // 'kkxymc': '外国语学院'
+	Jxms      string `json:"jxms"`      //'jxms': '理论'
+	Kclbmc    string `json:"kclbmc"`    //'kclbmc': '公共必修课'
 }
 
 type ChosenDic struct {
-	Bdzcbj             string `json:"bdzcbj"`
-	Cxbj               string `json:"cxbj"`
+	Day                string `json:"day"`
 	Date               string `json:"date"`
 	DateDigit          string `json:"dateDigit"`
 	DateDigitSeparator string `json:"dateDigitSeparator"`
+	Month              string `json:"month"`
+	Year               string `json:"year"`
 
-	Day       string `json:"day"`
+	Bdzcbj    string `json:"bdzcbj"`
+	Cxbj      string `json:"cxbj"`
 	Ddkzbj    string `json:"ddkzbj"`
 	Do_jxb_id string `json:"do_jxb_id"` //
-	Xkkz_id   string `json:"xkkz_id"`   // 'xkkz_id': '0',
-	Rwlx      string `json:"rwlx"`      // 'rwlx': '1',
-	IsInxksj  string `json:"isInxksj"`
+	Xkkz_id   string `json:"xkkz_id"`   //
+	Rwlx      string `json:"rwlx"`      //
+	IsInxksj  string `json:"isInxksj"`  // 是否在选课时间
 	Jdlx      string `json:"jdlx"`
 	Jgpxzd    string `json:"jgpxzd"`
 	Jsxx      string `json:"jsxx"`   // "320057/陈爱华/副教授"
-	JxbId     string `json:"jxb_id"` //
+	JxbId     string `json:"jxb_id"` // 用于关联不同课程
 	Jxbmc     string `json:"jxbmc"`  // 教学班名称 '化工原理（上）-0002',
 
 	Jxbxf     string `json:"jxbxf"`
 	Jxbzls    string `json:"jxbzls"`
-	Jxdd      string `json:"jxdd"`
+	Jxdd      string `json:"jxdd"` // 教学地点
 	Kcmc      string `json:"kcmc"` // 课程名称 "化工原理（上）"
 	Kklxdm    string `json:"kklxdm"`
 	Kklxmc    string `json:"kklxmc"`
-	Xf        string `json:"xf"`     // 学分 'xf': '3'
+	Xf        string `json:"xf"`     // 学分 '3'
 	Kch       string `json:"kch"`    // 'kch': '0003021031',
 	Kch_id    string `json:"kch_id"` // 课程号ID 'kch_id': '0003021031',
 	Kklxpx    string `json:"kklxpx"`
 	Krrl      string `json:"krrl"`
 	Listnav   string `json:"listnav"`
 	LocaleKey string `json:"localeKey"`
-	Month     string `json:"month"`
+
 	PageTotal int    `json:"pageTotal"`
 	Pageable  bool   `json:"pageable"`
 	Sfktk     string `json:"sfktk"`  // 是否可退课
@@ -355,22 +501,16 @@ type ChosenDic struct {
 
 	Qz          string `json:"qz"`
 	Rangeable   bool   `json:"rangeable"`
-	Sksj        string `json:"sksj"`
+	Sksj        string `json:"sksj"` // 上课时间
 	Sxbj        string `json:"sxbj"`
 	TKchId      string `json:"t_kch_id"`
 	TotalResult string `json:"totalResult"`
 	Xxkbj       string `json:"xxkbj"` // 选修课标记?
-	Year        string `json:"year"`
 	Zixf        string `json:"zixf"`
 	Zy          string `json:"zy"`
 
 	QueryModel QueryModel `json:"queryModel"`
 	UserModel  UserModel  `json:"userModel"`
-}
-
-type ChooseCourseResult struct {
-	Flag string `json:"flag"`
-	Msg  string `json:"msg"`
 }
 
 type UserModel struct {
@@ -395,141 +535,4 @@ type QueryModel struct {
 	TotalCount    int   `json:"totalCount"`
 	TotalPage     int   `json:"totalPage"`
 	TotalResult   int   `json:"totalResult"`
-}
-
-type CourseListDic struct {
-	Blyxrs             string `json:"blyxrs"` // 本轮已选人数
-	Blzyl              string `json:"blzyl"`
-	Cxbj               string `json:"cxbj"`               // 重修标记 0
-	Date               string `json:"date"`               // '二○二五年二月二十六日'
-	DateDigit          string `json:"dateDigit"`          // '2025年2月26日'
-	DateDigitSeparator string `json:"dateDigitSeparator"` // '2025-2-26'
-
-	Day       string `json:"day"`
-	Fxbj      string `json:"fxbj"`
-	Jgpxzd    string `json:"jgpxzd"`
-	JxbId     string `json:"jxb_id"` // 教学班id，用于连接List和Detail
-	Jxbmc     string `json:"jxbmc"`  // 教学班名称  "艺术哲学：美是如何诞生的(艺术类)-0001"
-	Jxbxf     string `json:"jxbxf"`
-	Jxbzls    string `json:"jxbzls"`           // 'jxbzls': '1'
-	Kch       string `json:"kch"`              // 课程号  '9000000398'
-	KchId     string `json:"kch_id"`           // 课程号 id
-	Kclxmc    string `json:"kclxmc,omitempty"` // 公共选修课
-	Kcmc      string `json:"kcmc"`             // 课程名称  "艺术哲学：美是如何诞生的(艺术类)"
-	Kcrow     string `json:"kcrow"`            // RowNum int 行号
-	Kklxdm    string `json:"kklxdm"`           // 课程类型代码，区分不同类型选课  '10'
-	Kzmc      string `json:"kzmc"`             // 课程性质  "艺术类"
-	Listnav   string `json:"listnav"`
-	LocaleKey string `json:"localeKey"`
-	Month     string `json:"month"`
-	PageTotal int    `json:"pageTotal"`
-	Pageable  bool   `json:"pageable"`
-
-	Rangeable   bool   `json:"rangeable"`
-	Rwzxs       string `json:"rwzxs"`
-	Sftj        string `json:"sftj"`
-	TotalResult string `json:"totalResult"`
-	Xf          string `json:"xf"`    // 学分  "1.5"
-	Xxkbj       string `json:"xxkbj"` // 选修课标记?
-	Year        string `json:"year"`  // '2025'
-	Yxzrs       string `json:"yxzrs"` // 已选总人数  "70"
-	Zcongbj     string `json:"zcongbj"`
-
-	QueryModel QueryModel `json:"queryModel"`
-	UserModel  UserModel  `json:"userModel"`
-}
-
-type CourseListResult struct {
-	TmpList []CourseListDic `json:"tmpList"` // 搜索课程返回的清单
-	Sfxsjc  string          `json:"sfxsjc"`
-	Msg     string          `json:"msg"`
-	Flag    string          `json:"flag"` // 成功 flag=1
-}
-
-// CourseDetail zzxkyzb_cxJxbWithKchZzxkYzb.html
-type CourseDetail struct {
-	Bxbj               string `json:"bxbj"`
-	Date               string `json:"date"`               //'date': '二○二五年二月二十日'
-	DateDigit          string `json:"dateDigit"`          //'dateDigit': '2025年2月20日'
-	DateDigitSeparator string `json:"dateDigitSeparator"` //'dateDigitSeparator': '2025-2-20'
-	Day                string `json:"day"`                //'day': '20'
-
-	Dsfrl string `json:"dsfrl"`
-	Fxbj  string `json:"fxbj"`
-
-	DoJxbId   string `json:"do_jxb_id"`
-	FjxbId    string `json:"fjxb_id"`
-	Jgpxzd    string `json:"jgpxzd"`
-	Jsxx      string `json:"jsxx"`   // 教师信息 440015/裴如意/副教授
-	JxbId     string `json:"jxb_id"` // 教学班id，用于连接List和Detial 以 jxb_id 为课程唯一标识符
-	Jxbmc     string `json:"jxbmc"`
-	Jxbrs     string `json:"jxbrs"` // 教学班人数
-	Jxdd      string `json:"jxdd"`  // 教学地点 知行楼108
-	Listnav   string `json:"listnav"`
-	LocaleKey string `json:"localeKey"`
-	Month     string `json:"month"`
-	PageTotal int    `json:"pageTotal"`
-	Pageable  bool   `json:"pageable"`
-
-	Rangeable   bool   `json:"rangeable"`
-	Sjsfsj      string `json:"sjsfsj"`
-	Sksj        string `json:"sksj"` // 上课时间 星期二第1-2节{2-13周}
-	TotalResult string `json:"totalResult"`
-
-	Xsdm string `json:"xsdm"`
-	Xsmc string `json:"xsmc"`
-	Year string `json:"year"` // year: 2025
-
-	Jxbrl  string `json:"jxbrl"`  // 教学班容量
-	Xqumc  string `json:"xqumc"`  // 校区名称 北校区 南校区
-	Xqh_id string `json:"xqh_id"` // 校区号 3
-	Kcxzmc string `json:"kcxzmc"` // 课程性质名称: 必修
-	Kkxymc string `json:"kkxymc"` // kkxymc: 外国语学院
-	Jxms   string `json:"jxms"`   // jxms: 理论
-	Kclbmc string `json:"kclbmc"` // kclbmc: 公共必修课
-	Xf     string `json:"xf"`
-	Yqmc   string `json:"yqmc"` //'yqmc': '--'
-
-	Yxzrs string `json:"yxzrs"` // 已选总人数 9.0正方
-
-	QueryModel QueryModel `json:"queryModel"`
-	UserModel  UserModel  `json:"userModel"`
-
-	//Jsm       string `json:"jsm"`    // Teacher 参考自 GCCTool
-	//Jsmc      string `json:"jsmc"`   // Room 参考自 GCCTool
-	//Zrs         string `json:"zrs"` // 总人数 参考自 GCCTool 盐工无
-}
-
-type CustomCourseDic struct {
-	Jxb_id string `json:"jxb_id"` // 教学班id，用于连接 List 和 Detail
-	Jxbmc  string `json:"jxbmc"`  // 教学班名称  艺术哲学：美是如何诞生的(艺术类)-0001
-	Jxbzls string `json:"jxbzls"` // 'jxbzls': '1'
-	Kch    string `json:"kch"`    // 课程号
-	Kch_id string `json:"kch_id"` // 课程号id
-	Kcmc   string `json:"kcmc"`   // 课程名称  艺术哲学：美是如何诞生的(艺术类)
-	Kklxdm string `json:"kklxdm"` // 关键参数，区分不同类型选课  '10'
-	Kclxmc string `json:"kclxmc"` // 课程类别名称  'kclxmc': '公共选修课'
-	Kzmc   string `json:"kzmc"`   // 课程性质  'kzmc': '艺术类'
-	XF     string `json:"xf"`     // 学分  1.5
-	Xxkbj  string `json:"xxkbj"`  // 选修课标记?
-	Year   string `json:"year"`   // 'year': '2025'
-	Yxzrs  string `json:"yxzrs"`  // 已选人数  'yxzrs': '70'
-	Cxbj   string `json:"cxbj"`   // 重修标记 '0'
-
-	Do_jxb_id string `json:"do_jxb_id"` //
-	Jxbrl     string `json:"jxbrl"`     // 'jxbrl': '66'
-	Sksj      string `json:"sksj"`      //'sksj': '星期二第1-2节{2-13周}
-	Jxdd      string `json:"jxdd"`      // 'jxdd': '知行楼108',
-	Jsxx      string `json:"jsxx"`      //jsxx': '440015/裴如意/副教授'
-	Xqumc     string `json:"xqumc"`     //'xqumc': '北校区'
-	Xqh_id    string `json:"xqh_id"`    //'xqh_id': '3'
-	Kcxzmc    string `json:"kcxzmc"`    // 'kcxzmc': '必修'
-	Kkxymc    string `json:"kkxymc"`    // 'kkxymc': '外国语学院'
-	Jxms      string `json:"jxms"`      //'jxms': '理论'
-	Kclbmc    string `json:"kclbmc"`    //'kclbmc': '公共必修课'
-	Day       string `json:"day"`       // 'day': '26'
-	// 'date': '二○二五年二月二十六日', 'dateDigit': '2025年2月26日', 'dateDigitSeparator': '2025-2-26'
-	Date               string `json:"date"`
-	DateDigit          string `json:"dateDigit"` //'dateDigit': '2025年2月20日'
-	DateDigitSeparator string `json:"dateDigitSeparator"`
 }
