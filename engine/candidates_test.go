@@ -306,7 +306,8 @@ func TestCandidateSourceNameFirst(t *testing.T) {
 }
 
 // 名字一门都没命中时不能只返回空：第一次调用在刷新完列表后立刻回落到整表
-// 扫描，教师/类型命中的课仍要能进候选，而且列表只请求一次。
+// 扫描，教师/类型命中的课仍要能进候选，而且列表只请求一次。整表扫描同样不等
+// 整页抓完——扫到第一个能提交的候选就先返回，剩下的课程号留给下一次刷新。
 func TestCandidateSourceNameFirstFallsBackToFullScan(t *testing.T) {
 	var listBody atomic.Value
 	listBody.Store(`{"tmpList":[` +
@@ -331,11 +332,83 @@ func TestCandidateSourceNameFirstFallsBackToFullScan(t *testing.T) {
 	if listHits.Load() != 1 {
 		t.Fatalf("列表请求 = %d，期望 1（回落扫描复用刚刷新的列表）", listHits.Load())
 	}
-	if detailHits.Load() != 2 {
-		t.Fatalf("详情请求 = %d，期望 2（整表扫描两门课）", detailHits.Load())
+	// k1 教师命中且有名额：k2 的详情留到下一次刷新再抓。
+	if detailHits.Load() != 1 {
+		t.Fatalf("详情请求 = %d，期望 1（扫到第一个能提交的候选就收手）", detailHits.Load())
 	}
 	if len(got) != 1 || got[0].Kch_id != "k1" {
 		t.Fatalf("候选 = %+v，期望教师命中的 k1", got)
+	}
+
+	// 下一次刷新接着扫剩下的课程号：k2 的教师不命中，不会凑进候选。
+	got, err = source(context.Background())
+	if err != nil {
+		t.Fatalf("第二次 source: %v", err)
+	}
+	if detailHits.Load() != 2 {
+		t.Fatalf("第二次详情请求 = %d，期望 2（补 k2）", detailHits.Load())
+	}
+	if len(got) != 1 || got[0].Kch_id != "k1" {
+		t.Fatalf("第二次候选 = %+v，期望仍只有 k1", got)
+	}
+}
+
+// 通识选修课整页几十个课程号、每个课程号都要一次详情：自动选课找到第一个
+// 有名额的候选就先返回，不等整页抓完；下一次刷新从停下的地方接着扫，扫过的
+// 课程号不再重复请求详情。
+func TestCandidateSourceStopsAtFirstVacancy(t *testing.T) {
+	var listBody atomic.Value
+	listBody.Store(`{"tmpList":[` +
+		`{"kch_id":"k1","jxb_id":"j1","kcmc":"艺术一","jxbmc":"艺术一-0001","kzmc":"艺术类","yxzrs":"50"},` +
+		`{"kch_id":"k2","jxb_id":"j2","kcmc":"艺术二","jxbmc":"艺术二-0001","kzmc":"艺术类","yxzrs":"10"},` +
+		`{"kch_id":"k3","jxb_id":"j3","kcmc":"艺术三","jxbmc":"艺术三-0001","kzmc":"艺术类","yxzrs":"10"}]}`)
+	var listHits, detailHits atomic.Int32
+	srv := candidateSourceServer(t, &listBody, &listHits, &detailHits, map[string]string{
+		"k1": `[{"jxb_id":"j1","do_jxb_id":"d1","jxbrl":"50","yxzrs":"50"}]`,
+		"k2": `[{"jxb_id":"j2","do_jxb_id":"d2","jxbrl":"50","yxzrs":"10"}]`,
+		"k3": `[{"jxb_id":"j3","do_jxb_id":"d3","jxbrl":"50","yxzrs":"10"}]`,
+	})
+	e := newCandidateEngine(t, srv, nil)
+	listHits.Store(0)
+	source := e.CandidateSource(protocol.WishList{WantTypeList: []string{"艺术类"}})
+
+	// 第一次：k1 满员继续扫，扫到 k2 有名额就收手，k3 的详情留到下次。
+	got, err := source(context.Background())
+	if err != nil {
+		t.Fatalf("首次 source: %v", err)
+	}
+	if detailHits.Load() != 2 {
+		t.Fatalf("首次详情请求 = %d，期望 2（扫到 k2 就收手，不抓 k3）", detailHits.Load())
+	}
+	if len(got) != 2 || got[0].Kch_id != "k1" || got[1].Kch_id != "k2" {
+		t.Fatalf("首次候选 = %+v，期望 k1（满员）+ k2（有名额）", got)
+	}
+
+	// 第二次：刷新列表后从 k3 接着扫；k1、k2 已扫过，不再请求详情。
+	got, err = source(context.Background())
+	if err != nil {
+		t.Fatalf("第二次 source: %v", err)
+	}
+	if listHits.Load() != 2 {
+		t.Fatalf("列表请求 = %d，期望 2（每次调用都重拉）", listHits.Load())
+	}
+	if detailHits.Load() != 3 {
+		t.Fatalf("第二次详情请求 = %d，期望 3（只补 k3）", detailHits.Load())
+	}
+	if len(got) != 3 {
+		t.Fatalf("第二次候选 = %+v，期望 k1、k2、k3 都在队列里", got)
+	}
+
+	// 第三次：整页扫完了，刷新只重拉列表，不再有详情请求。
+	got, err = source(context.Background())
+	if err != nil {
+		t.Fatalf("第三次 source: %v", err)
+	}
+	if detailHits.Load() != 3 {
+		t.Fatalf("第三次详情请求 = %d，期望 3（扫过的课程号不重复请求）", detailHits.Load())
+	}
+	if len(got) != 3 {
+		t.Fatalf("第三次候选 = %+v，期望仍是 3 个", got)
 	}
 }
 

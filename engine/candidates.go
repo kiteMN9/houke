@@ -15,14 +15,20 @@ var ErrNotInitialized = errors.New("engine: 会话尚未初始化")
 
 // CandidateSource 返回绑定在本引擎课程缓存上的候选源（见 Source）。
 //
-// 与 CollectCandidates 的区别有两处：**每次调用都重拉课程列表**，以及第一次
-// 调用如果愿望里填了课程名，先走"名字优先"——只抓课程名命中的课程号，命中就
-// 立即返回。名字一门都没命中时才回落到整表扫描。
+// 与 CollectCandidates 的区别有三处：**每次调用都重拉课程列表**；第一次调用
+// 如果愿望里填了课程名，先走"名字优先"——只抓课程名命中的课程号，命中就立即
+// 返回，一门都没命中时才回落到整表扫描；整表扫描**找到一个此刻能提交的候选就
+// 先返回**，剩下的课程号留到下一次刷新接着扫。
 //
 // 名字优先是为学校的两类选课设计的：板块课一个课程号下挂着全部教学班，一次
 // 详情就能补齐，怎么算都不慢；通识选修课整页有几十个课程号、每个课程号一两个
 // 教学班，全抓一遍要几十次详情（限流下约一分钟）。用户点名的课经常不在整页的
 // 开头，名字优先把它从"扫完整页才能提交"变成"第一次请求就能提交"。
+//
+// 教师 / 类型愿望只能在整表扫描里命中（教师只出现在详情里），没有名字可以提前
+// 定位；同理，扫到一个能提交的就先提交，不把整页详情拖到第一次提交之前。提前
+// 收手不会丢掉低优先级的课：补过详情的课程号在缓存里带着 Do_jxb_id，下一次
+// 刷新不会再为它们发请求，扫描自然从上次停下的地方继续，队列只会变长。
 //
 // 列表接口"成功"但没回数据（典型是加密串过期、参数被教务拒绝）时返回
 // ErrNoCandidates：这不能当成"愿望没有命中"，否则 RunAuto 会把上一次的队列
@@ -32,7 +38,7 @@ func (e *Engine) CandidateSource(wants protocol.WishList) Source {
 	first.Store(true)
 	return func(ctx context.Context) ([]protocol.CustomCourseDic, error) {
 		if first.CompareAndSwap(true, false) && wants.HasCourseNames() {
-			nameOnly, err := e.collect(ctx, wants, true, true)
+			nameOnly, err := e.collect(ctx, wants, collectOptions{refreshList: true, nameOnly: true})
 			if err != nil {
 				return nil, err
 			}
@@ -40,9 +46,9 @@ func (e *Engine) CandidateSource(wants protocol.WishList) Source {
 				return nameOnly, nil
 			}
 			// 名字没有命中：列表刚刷新过，直接拿它做整表扫描。
-			return e.collect(ctx, wants, false, false)
+			return e.collect(ctx, wants, collectOptions{})
 		}
-		return e.collect(ctx, wants, true, false)
+		return e.collect(ctx, wants, collectOptions{refreshList: true})
 	}
 }
 
@@ -57,16 +63,32 @@ func (e *Engine) CandidateSource(wants protocol.WishList) Source {
 //     的全部教学班；这个课程号下一个教学班都没命中就跳过它，继续下一个；
 //  3. 把命中的教学班收进候选，满员过滤与最终排序留给 RunAuto。
 //
+// 它返回的是**整页**候选、不提前收手：调用方要完整名单时用它（自动选课走
+// CandidateSource，找到一个能提交的就先提交）。
+//
 // 满员过滤与排序不在这里做：那是 RunAuto 的职责，CollectCandidates 只保证
 // 候选带齐提交参数。需要"此刻最新人数"时用 CandidateSource。
 func (e *Engine) CollectCandidates(ctx context.Context, wants protocol.WishList) ([]protocol.CustomCourseDic, error) {
-	return e.collect(ctx, wants, false, false)
+	return e.collect(ctx, wants, collectOptions{})
+}
+
+// collectOptions 是一次候选收集的参数。
+type collectOptions struct {
+	// refreshList 为 true 时无条件重拉课程列表（自动选课的周期性刷新走这条）。
+	refreshList bool
+	// nameOnly 为 true 时只处理课程名命中的课程号，空结果不算错误——调用方要
+	// 回落到整表扫描。
+	nameOnly bool
 }
 
 // collect 是 CollectCandidates / CandidateSource 的实现。
-// refreshList 为 true 时无条件重拉课程列表（自动选课的周期性刷新走这条）。
-// nameOnly 为 true 时只处理课程名命中的课程号，空结果不算错误——调用方要回落到整表扫描。
-func (e *Engine) collect(ctx context.Context, wants protocol.WishList, refreshList, nameOnly bool) ([]protocol.CustomCourseDic, error) {
+//
+// 提前收手的规则：整表扫描里这次调用已经抓过详情（didDetail）、收好的候选里
+// 有一个此刻还有名额（hasVacancy）、后面的课程号还要再请求详情
+// （hasDetailWork）——满足就带着已经收好的候选返回，剩下的留到下一次刷新。
+// 补过详情的课程号在缓存里带着 Do_jxb_id，下次扫描到它们不会产生请求，所以
+// 不需要额外记"扫到哪了"：自然从第一个还没详情的课程号接着扫。
+func (e *Engine) collect(ctx context.Context, wants protocol.WishList, opt collectOptions) ([]protocol.CustomCourseDic, error) {
 	if !e.Inited() {
 		return nil, ErrNotInitialized
 	}
@@ -78,12 +100,12 @@ func (e *Engine) collect(ctx context.Context, wants protocol.WishList, refreshLi
 	}
 
 	cached := e.Courses()
-	if refreshList || len(cached) == 0 {
+	if opt.refreshList || len(cached) == 0 {
 		list, err := e.GetCourseList(ctx)
 		if err != nil {
 			return nil, err
 		}
-		if refreshList && len(list) == 0 {
+		if opt.refreshList && len(list) == 0 {
 			// 列表查询没有失败、但也没给数据：保留旧缓存，让上层沿用上一次的队列。
 			return nil, ErrNoCandidates
 		}
@@ -94,9 +116,14 @@ func (e *Engine) collect(ctx context.Context, wants protocol.WishList, refreshLi
 		return nil, ErrNoCandidates
 	}
 
+	groups := courseNumberGroups(wants, cached, opt.nameOnly)
 	out := make([]protocol.CustomCourseDic, 0, len(cached))
 	var firstErr error
-	for _, group := range courseNumberGroups(wants, cached, nameOnly) {
+	// didDetail 记录这次调用确实抓过详情：只有"省下请求"才值得提前收手。
+	// 详情早就缓存好的课程号（课程页补过、上一次运行扫过）不产生请求，扫完
+	// 整页也是瞬间，为了它们停下只会让新开的班晚一轮进队列。
+	didDetail := false
+	for i, group := range groups {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -114,18 +141,27 @@ func (e *Engine) collect(ctx context.Context, wants protocol.WishList, refreshLi
 				}
 			} else {
 				e.CacheCourseDetail(detail)
+				didDetail = true
 			}
 		}
 		// 详情补齐了教师与 Do_jxb_id，命中才收；这个课程号下一个教学班都没
 		// 命中就整组跳过，继续下一个课程号。
-		matched := matchedClasses(e.Courses(), wants, group.kchID, nameOnly)
-		if len(matched) == 0 {
-			continue
+		if matched := matchedClasses(e.Courses(), wants, group.kchID, opt.nameOnly); len(matched) > 0 {
+			out = append(out, matched...)
 		}
-		out = append(out, matched...)
+		// 自动选课：这次扫描已经请求过详情，手里也有了一个此刻能提交的候选，
+		// 后面的课程号还要再请求详情，留到下一次刷新接着扫——第一次提交不必等
+		// 整页详情抓完。
+		//
+		// 只在整表扫描里提前收手：名字优先一次只抓点名的课程号（通常一两门），
+		// 没有省头；而且这条路径已经"命中就返回"，再收手只会让同一次里本来就
+		// 抓得完的第二门课白白晚一轮。
+		if !opt.nameOnly && didDetail && hasVacancy(out) && hasDetailWork(groups[i+1:]) {
+			return out, nil
+		}
 	}
 	if len(out) == 0 {
-		if nameOnly {
+		if opt.nameOnly {
 			// 名字命中的课可能一门都没拿到详情：交给调用方回落整表扫描，
 			// 不能把"还没扫完"当成"选不上"。
 			return nil, nil
@@ -137,6 +173,30 @@ func (e *Engine) collect(ctx context.Context, wants protocol.WishList, refreshLi
 		return nil, ErrNoWantedCourse
 	}
 	return out, nil
+}
+
+// hasVacancy 报告候选里是否至少有一个此刻还有名额。
+//
+// 提前收手只认"现在就能提交"的候选：满员的课可以留在队列里等名额释放，但没
+// 必要为了它停下整页扫描——用户要的是"找到能选的直接选"。
+func hasVacancy(list []protocol.CustomCourseDic) bool {
+	for i := range list {
+		if !isFull(list[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasDetailWork 报告这批课程号里还有没有要抓详情的。
+// 没有详情要抓时继续扫不花请求，提前收手只会让队列莫名其妙地缺一截。
+func hasDetailWork(groups []courseNumber) bool {
+	for i := range groups {
+		if groups[i].needsDetail {
+			return true
+		}
+	}
+	return false
 }
 
 // courseNumber 是同一个课程号（kch_id）下的候选。

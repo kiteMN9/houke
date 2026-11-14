@@ -353,7 +353,7 @@ func (s *Server) takeParamExpire() bool {
 
 // findSeedLocked 支持 DO-JXB-x / JXB-x / kch_id 三种定位方式。
 func (s *Server) findSeedLocked(jxbIDs, kchID string) (Seed, bool) {
-	for _, part := range strings.Split(jxbIDs, ",") {
+	for part := range strings.SplitSeq(jxbIDs, ",") {
 		id := normalizeJxbID(part)
 		if id == "" {
 			continue
