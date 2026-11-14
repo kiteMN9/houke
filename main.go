@@ -52,8 +52,13 @@ func run() int {
 		return fail("加载本地数据失败", err)
 	}
 
-	// 字符验证码识别模型由 WebUI 的「服务端配置 → 验证码模型」页配置（kaptcha.json）。
-	// 这里只尝试加载一次；没模型、模型坏了都只提示，不阻止 WebUI 启动。
+	// 服务端配置（server.json）里的验证码设置由 NewServer 灌进 Manager，
+	// 模型由这里加载。加载可能耗时几百毫秒到几秒；没模型、模型坏了都
+	// 只提示，不阻止 WebUI 启动。
+	srv, err := web.NewServer(store)
+	if err != nil {
+		return fail("启动 WebUI 失败", err)
+	}
 	mgr := store.Kaptcha()
 	if err := mgr.Reload(); err != nil {
 		if errors.Is(err, kaptcha.ErrNoModel) {
@@ -65,11 +70,6 @@ func run() int {
 		fmt.Printf("字符验证码：自动识别已启用（%s，置信度下限 %.2f）\n", st.ModelPath, st.Settings.Threshold)
 	} else {
 		fmt.Println("字符验证码：自动识别已关闭，遇到字符验证码时人工输入")
-	}
-
-	srv, err := web.NewServer(store)
-	if err != nil {
-		return fail("启动 WebUI 失败", err)
 	}
 
 	// 先把端口绑上再打印"已启动"：端口被占用时不会出现假成功。

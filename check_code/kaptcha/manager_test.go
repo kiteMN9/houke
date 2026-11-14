@@ -9,20 +9,13 @@ import (
 )
 
 func TestNewManagerDefaults(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "kaptcha.json")
-	m, err := NewManager(file, DefaultSettings())
-	if err != nil {
-		t.Fatalf("NewManager: %v", err)
-	}
+	m := NewManager(DefaultSettings())
 	got := m.Settings()
 	if !got.Enabled {
 		t.Error("默认应启用自动识别")
 	}
 	if got.Threshold != DefaultThreshold {
 		t.Errorf("默认阈值 = %v, want %v", got.Threshold, DefaultThreshold)
-	}
-	if _, err := os.Stat(file); !os.IsNotExist(err) {
-		t.Errorf("NewManager 不应创建配置文件，stat err = %v", err)
 	}
 	if m.KaptchaEnabled() {
 		t.Error("模型尚未加载时 KaptchaEnabled 应为 false")
@@ -37,31 +30,16 @@ func TestNewManagerDefaults(t *testing.T) {
 	}
 }
 
-func TestNewManagerCorruptConfigFallsBack(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "kaptcha.json")
-	if err := os.WriteFile(file, []byte("{not json"), 0o644); err != nil {
-		t.Fatal(err)
+func TestManagerConfigure(t *testing.T) {
+	m := NewManager(DefaultSettings())
+	m.Configure(Settings{Enabled: false, Threshold: 0.8}, "server.json")
+
+	got := m.Settings()
+	if got.Enabled || got.Threshold != 0.8 {
+		t.Errorf("Configure 未生效: %+v", got)
 	}
-	m, err := NewManager(file, DefaultSettings())
-	if err == nil {
-		t.Fatal("损坏的配置应返回错误")
-	}
-	if m == nil {
-		t.Fatal("损坏的配置也应返回一个可用的 Manager，供配置页覆盖保存")
-	}
-	if !m.Settings().Enabled || m.Settings().Threshold != DefaultThreshold {
-		t.Errorf("损坏配置回落后应使用默认设置: %+v", m.Settings())
-	}
-	// 配置页保存一次就能把损坏文件覆盖成合法 JSON。
-	if err := m.Apply(Settings{Enabled: false, Threshold: DefaultThreshold}); err != nil {
-		t.Fatalf("覆盖保存: %v", err)
-	}
-	m2, err := NewManager(file, DefaultSettings())
-	if err != nil {
-		t.Fatalf("重新读取: %v", err)
-	}
-	if m2.Settings().Enabled {
-		t.Error("重新读取后 enabled 应为 false")
+	if st := m.Status(); st.SettingsFile != "server.json" {
+		t.Errorf("SettingsFile = %q, want server.json", st.SettingsFile)
 	}
 }
 
@@ -76,14 +54,19 @@ func TestModelCandidatesUnique(t *testing.T) {
 	}
 }
 
-func TestManagerDisablePersists(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "kaptcha.json")
-	m, err := NewManager(file, DefaultSettings())
+func TestManagerDisable(t *testing.T) {
+	m := NewManager(DefaultSettings())
+	var saved *Settings
+	err := m.Apply(Settings{Enabled: false, Threshold: DefaultThreshold}, func(s Settings) error {
+		cp := s
+		saved = &cp
+		return nil
+	})
 	if err != nil {
-		t.Fatalf("NewManager: %v", err)
-	}
-	if err := m.Apply(Settings{Enabled: false, Threshold: DefaultThreshold}); err != nil {
 		t.Fatalf("Apply: %v", err)
+	}
+	if saved == nil || saved.Enabled {
+		t.Errorf("save 回调应拿到关闭后的设置，实际 %+v", saved)
 	}
 	if m.KaptchaEnabled() {
 		t.Error("关闭后 KaptchaEnabled 应为 false")
@@ -94,23 +77,24 @@ func TestManagerDisablePersists(t *testing.T) {
 	if _, err := m.TestRecognize(context.Background(), []byte("x")); !errors.Is(err, ErrDisabled) {
 		t.Errorf("关闭后 TestRecognize 应返回 ErrDisabled，实际 %v", err)
 	}
+}
 
-	// 配置文件必须真正写下去，重启后仍然是关闭状态。
-	m2, err := NewManager(file, DefaultSettings())
-	if err != nil {
-		t.Fatalf("重新读取: %v", err)
+func TestManagerApplySaveFailureKeepsOldSettings(t *testing.T) {
+	m := NewManager(DefaultSettings())
+	boom := errors.New("写盘失败")
+	err := m.Apply(Settings{Enabled: false, Threshold: DefaultThreshold}, func(Settings) error {
+		return boom
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("Apply err = %v, want %v", err, boom)
 	}
-	if m2.Settings().Enabled {
-		t.Error("重新加载后 enabled 应为 false")
+	if !m.Settings().Enabled {
+		t.Error("save 失败时不应提交新设置")
 	}
 }
 
 func TestManagerApplyValidation(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "kaptcha.json")
-	m, err := NewManager(file, DefaultSettings())
-	if err != nil {
-		t.Fatalf("NewManager: %v", err)
-	}
+	m := NewManager(DefaultSettings())
 	cases := []Settings{
 		{Enabled: true, Threshold: 0},
 		{Enabled: true, Threshold: 1.2},
@@ -119,12 +103,9 @@ func TestManagerApplyValidation(t *testing.T) {
 		{Enabled: true, Threshold: DefaultThreshold, ModelPath: "model.bin"},
 	}
 	for _, s := range cases {
-		if err := m.Apply(s); err == nil {
+		if err := m.Apply(s, nil); err == nil {
 			t.Errorf("Apply(%+v) 应当报错", s)
 		}
-	}
-	if _, err := os.Stat(file); !os.IsNotExist(err) {
-		t.Errorf("校验失败不应写配置文件，stat err = %v", err)
 	}
 	if m.Settings().Threshold != DefaultThreshold {
 		t.Errorf("校验失败后设置被改坏了: %+v", m.Settings())
@@ -135,16 +116,12 @@ func TestManagerApplyValidation(t *testing.T) {
 }
 
 func TestManagerApplyMissingModelKeepsOldSettings(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "kaptcha.json")
-	m, err := NewManager(file, DefaultSettings())
-	if err != nil {
-		t.Fatalf("NewManager: %v", err)
-	}
-	err = m.Apply(Settings{
+	m := NewManager(DefaultSettings())
+	err := m.Apply(Settings{
 		Enabled:   true,
 		ModelPath: filepath.Join(t.TempDir(), "nope.onnx"),
 		Threshold: 0.8,
-	})
+	}, nil)
 	if !errors.Is(err, ErrNoModel) {
 		t.Fatalf("Apply 不存在的模型应返回 ErrNoModel，实际 %v", err)
 	}
@@ -159,12 +136,8 @@ func TestManagerApplyMissingModelKeepsOldSettings(t *testing.T) {
 func TestManagerApplyRealModel(t *testing.T) {
 	dir := oracleDir(t)
 	model := filepath.Join(dir, DefaultModelName)
-	file := filepath.Join(t.TempDir(), "kaptcha.json")
-	m, err := NewManager(file, DefaultSettings())
-	if err != nil {
-		t.Fatalf("NewManager: %v", err)
-	}
-	if err := m.Apply(Settings{Enabled: true, ModelPath: model, Threshold: DefaultThreshold}); err != nil {
+	m := NewManager(DefaultSettings())
+	if err := m.Apply(Settings{Enabled: true, ModelPath: model, Threshold: DefaultThreshold}, nil); err != nil {
 		t.Fatalf("Apply: %v", err)
 	}
 	if !m.KaptchaEnabled() {

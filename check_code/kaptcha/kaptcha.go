@@ -7,7 +7,7 @@
 // 包内分两层：
 //
 //   - Recognizer：加载模型、跑推理、按整串置信度判断能不能信；
-//   - Manager：把 Recognizer 和一份可持久化的配置（kaptcha.json）绑在一起，
+//   - Manager：把 Recognizer 和一组配置（由宿主持久化）绑在一起，
 //     支持 WebUI 热切换模型 / 阈值，见 manager.go。
 package kaptcha
 

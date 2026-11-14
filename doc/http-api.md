@@ -237,15 +237,16 @@ HTTP 200 + 一张“无功能权限”的 HTML 错误页，不是 JSON，也不�
 
 ### 5.2 验证码模型（`/kaptcha`）
 
-模型只有一份，所有账号共用；配置说明见 [kaptcha.md](kaptcha.md) §4。实现
-`web/handlers_kaptcha.go`，不依赖当前选中的账号。
+模型只有一份，所有账号共用；设置保存在 `server.json` 的 `kaptcha` 节点，
+配置说明见 [kaptcha.md](kaptcha.md) §4。实现 `web/handlers_kaptcha.go`，
+不依赖当前选中的账号。
 
 | 方法 | 路径 | 请求 | 响应 | 备注 |
 |---|---|---|---|---|
 | GET | `/kaptcha` | — | `Status` | 当前设置 + 模型加载状态 |
-| PUT | `/kaptcha` | `Settings` 的部分字段 | `Status` | 只提交要改的字段；阈值 `(0,1]`、并发 `0~64`、模型后缀必须是 `.onnx`；加载成功才落盘 |
+| PUT | `/kaptcha` | `Settings` 的部分字段 | `Status` | 只提交要改的字段；阈值 `(0,1]`、并发 `0~64`、模型后缀必须是 `.onnx`；加载成功才写进 `server.json` 的 `kaptcha` 节点（`settingsFile` 指向 `server.json`） |
 | POST | `/kaptcha/reload` | — | `Status` | 按已保存设置重新加载模型；失败 400 + `status` |
-| POST | `/kaptcha/model` | multipart `file` | `Status` | `.onnx`，≤64 MB；保存到 `kaptcha.json` 同目录的 `models/`，文件名会被清洗；加载成功才启用 |
+| POST | `/kaptcha/model` | multipart `file` | `Status` | `.onnx`，≤64 MB；保存到 `server.json` 同目录的 `models/`，文件名会被清洗；加载成功才启用 |
 | POST | `/kaptcha/test` | multipart `image` | `{"text","confidence","accepted","threshold","reason"}` | ≤4 MB；只识别不提交；未启用/无模型 → 400 |
 
 `Status` 关键字段：`settings`、`settingsFile`、`modelPath`、`modelName`、`modelExists`、

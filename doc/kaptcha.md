@@ -29,7 +29,7 @@ GET /kaptcha  ──►  kaptcha.Manager.RecognizeKaptcha  ──►  "3f2nn5"  
 | 位置 | 职责 |
 |---|---|
 | `check_code/kaptcha/kaptcha.go` | `Load` / `LoadBytes` 加载模型；`Recognizer.Recognize` 做门限判断；`ResolveModelPath` 找 `model.onnx` |
-| `check_code/kaptcha/manager.go` | `Manager`：读写 `kaptcha.json`、模型加载/热切换、`Status`、`TestRecognize`；实现 `protocol.KaptchaRecognizer` |
+| `check_code/kaptcha/manager.go` | `Manager`：模型加载/热切换、`Status`、`TestRecognize`；设置由 `web` 持久化到 `server.json`；实现 `protocol.KaptchaRecognizer` |
 | `check_code/kaptcha/internal/onnx/` | 纯 Go 最小 ONNX 解释器（Conv / Relu / MaxPool / Flatten / Gemm，另兼容推理期恒等的 Identity / Dropout），不需要 cgo、CUDA |
 | `check_code/kaptcha/internal/imagex/` | 图片解码、PIL 灰度公式、双线性缩放 |
 | `protocol/kaptcha.go` | `recognizeKaptcha`：调接口、校验 4~8 位字母数字、上报阶段；连续判错 2 次降级 |
@@ -40,7 +40,8 @@ GET /kaptcha  ──►  kaptcha.Manager.RecognizeKaptcha  ──►  "3f2nn5"  
 | `web/static/` | 侧栏「⚙️ 服务端配置」→「🧠 验证码模型」子页 |
 | `main.go` | 启动时 `store.Kaptcha().Reload()`；失败只打印提示，不阻止 WebUI 启动 |
 
-模型只有一个，进程级加载、所有账号共用；配置是全局的，不在 `accounts.json` 里。
+模型只有一个，进程级加载、所有账号共用；配置是全局的，保存在 `server.json` 的
+`kaptcha` 节点里，不在 `accounts.json` 里。
 
 ## 3. 模型
 
@@ -53,7 +54,7 @@ ONNX 解释器与预处理代码已经并入本仓库，`go.mod` **不再**依�
 模型不进仓库（`.gitignore`）。三种提供方式，按优先级：
 
 1. 配置页「模型路径」显式指定的 `.onnx`（不存在 → 报错，不再猜）；
-2. 配置页上传：文件保存到 `kaptcha.json` 同目录的 `models/`，上限 64 MB；
+2. 配置页上传：文件保存到 `server.json` 同目录的 `models/`，上限 64 MB；
 3. 自动查找（`ModelPath` 为空时）：先找可执行文件目录、当前工作目录根部的
    `model.onnx`，再找这两个目录下 `models/model.onnx`。
 
@@ -70,8 +71,9 @@ ONNX 解释器与预处理代码已经并入本仓库，`go.mod` **不再**依�
 - **替换模型**：上传 `.onnx`，成功后自动保存并启用；
 - **测试识别**：上传一张验证码图片，显示识别文本、置信度、是否过阈值。
 
-配置保存在 `kaptcha.json`（与 `accounts.json` 同目录，2 空格缩进，0644，
-`.tmp` + `os.Rename` 原子写）。字段：
+配置保存在 `server.json` 的 `kaptcha` 节点（与 `accounts.json` 同目录，整个文件
+2 空格缩进、`0600`、`.tmp` + `os.Rename` 原子写；2.2 及之前写在 `kaptcha.json`，
+启动时只读导入一次）。字段：
 
 | 字段 | 类型 | 默认 | 说明 |
 |---|---|---|---|
@@ -155,7 +157,7 @@ WebUI 手动验证：启动后打开「⚙️ 服务端配置」→「🧠 验�
 
 - **不是万能**：换个字体/换了验证码形态（点选、算术题、行为验证），模型也会失手；
   失手就走 §5 的回退，登录仍然可用。
-- **模型不进仓库**：11 MB 的二进制放 `.gitignore`，随发布物一起分发；`kaptcha.json`
+- **模型不进仓库**：11 MB 的二进制放 `.gitignore`，随发布物一起分发；`server.json`
   与 `models/` 也不入库。
 - **配置是进程级的**：不支持按账号开关；真需要区分就起两个进程（各自的工作目录）。
 - **Web 无鉴权**：配置页能改模型路径、上传文件，只应监听 `127.0.0.1`（见

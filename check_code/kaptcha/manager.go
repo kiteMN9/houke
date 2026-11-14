@@ -2,8 +2,6 @@ package kaptcha
 
 import (
 	"context"
-	"encoding/json/jsontext"
-	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"math"
@@ -14,7 +12,8 @@ import (
 	"time"
 )
 
-// Settings 是 WebUI 可配置的模型参数，持久化在 kaptcha.json。
+// Settings 是 WebUI 可配置的模型参数，由宿主持久化（WebUI 写在 server.json
+// 的 kaptcha 节点里）。
 //
 // 所有账号共用同一份设置：模型只有一份（约 11 MB），按账号分别加载既浪费
 // 内存，也没有实际意义。
@@ -34,7 +33,9 @@ func DefaultSettings() Settings {
 	return Settings{Enabled: true, Threshold: DefaultThreshold}
 }
 
-func (s Settings) normalized() Settings {
+// Normalized 返回清理后的设置：去掉模型路径首尾空白，把越界的阈值 / 并发数
+// 收回默认值。它只做「能安全保存」的清理，完整校验见 validate。
+func (s Settings) Normalized() Settings {
 	s.ModelPath = strings.TrimSpace(s.ModelPath)
 	if math.IsNaN(s.Threshold) || s.Threshold <= 0 || s.Threshold > 1 {
 		s.Threshold = DefaultThreshold
@@ -85,52 +86,41 @@ type Status struct {
 	DefaultModel  string `json:"defaultModelName"`
 }
 
-// Manager 管理一份 kaptcha.json 和一个可热切换的 Recognizer。
+// Manager 管理验证码模型设置和一个可热切换的 Recognizer。
+//
+// 它不读写配置文件：设置由宿主持久化（WebUI 存在 server.json 的 kaptcha
+// 节点）。启动时用 Configure 灌入设置，保存时由 Apply 的 save 回调落盘。
 //
 // 它实现 protocol.KaptchaRecognizer，可以直接注入登录流程；关闭自动识别时
 // 返回 ErrDisabled，protocol 会静默回退人工输入。
 type Manager struct {
-	file string
-
 	applyMu sync.Mutex // 串行化 Apply/Reload，避免并发加载同一份模型
 
-	mu         sync.RWMutex
-	settings   Settings
-	rec        *Recognizer
-	loadedPath string
-	loadedAt   time.Time
-	loadErr    string
+	mu           sync.RWMutex
+	settings     Settings
+	settingsFile string // 只用于 Status 展示，由 Configure 写入
+	rec          *Recognizer
+	loadedPath   string
+	loadedAt     time.Time
+	loadErr      string
 }
 
-// NewManager 读取配置文件；文件不存在时用 defaults。
-//
-// 这里只读配置，不加载模型：加载可能耗时几百毫秒到几秒，失败也不该阻止
-// WebUI 启动。启动时由 main 调一次 Reload。
-//
-// 配置文件存在但 JSON 损坏时，返回一个使用 defaults 的 Manager 和错误：
-// 调用方可以继续启动 WebUI，让用户在配置页重新保存一份合法配置。读取文件
-// 本身的错误（权限等）仍返回 nil。
-func NewManager(file string, defaults Settings) (*Manager, error) {
-	settings := defaults.normalized()
-	data, err := os.ReadFile(file)
-	switch {
-	case err == nil:
-		if len(data) > 0 {
-			if err := json.Unmarshal(data, &settings); err != nil {
-				return &Manager{file: file, settings: defaults.normalized()},
-					fmt.Errorf("验证码配置文件 %s 解析失败，暂用默认设置: %w", file, err)
-			}
-		}
-		settings = settings.normalized()
-	case os.IsNotExist(err):
-	default:
-		return nil, fmt.Errorf("读取验证码配置文件 %s 失败: %w", file, err)
-	}
-	return &Manager{file: file, settings: settings}, nil
+// NewManager 用一组设置构造 Manager；不加载模型，也不读写文件。
+func NewManager(settings Settings) *Manager {
+	return &Manager{settings: settings.Normalized()}
 }
 
-// File 返回配置文件路径。
-func (m *Manager) File() string { return m.file }
+// Configure 用宿主配置文件里的设置初始化 Manager（不加载模型、不落盘）。
+//
+// settingsFile 只用于 Status 展示。启动时先 Configure、再由调用方 Reload，
+// 把「读配置」和「加载模型」分开：后者可能耗时几百毫秒到几秒，失败也不该
+// 阻止 WebUI 启动。
+func (m *Manager) Configure(settings Settings, settingsFile string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.settings = settings.Normalized()
+	m.settingsFile = settingsFile
+}
 
 // Settings 返回当前配置副本。
 func (m *Manager) Settings() Settings {
@@ -143,6 +133,7 @@ func (m *Manager) Settings() Settings {
 func (m *Manager) Status() Status {
 	m.mu.RLock()
 	settings := m.settings
+	settingsFile := m.settingsFile
 	rec := m.rec
 	loadedPath := m.loadedPath
 	loadedAt := m.loadedAt
@@ -174,7 +165,7 @@ func (m *Manager) Status() Status {
 
 	st := Status{
 		Settings:      settings,
-		SettingsFile:  m.file,
+		SettingsFile:  settingsFile,
 		ModelPath:     path,
 		ModelName:     modelName,
 		Loaded:        rec != nil,
@@ -225,20 +216,21 @@ func (m *Manager) RecognizeKaptcha(ctx context.Context, img []byte) (string, flo
 	return rec.Recognize(ctx, img)
 }
 
-// Reload 按当前保存的设置重新加载模型（不写配置文件）。
+// Reload 按当前设置重新加载模型（不写配置文件）。
 func (m *Manager) Reload() error {
-	return m.apply(m.Settings(), false)
+	return m.apply(m.Settings(), nil)
 }
 
-// Apply 校验并应用新设置；成功后才写 kaptcha.json 并替换正在使用的模型。
+// Apply 校验并应用新设置；成功后才替换正在使用的模型。
 //
-// 加载失败时保留原来的识别器与配置：用户填错一个路径，不应该把已经能用的
-// 自动识别弄坏。
-func (m *Manager) Apply(s Settings) error {
-	return m.apply(s, true)
+// save 非 nil 时在模型加载成功后、替换设置前调用，用来把设置写进宿主的
+// 配置文件；save 返回错误时不改变当前设置与模型。加载失败时同样保留原来的
+// 识别器与配置：用户填错一个路径，不应该把已经能用的自动识别弄坏。
+func (m *Manager) Apply(s Settings, save func(Settings) error) error {
+	return m.apply(s, save)
 }
 
-func (m *Manager) apply(s Settings, persist bool) error {
+func (m *Manager) apply(s Settings, save func(Settings) error) error {
 	s.ModelPath = strings.TrimSpace(s.ModelPath)
 	if err := s.validate(); err != nil {
 		// 参数校验失败没有发生加载，不要把错误写进 Status：否则一次输错阈值，
@@ -250,8 +242,8 @@ func (m *Manager) apply(s Settings, persist bool) error {
 	defer m.applyMu.Unlock()
 
 	if !s.Enabled {
-		if persist {
-			if err := m.save(s); err != nil {
+		if save != nil {
+			if err := save(s); err != nil {
 				return err
 			}
 		}
@@ -275,8 +267,8 @@ func (m *Manager) apply(s Settings, persist bool) error {
 		m.setLoadErr(err)
 		return err
 	}
-	if persist {
-		if err := m.save(s); err != nil {
+	if save != nil {
+		if err := save(s); err != nil {
 			return err
 		}
 	}
@@ -294,26 +286,6 @@ func (m *Manager) setLoadErr(err error) {
 	m.mu.Lock()
 	m.loadErr = err.Error()
 	m.mu.Unlock()
-}
-
-func (m *Manager) save(s Settings) error {
-	data, err := json.Marshal(s, jsontext.WithIndent("  "))
-	if err != nil {
-		return err
-	}
-	dir := filepath.Dir(m.file)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("创建配置目录失败: %w", err)
-	}
-	tmp := m.file + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return fmt.Errorf("写入验证码配置失败: %w", err)
-	}
-	if err := os.Rename(tmp, m.file); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("保存验证码配置失败: %w", err)
-	}
-	return nil
 }
 
 // TestResult 是「测试识别」的结果：accepted 为 false 时 reason 说明原因

@@ -6,10 +6,8 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
-	"log"
 	"net/url"
 	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -51,20 +49,14 @@ func (s *AccountStore) kaptchaRecognizer() protocol.KaptchaRecognizer {
 }
 
 func NewAccountStore(filename string) (*AccountStore, error) {
-	mgr, err := kaptcha.NewManager(filepath.Join(filepath.Dir(filename), "kaptcha.json"), kaptcha.DefaultSettings())
-	if err != nil {
-		if mgr == nil {
-			return nil, err
-		}
-		// 配置损坏不阻止启动：配置页还能重新保存一份合法配置。
-		log.Printf("字符验证码配置有问题，暂用默认设置: %v", err)
-	}
+	// 验证码设置先从默认值起步；NewServer 读到 server.json 后会覆盖，
+	// 模型由 main 在启动时统一加载。
 	s := &AccountStore{
 		filename:   filename,
 		accounts:   make(map[string]*Account),
 		runtimes:   make(map[string]*accountRuntime),
 		tasks:      newTaskStore(),
-		kaptchaMgr: mgr,
+		kaptchaMgr: kaptcha.NewManager(kaptcha.DefaultSettings()),
 		transports: protocol.NewTransportPool(),
 	}
 	if err := s.load(); err != nil {

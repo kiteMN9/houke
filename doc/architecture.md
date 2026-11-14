@@ -138,7 +138,8 @@
   `matcher_test.go`/`gen_track_test.go`/`save_test.go` 覆盖掩码提取、滑窗边界与 `+70`、并发初始化/识别、
   轨迹形态与落盘。
   字符：`check_code/kaptcha/` 内置纯 Go ONNX 解释器（`internal/onnx`）与图片预处理（`internal/imagex`），
-  `kaptcha.go` 做加载/门限/结果校验，`manager.go` 管 `kaptcha.json`、热切换、配置页状态与测试识别；
+  `kaptcha.go` 做加载/门限/结果校验，`manager.go` 管设置与模型热切换（设置由 `web` 持久化到
+  `server.json`）、配置页状态与测试识别；
   不依赖 cgo，也不依赖外部模块。详见 [kaptcha.md](kaptcha.md)。
 
 ---
@@ -253,10 +254,10 @@
 | `engine.session` | `cacheMu`（RW） | 课程缓存 | 否 |
 | `web.AccountStore` | `mu`（RW） | accounts map + order + runtimes | 否（`saveLocked` 在写锁内落盘） |
 | `web.taskStore` | `mu` | 全部账号任务状态 | 否 |
-| `web.serverSettingsManager` | `mu`（RW） | `server.json` 的 SMTP 设置 | 是（保存时 `.tmp` + rename） |
+| `web.serverSettingsManager` | `mu`（RW） | `server.json` 的 SMTP / kaptcha 设置 | 是（保存时 `.tmp` + rename） |
 | `web.accountRuntime` | `loginMu` / `initMu` / `autoMu` / `inputMu` | 任务互斥、pendingInput | 视任务而定 |
 | `check_code` | `sync.Once` + `cacheMutex`（RW）+ `atomic.Bool` | 10 张内置模板、初始化错误、就绪标志 | 否（PNG 解码在锁外，发布时短暂持写锁） |
-| `check_code/kaptcha.Manager` | `applyMu` + `mu`（RW） | `kaptcha.json` 设置、当前 `Recognizer`、加载错误 | 是（`kaptcha.json`，保存时 `.tmp` + rename） |
+| `check_code/kaptcha.Manager` | `applyMu` + `mu`（RW） | 验证码设置、当前 `Recognizer`、加载错误 | 否（设置由 `web.serverSettingsManager` 写进 `server.json`） |
 
 已知薄弱点见 [analysis.md](analysis.md#3-结构性问题)。
 

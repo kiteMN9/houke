@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"school_sdk/check_code/kaptcha"
 	"school_sdk/utils"
 )
 
@@ -147,14 +148,18 @@ func normalizeMailAddresses(list []string) []string {
 
 // serverSettings 是服务端配置文件的根节点。
 //
-// 目前只有 smtp 一组；以后加"日志级别""默认监听地址"等选项时，在这里加
+// 目前有 smtp、kaptcha 两组；以后加"日志级别""默认监听地址"等选项时，在这里加
 // 字段和对应的 view/patch 即可，不用再动配置文件路径。
 type serverSettings struct {
-	SMTP smtpSettings `json:"smtp"`
+	SMTP    smtpSettings     `json:"smtp"`
+	Kaptcha kaptcha.Settings `json:"kaptcha"`
 }
 
 func defaultServerSettings() serverSettings {
-	return serverSettings{SMTP: defaultSMTPSettings()}
+	return serverSettings{
+		SMTP:    defaultSMTPSettings(),
+		Kaptcha: kaptcha.DefaultSettings(),
+	}
 }
 
 // smtpView 是返回给前端的视图：密码永远不出后端，只报告是否已设置。
@@ -225,10 +230,13 @@ func (p smtpPatch) apply(s smtpSettings) smtpSettings {
 	return s
 }
 
-// serverSettingsManager 读写 server.json，并在第一次启动时从旧版 SMTP.json 导入。
+// serverSettingsManager 读写 server.json，并在启动时从旧版配置文件导入。
+//
+// 旧文件只读不写：用户第一次在页面上保存后才以 server.json 为准。
 type serverSettingsManager struct {
-	file       string
-	legacyFile string
+	file              string
+	legacyFile        string // 旧版 SMTP.json（1.x）
+	legacyKaptchaFile string // 旧版 kaptcha.json（2.2 及之前）
 
 	mu             sync.RWMutex
 	settings       serverSettings
@@ -237,34 +245,71 @@ type serverSettingsManager struct {
 
 // newServerSettingsManager 读取服务端配置。
 //
-// 文件不存在时尝试导入同目录的旧版 SMTP.json（1.x 版本使用），只读不写：
-// 用户第一次在页面上保存后才生成 server.json。文件损坏时返回一个带默认值
-// 的 manager 和错误，调用方可以继续启动 WebUI，让用户在页面里重存一份。
-func newServerSettingsManager(file, legacyFile string) (*serverSettingsManager, error) {
+// server.json 不存在时尝试导入同目录的旧版 SMTP.json（1.x）和 kaptcha.json
+// （2.2 及之前），只读不写：用户第一次在页面上保存后才生成 server.json。
+// server.json 已存在但没有 kaptcha 节点时（从 2.2 升级），同样迁移一次旧版
+// kaptcha.json。文件损坏时返回一个带默认值的 manager 和错误，调用方可以继续
+// 启动 WebUI，让用户在页面里重存一份。
+func newServerSettingsManager(file string) (*serverSettingsManager, error) {
+	dir := filepath.Dir(file)
 	m := &serverSettingsManager{
-		file:       file,
-		legacyFile: legacyFile,
-		settings:   defaultServerSettings(),
+		file:              file,
+		legacyFile:        filepath.Join(dir, "SMTP.json"),
+		legacyKaptchaFile: filepath.Join(dir, "kaptcha.json"),
+		settings:          defaultServerSettings(),
 	}
 	data, err := os.ReadFile(file)
 	switch {
 	case err == nil:
+		importKaptcha := len(data) == 0
 		if len(data) > 0 {
 			if err := json.Unmarshal(data, &m.settings); err != nil {
 				m.settings = defaultServerSettings()
 				return m, fmt.Errorf("服务端配置文件 %s 解析失败，暂用默认设置: %w", file, err)
 			}
+			m.settings.SMTP = m.settings.SMTP.normalized()
+			m.settings.Kaptcha = m.settings.Kaptcha.Normalized()
+			importKaptcha = !hasKaptchaNode(data)
 		}
-		m.settings.SMTP = m.settings.SMTP.normalized()
+		if importKaptcha {
+			m.importLegacyKaptcha()
+		}
 	case os.IsNotExist(err):
 		if imported, ok := m.loadLegacy(); ok {
 			m.settings = imported
 			m.legacyImported = true
 		}
+		m.importLegacyKaptcha()
 	default:
 		return nil, fmt.Errorf("读取服务端配置文件 %s 失败: %w", file, err)
 	}
 	return m, nil
+}
+
+// hasKaptchaNode 判断 server.json 里是否已有 kaptcha 节点。
+//
+// 用指针探测而不是看解码后的设置：缺失节点会保留默认值，无法和用户手写的
+// 默认值区分，而前者才需要从旧版 kaptcha.json 迁移。
+func hasKaptchaNode(data []byte) bool {
+	var probe struct {
+		Kaptcha *kaptcha.Settings `json:"kaptcha"`
+	}
+	return json.Unmarshal(data, &probe) == nil && probe.Kaptcha != nil
+}
+
+// importLegacyKaptcha 读取旧版 kaptcha.json，迁移到 server.json 的 kaptcha 节点。
+//
+// 文件不存在或损坏时静默保持默认设置；用户下一次保存时自然写入 server.json。
+func (m *serverSettingsManager) importLegacyKaptcha() {
+	data, err := os.ReadFile(m.legacyKaptchaFile)
+	if err != nil || len(data) == 0 {
+		return
+	}
+	settings := kaptcha.DefaultSettings()
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return
+	}
+	m.settings.Kaptcha = settings.Normalized()
 }
 
 // loadLegacy 读取旧版 SMTP.json。返回的 bool 表示文件里确实有可导入的配置。
@@ -345,6 +390,29 @@ func (m *serverSettingsManager) smtp() smtpSettings {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.settings.SMTP
+}
+
+// kaptcha 返回当前保存的验证码模型设置副本。
+func (m *serverSettingsManager) kaptcha() kaptcha.Settings {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.settings.Kaptcha
+}
+
+// saveKaptcha 把验证码模型设置写进 server.json 的 kaptcha 节点。
+//
+// 由 kaptcha.Manager 在模型加载成功后、提交新设置前调用；写盘失败时不改
+// 内存里的设置，正在使用的模型也保持不变。
+func (m *serverSettingsManager) saveKaptcha(s kaptcha.Settings) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cfg := m.settings
+	cfg.Kaptcha = s.Normalized()
+	if err := m.saveLocked(cfg); err != nil {
+		return err
+	}
+	m.settings = cfg
+	return nil
 }
 
 // update 应用页面提交的补丁，校验并落盘。

@@ -39,7 +39,7 @@ type Server struct {
 	// http.Server 并且不给关停的机会，这里自己持有，才能优雅退出。
 	httpServer *http.Server
 
-	// 服务端配置（server.json）：目前是 SMTP 邮件通知，和账号无关。
+	// 服务端配置（server.json）：SMTP 邮件通知 + 字符验证码模型设置，和账号无关。
 	serverCfg *serverSettingsManager
 
 	// 微信扫码登录（不经过账号）：同一时刻只允许一次。
@@ -57,11 +57,9 @@ func NewServer(store *AccountStore) (*Server, error) {
 		return nil, err
 	}
 
-	// 服务端配置与 accounts.json 同目录；第一次启动时尝试导入旧版 SMTP.json。
-	cfgMgr, cfgErr := newServerSettingsManager(
-		filepath.Join(filepath.Dir(store.filename), "server.json"),
-		filepath.Join(filepath.Dir(store.filename), "SMTP.json"),
-	)
+	// 服务端配置与 accounts.json 同目录；第一次启动时尝试导入旧版
+	// SMTP.json / kaptcha.json，之后验证码设置也保存在 server.json 里。
+	cfgMgr, cfgErr := newServerSettingsManager(filepath.Join(filepath.Dir(store.filename), "server.json"))
 	if cfgErr != nil {
 		if cfgMgr == nil {
 			return nil, fmt.Errorf("加载服务端配置失败: %w", cfgErr)
@@ -69,6 +67,9 @@ func NewServer(store *AccountStore) (*Server, error) {
 		// 配置损坏不阻止启动：页面还能重新保存一份合法配置。
 		log.Printf("服务端配置有问题，暂用默认设置: %v", cfgErr)
 	}
+	// 只灌设置，不加载模型：11 MB 的模型由 main 在启动时统一加载，
+	// 失败也只提示、不影响 WebUI 启动。
+	store.Kaptcha().Configure(cfgMgr.kaptcha(), cfgMgr.file)
 
 	s := &Server{store: store, tasks: store.tasks, router: r, serverCfg: cfgMgr}
 	s.baseCtx, s.baseCancel = context.WithCancel(context.Background())
@@ -226,7 +227,7 @@ func (s *Server) registerRoutes() {
 
 		api.GET("/accounts/:id/ping", s.ping) // 探测会话（不重新登录）
 
-		// 服务端配置（全局，不依赖账号）：目前是 SMTP 邮件通知
+		// 服务端配置（全局，不依赖账号）：SMTP 邮件通知
 		api.GET("/server", s.getServerSettings)    // 配置 + 配置是否完整（不测试连接）
 		api.PUT("/server", s.updateServerSettings) // 保存 SMTP 配置
 		api.POST("/server/smtp/test", s.testSMTP)  // 用当前/已保存配置发测试邮件

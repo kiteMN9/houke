@@ -85,7 +85,7 @@ go test . -run TestDependencyDirection     # 架构门禁
 2. 按需调整置信度下限、推理并发；
 3. 点「保存」，再传一张验证码图片试识别。
 
-配置保存在进程工作目录的 `kaptcha.json`，上传的模型在 `models/`。也可以直接把
+配置保存在进程工作目录的 `server.json`（`kaptcha` 节点），上传的模型在 `models/`。也可以直接把
 `model.onnx` 放在可执行文件目录或工作目录，启动时会自动找（先找两个目录根部的
 `model.onnx`，再找各自 `models/` 下的）。启动日志会说明加载成功、没找到还是已关闭。
 

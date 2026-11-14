@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"school_sdk/check_code/kaptcha"
 )
 
 func boolPtr(v bool) *bool       { return &v }
@@ -27,7 +29,7 @@ func TestServerSettingsLegacyImport(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m, err := newServerSettingsManager(filepath.Join(dir, "server.json"), legacy)
+	m, err := newServerSettingsManager(filepath.Join(dir, "server.json"))
 	if err != nil {
 		t.Fatalf("newServerSettingsManager: %v", err)
 	}
@@ -73,7 +75,7 @@ func TestServerSettingsServerFileWinsOverLegacy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m, err := newServerSettingsManager(file, legacy)
+	m, err := newServerSettingsManager(file)
 	if err != nil {
 		t.Fatalf("newServerSettingsManager: %v", err)
 	}
@@ -95,7 +97,7 @@ func TestServerSettingsMissingFieldsKeepDefaults(t *testing.T) {
 	if err := os.WriteFile(file, []byte(`{"smtp":{"enabled":false}}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	m, err := newServerSettingsManager(file, "")
+	m, err := newServerSettingsManager(file)
 	if err != nil {
 		t.Fatalf("newServerSettingsManager: %v", err)
 	}
@@ -118,7 +120,7 @@ func TestServerSettingsInvalidManualConfigNotReady(t *testing.T) {
 	if err := os.WriteFile(file, []byte(raw), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	m, err := newServerSettingsManager(file, "")
+	m, err := newServerSettingsManager(file)
 	if err != nil {
 		t.Fatalf("newServerSettingsManager: %v", err)
 	}
@@ -134,7 +136,7 @@ func TestServerSettingsInvalidManualConfigNotReady(t *testing.T) {
 func TestServerSettingsUpdateKeepsPassword(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "server.json")
-	m, err := newServerSettingsManager(file, filepath.Join(dir, "SMTP.json"))
+	m, err := newServerSettingsManager(file)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +172,7 @@ func TestServerSettingsUpdateKeepsPassword(t *testing.T) {
 	}
 
 	// 重新从磁盘读，确认密码确实落盘且新主机生效。
-	m2, err := newServerSettingsManager(file, "")
+	m2, err := newServerSettingsManager(file)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +189,7 @@ func TestServerSettingsUpdateKeepsPassword(t *testing.T) {
 
 func TestServerSettingsValidation(t *testing.T) {
 	dir := t.TempDir()
-	m, err := newServerSettingsManager(filepath.Join(dir, "server.json"), "")
+	m, err := newServerSettingsManager(filepath.Join(dir, "server.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,9 +222,104 @@ func TestServerSettingsValidation(t *testing.T) {
 	}
 }
 
+func TestServerSettingsLegacyKaptchaImport(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "kaptcha.json"),
+		[]byte(`{"enabled":false,"threshold":0.8,"workers":2}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := newServerSettingsManager(filepath.Join(dir, "server.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := m.kaptcha()
+	if got.Enabled || got.Threshold != 0.8 || got.Workers != 2 {
+		t.Errorf("未导入旧版 kaptcha.json: %+v", got)
+	}
+	// 只读导入，不写 server.json。
+	if _, err := os.Stat(filepath.Join(dir, "server.json")); !os.IsNotExist(err) {
+		t.Errorf("导入阶段不应生成 server.json，stat err = %v", err)
+	}
+}
+
+func TestServerSettingsKaptchaNodeWinsOverLegacy(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "kaptcha.json"),
+		[]byte(`{"enabled":false}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "server.json")
+	if err := os.WriteFile(file,
+		[]byte(`{"smtp":{"enabled":false},"kaptcha":{"enabled":true,"threshold":0.75}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m, err := newServerSettingsManager(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := m.kaptcha()
+	if !got.Enabled || got.Threshold != 0.75 {
+		t.Errorf("server.json 里的 kaptcha 节点应优先: %+v", got)
+	}
+}
+
+func TestServerSettingsKaptchaImportedIntoExistingServerFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "kaptcha.json"),
+		[]byte(`{"enabled":false,"threshold":0.8}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "server.json")
+	// 2.2 及之前写出的 server.json：只有 smtp 节点。
+	if err := os.WriteFile(file,
+		[]byte(`{"smtp":{"enabled":false,"host":"smtp.example.com"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m, err := newServerSettingsManager(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := m.kaptcha()
+	if got.Enabled || got.Threshold != 0.8 {
+		t.Errorf("旧 server.json 没有 kaptcha 节点时应迁移: %+v", got)
+	}
+	if host := m.smtp().Host; host != "smtp.example.com" {
+		t.Errorf("SMTP 设置不应受影响: %q", host)
+	}
+}
+
+func TestServerSettingsSaveKaptchaKeepsSMTP(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "server.json")
+	m, err := newServerSettingsManager(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.saveKaptcha(kaptcha.Settings{Enabled: false, Threshold: 0.7}); err != nil {
+		t.Fatalf("saveKaptcha: %v", err)
+	}
+	if _, err := m.update(smtpPatch{
+		Enabled: boolPtr(false),
+		Host:    stringPtr("smtp.example.com"),
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	m2, err := newServerSettingsManager(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m2.kaptcha(); got.Enabled || got.Threshold != 0.7 {
+		t.Errorf("SMTP 保存把验证码设置弄丢了: %+v", got)
+	}
+	if got := m2.smtp().Host; got != "smtp.example.com" {
+		t.Errorf("host = %q", got)
+	}
+}
+
 func TestServerSettingsTestConfigUsesSavedPassword(t *testing.T) {
 	dir := t.TempDir()
-	m, err := newServerSettingsManager(filepath.Join(dir, "server.json"), "")
+	m, err := newServerSettingsManager(filepath.Join(dir, "server.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

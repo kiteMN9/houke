@@ -16,7 +16,7 @@
 程序只剩一个宿主：启动即拉起 WebUI。账号、教务地址、登录方式、超时等全部来自
 `accounts.json`（在 WebUI 里维护），不再有命令行覆盖项。字符验证码的模型路径、
 置信度门限、启用开关也不在命令行，统一在 WebUI 的「⚙️ 服务端配置」→「🧠 验证码模型」子页配置，
-保存在 `kaptcha.json`（见 §2.1）。
+保存在 `server.json` 的 `kaptcha` 节点（见 §2.2）。
 
 ```powershell
 go run .                       # WebUI，默认 http://127.0.0.1:8080
@@ -46,9 +46,9 @@ go run . -webAddr 0.0.0.0:9000 # 换监听地址
 | `want.xlsx` | `protocol/config/excel.go` 的 `ReadExcel` | 读失败时返回错误 | ❌ `.gitignore:4` |
 | `logs/*.log` | `utils/logger.go`，按启动时间命名 | 自动建目录 | ❌ `.gitignore:10` |
 | `fail/fail_<x>_<ms>.png` | 登录失败时的验证码样本（`protocol/login.go:257`） | 自动建目录 | ❌ `.gitignore:82` |
-| `kaptcha.json` | `check_code/kaptcha.Manager`（读一次，保存时重写） | 用默认设置：启用、阈值 0.90、自动找模型 | ❌ `.gitignore:102` |
-| `server.json` | `web/server_settings.go`（读一次，保存时重写） | 用默认设置：邮件通知关闭；若存在旧版 `SMTP.json` 则导入 | ❌ `.gitignore:105` |
-| `SMTP.json` | 旧版 1.x 邮件配置；2.x 只读导入，不再写 | 不导入，使用默认设置 | ❌ `.gitignore:39` |
+| `server.json` | `web/server_settings.go`（读一次，保存时重写；含 `smtp` / `kaptcha` 两组） | 用默认设置：邮件通知关闭；若存在旧版 `SMTP.json` / `kaptcha.json` 则只读导入 | ❌ `.gitignore:28` |
+| `kaptcha.json` | 旧版 2.2 及之前的验证码配置；当前只读导入，不再写 | 不导入，使用默认设置 | ❌ `.gitignore:23` |
+| `SMTP.json` | 旧版 1.x 邮件配置；2.x 只读导入，不再写 | 不导入，使用默认设置 | ❌ `.gitignore:11` |
 | `models/` | 配置页上传模型的存放目录（`web/handlers_kaptcha.go`） | 不上传就没有；首次上传自动建 | ❌ `.gitignore:103` |
 | `model.onnx` | `check_code/kaptcha` 的 `ResolveModelPath`（只读） | 自动识别不可用，改为人工输入 | ❌ `.gitignore:100` |
 
@@ -56,26 +56,19 @@ go run . -webAddr 0.0.0.0:9000 # 换监听地址
 > 根部的 `model.onnx`，再找它们各自的 `models/` 子目录；
 > 也可以在配置页里指定任意路径或直接上传。见 [kaptcha.md](kaptcha.md) §3。
 
-### 2.1 `kaptcha.json`（字符验证码模型配置）
+### 2.1 `kaptcha.json`（旧版验证码配置）
 
-启动时读一次；之后由 WebUI 的「⚙️ 服务端配置」→「🧠 验证码模型」子页维护，保存即热切换，不用重启。
-手动改这个文件不会被运行中的进程自动感知，需要重启才会生效（WebUI 保存会用内存里的
-设置覆盖文件，不会重读手改内容）。
+2.2 及之前版本把字符验证码的设置写在这个文件里；当前版本已并入 `server.json`
+的 `kaptcha` 节点（见 §2.2）。
 
-| 字段 | 类型 | 默认 | 说明 |
-|---|---|---|---|
-| `enabled` | bool | `true` | 关闭后不加载模型，遇到字符验证码直接人工输入 |
-| `modelPath` | string | 空 | 显式模型路径；空 = 按上面的顺序自动查找 |
-| `threshold` | number | `0.90` | 整串置信度下限，范围 `(0,1]`；低于它转人工 |
-| `workers` | number | `0` | 推理并发，`0` = 自动；范围 `0~64` |
-
-写盘用 `.tmp` + `os.Rename`，0644；保存失败时旧配置和旧模型保持不变。
-文件存在但 JSON 损坏时，启动会打印错误并暂用默认设置，配置页保存一次即可覆盖成合法配置。
+启动时如果 `server.json` 不存在、或者存在但没有 `kaptcha` 节点，会从同目录的
+`kaptcha.json` **只读导入**一次；用户第一次保存后写入 `server.json`，之后不再读取
+这个旧文件。文件损坏时静默使用默认设置，配置页保存一次即可覆盖。
 
 ### 2.2 `server.json`（服务端配置）
 
-由 WebUI「⚙️ 服务端配置」→「✉️ 邮件通知」维护，保存即热更新，不用重启。
-文件结构：
+由 WebUI「⚙️ 服务端配置」的「✉️ 邮件通知」/「🧠 验证码模型」两个子页维护，
+保存即热更新，不用重启。文件结构：
 
 ```json
 {
@@ -88,6 +81,12 @@ go run . -webAddr 0.0.0.0:9000 # 换监听地址
     "password": "<授权码>",
     "to": ["notify@example.com"],
     "notifyAutoChoose": true
+  },
+  "kaptcha": {
+    "enabled": true,
+    "modelPath": "models/model.onnx",
+    "threshold": 0.9,
+    "workers": 0
   }
 }
 ```
@@ -102,11 +101,16 @@ go run . -webAddr 0.0.0.0:9000 # 换监听地址
 | `smtp.password` | string | 空 | 授权码 / 密码；**只写不读**，`GET /api/server` 只返回 `hasPassword` |
 | `smtp.to` | []string | 空 | 收件人；页面按行/逗号/分号输入，后端 trim + 去重 |
 | `smtp.notifyAutoChoose` | bool | `true` | 自动选课结果通知的总开关；成功/超时/未选上/登录失效时发给 `to`，用户取消不发。账号还要自己的 `autoNotify=true` 才会发 |
+| `kaptcha.enabled` | bool | `true` | 关闭后不加载模型，遇到字符验证码直接人工输入 |
+| `kaptcha.modelPath` | string | 空 | 显式模型路径；空 = 按 kaptcha.md §3 的顺序自动查找 |
+| `kaptcha.threshold` | number | `0.90` | 整串置信度下限，范围 `(0,1]`；低于它转人工 |
+| `kaptcha.workers` | number | `0` | 推理并发，`0` = 自动；范围 `0~64` |
 
 写盘用 `.tmp` + `os.Rename`，并按 `0600` 创建（Windows 上权限位不生效，但仍按最小权限语义写）。
 文件损坏时不阻止 WebUI 启动：打印错误并暂用默认设置，页面保存一次即可覆盖。
-第一次启动若没有 `server.json`，会只读导入同目录的旧版 `SMTP.json`（`host/port/from/to/password/enable`），
-并在页面提示「尚未保存」；点一次保存后以 `server.json` 为准，旧文件不再读写。
+第一次启动若没有 `server.json`，会只读导入同目录的旧版 `SMTP.json`（`host/port/from/to/password/enable`）
+和 `kaptcha.json`；邮件通知页会提示「尚未保存」。点一次保存后以 `server.json` 为准，旧文件不再读写。
+验证码设置只有在模型加载成功后才会写进 `server.json`；保存失败时旧配置与旧模型保持不变。
 
 > `want.xlsx` 的解析能力（`config.ReadExcel`）还留在协议层，但当前没有调用方：
 > WebUI 的愿望清单存在 `accounts.json` 的 `wantClasses/wantTeachers/wantTypes` 里。

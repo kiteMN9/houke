@@ -71,7 +71,7 @@ jwmock 还能通过 `/__mock/scenario` 注入窗口关闭、容量满、拒绝�
 | --- | --- |
 | [README.md](README.md) | 功能、运行方式、安全提示 |
 | [doc/architecture.md](doc/architecture.md) | 分层/依赖方向、类型归属、并发模型、扩展端口（Ask/OnStage/OnInitStage/OnRequest） |
-| [doc/configuration.md](doc/configuration.md) | 命令行、`accounts.json`/`server.json`/`kaptcha.json` 等运行时文件、默认值来源 |
+| [doc/configuration.md](doc/configuration.md) | 命令行、`accounts.json`/`server.json` 等运行时文件、默认值来源 |
 | [doc/http-api.md](doc/http-api.md) | 所有 HTTP 路由、错误码、SSE 事件、前端约定 |
 | [doc/analysis.md](doc/analysis.md) | 当前债务与已知问题（数字为基线时实测） |
 | [doc/roadmap.md](doc/roadmap.md) | 计划、验收标准、手工测试清单（需要真实账号） |

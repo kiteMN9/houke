@@ -4,6 +4,12 @@
 构建产物文件名也使用该 tag。格式参考
 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [未发布]
+
+### 变更
+
+- **字符验证码设置并入 `server.json`**：验证码模型设置（`enabled` / `modelPath` / `threshold` / `workers`）从 `kaptcha.json` 迁到 `server.json` 的 `kaptcha` 节点，与 SMTP 配置统一由 `web/serverSettingsManager` 落盘。启动时若 `server.json` 没有 `kaptcha` 节点，会只读导入同目录的旧版 `kaptcha.json` 一次，之后旧文件不再读写；上传的模型仍在 `models/`。
+
 ## [2.2.0] - 2026-11-07
 
 本版把自动选课从同步 HTTP 请求改成后台任务，并按学校的两类选课场景重组候选：板块课一次详情补齐全部教学班后按优先级提交；通识选修课支持名字优先（点名的课只抓命中的课程号），教师 / 类型愿望才扫描整页，且一个课程号只请求一次详情（整页详情请求数减半）。同时修复了通识选修课「教师命中却报愿望清单没有命中」、空白愿望条目匹配所有课程、Ctrl+C 退不掉等问题。

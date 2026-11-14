@@ -36,8 +36,8 @@ func TestKaptchaConfigOverHTTP(t *testing.T) {
 	if !st.Settings.Enabled || st.Settings.Threshold != kaptcha.DefaultThreshold {
 		t.Errorf("默认设置 = %+v", st.Settings)
 	}
-	if st.SettingsFile == "" || st.NumChars != kaptcha.NumChars {
-		t.Errorf("状态缺少配置路径或模型规格: %+v", st)
+	if !strings.HasSuffix(st.SettingsFile, "server.json") || st.NumChars != kaptcha.NumChars {
+		t.Errorf("状态缺少配置路径（应为 server.json）或模型规格: %+v", st)
 	}
 
 	// 只提交要改的字段：enabled=false 后模型应被卸载。
@@ -66,8 +66,86 @@ func TestKaptchaConfigOverHTTP(t *testing.T) {
 	if updated.Enabled || updated.Loaded {
 		t.Errorf("关闭后不应仍处于已加载状态: %+v", updated)
 	}
-	if _, err := os.Stat(store.Kaptcha().File()); err != nil {
-		t.Errorf("kaptcha.json 未落盘: %v", err)
+	dir := filepath.Dir(store.filename)
+	raw, err := os.ReadFile(filepath.Join(dir, "server.json"))
+	if err != nil {
+		t.Fatalf("server.json 未落盘: %v", err)
+	}
+	var saved struct {
+		Kaptcha kaptcha.Settings `json:"kaptcha"`
+	}
+	if err := json.Unmarshal(raw, &saved); err != nil {
+		t.Fatalf("解析 server.json: %v", err)
+	}
+	if saved.Kaptcha.Enabled || saved.Kaptcha.Threshold != 0.95 || saved.Kaptcha.Workers != 2 {
+		t.Errorf("server.json 里的验证码设置 = %+v", saved.Kaptcha)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "kaptcha.json")); !os.IsNotExist(err) {
+		t.Errorf("不应再生成 kaptcha.json，stat err = %v", err)
+	}
+}
+
+func TestKaptchaSettingsImportedFromLegacyFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "kaptcha.json"),
+		[]byte(`{"enabled":false,"threshold":0.8,"workers":2}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewAccountStore(filepath.Join(dir, "accounts.json"))
+	if err != nil {
+		t.Fatalf("NewAccountStore: %v", err)
+	}
+	srv := httptest.NewServer(mustNewServer(t, store).router)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/kaptcha") //nolint:noctx // 测试里不关心 ctx
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	var st kaptcha.Status
+	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
+		t.Fatalf("解析状态: %v", err)
+	}
+	if st.Settings.Enabled || st.Settings.Threshold != 0.8 || st.Settings.Workers != 2 {
+		t.Errorf("未从旧版 kaptcha.json 导入设置: %+v", st.Settings)
+	}
+	if !strings.HasSuffix(st.SettingsFile, "server.json") {
+		t.Errorf("settingsFile = %q，期望 server.json", st.SettingsFile)
+	}
+	// 导入只发生在内存里；保存一次之后才写进 server.json。
+	if _, err := os.Stat(filepath.Join(dir, "server.json")); !os.IsNotExist(err) {
+		t.Errorf("未保存前不应生成 server.json，stat err = %v", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPut, srv.URL+"/api/kaptcha",
+		strings.NewReader(`{"threshold":0.9}`))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	putResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT: %v", err)
+	}
+	defer putResp.Body.Close()
+	if putResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(putResp.Body)
+		t.Fatalf("PUT status = %d (%s), want 200", putResp.StatusCode, body)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(dir, "server.json"))
+	if err != nil {
+		t.Fatalf("保存后应生成 server.json: %v", err)
+	}
+	var saved struct {
+		Kaptcha kaptcha.Settings `json:"kaptcha"`
+	}
+	if err := json.Unmarshal(raw, &saved); err != nil {
+		t.Fatalf("解析 server.json: %v", err)
+	}
+	if saved.Kaptcha.Enabled || saved.Kaptcha.Threshold != 0.9 || saved.Kaptcha.Workers != 2 {
+		t.Errorf("server.json 里的验证码设置 = %+v", saved.Kaptcha)
 	}
 }
 
@@ -127,7 +205,7 @@ func TestKaptchaModelUploadSanitizesName(t *testing.T) {
 		raw, _ := io.ReadAll(resp.Body)
 		t.Fatalf("POST status = %d (%s), want 400", resp.StatusCode, raw)
 	}
-	dst := filepath.Join(filepath.Dir(store.Kaptcha().File()), "models", "evil.onnx")
+	dst := filepath.Join(filepath.Dir(store.filename), "models", "evil.onnx")
 	if _, err := os.Stat(dst); err != nil {
 		t.Errorf("上传文件未按清洗后的名字保存到 %s: %v", dst, err)
 	}
@@ -164,7 +242,7 @@ func TestKaptchaModelUploadRejectsNonOnnx(t *testing.T) {
 		raw, _ := io.ReadAll(resp.Body)
 		t.Fatalf("POST status = %d (%s), want 400", resp.StatusCode, raw)
 	}
-	dst := filepath.Join(filepath.Dir(store.Kaptcha().File()), "models", "model.onnx")
+	dst := filepath.Join(filepath.Dir(store.filename), "models", "model.onnx")
 	if _, err := os.Stat(dst); !os.IsNotExist(err) {
 		t.Errorf("非 .onnx 文件不应落盘为 %s", dst)
 	}

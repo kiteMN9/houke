@@ -32,7 +32,7 @@ func (s *Server) kaptchaStatus(c *gin.Context) {
 // 每次提交完整表单，但这样以后加“只切换启用开关”的按钮不用改后端。
 func (s *Server) updateKaptcha(c *gin.Context) {
 	mgr := s.store.Kaptcha()
-	if mgr == nil {
+	if mgr == nil || s.serverCfg == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "验证码配置未初始化"})
 		return
 	}
@@ -59,7 +59,8 @@ func (s *Server) updateKaptcha(c *gin.Context) {
 	if in.Workers != nil {
 		cur.Workers = *in.Workers
 	}
-	if err := mgr.Apply(cur); err != nil {
+	// 模型加载成功后才把设置写进 server.json；写盘失败时热切换也不生效。
+	if err := mgr.Apply(cur, s.serverCfg.saveKaptcha); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "status": mgr.Status()})
 		return
 	}
@@ -80,11 +81,11 @@ func (s *Server) reloadKaptcha(c *gin.Context) {
 	c.JSON(http.StatusOK, mgr.Status())
 }
 
-// uploadKaptchaModel 接收一个 .onnx 文件，存到配置文件旁边的 models/ 下，
+// uploadKaptchaModel 接收一个 .onnx 文件，存到 server.json 旁边的 models/ 下，
 // 然后把 ModelPath 指向它并立即加载。
 func (s *Server) uploadKaptchaModel(c *gin.Context) {
 	mgr := s.store.Kaptcha()
-	if mgr == nil {
+	if mgr == nil || s.serverCfg == nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "验证码配置未初始化"})
 		return
 	}
@@ -105,7 +106,7 @@ func (s *Server) uploadKaptchaModel(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "只支持 .onnx 模型文件"})
 		return
 	}
-	dir := filepath.Join(filepath.Dir(mgr.File()), "models")
+	dir := filepath.Join(filepath.Dir(s.serverCfg.file), "models")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建模型目录失败: " + err.Error()})
 		return
@@ -119,7 +120,7 @@ func (s *Server) uploadKaptchaModel(c *gin.Context) {
 	cur := mgr.Settings()
 	cur.Enabled = true
 	cur.ModelPath = dst
-	if err := mgr.Apply(cur); err != nil {
+	if err := mgr.Apply(cur, s.serverCfg.saveKaptcha); err != nil {
 		// 文件已经落盘，保留它：用户改改路径或重新上传即可，不必再传一遍。
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":  "模型已保存到 " + dst + "，但加载失败: " + err.Error(),
