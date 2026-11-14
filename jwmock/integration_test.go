@@ -255,7 +255,7 @@ func TestSeatReleaseInPhases(t *testing.T) {
 	if res.Flag != "1" {
 		t.Fatalf("选课结果 flag = %q, msg = %q", res.Flag, res.Msg)
 	}
-	if !findEvent(events, engine.EventFailed, "人数已满") {
+	if !findEvent(events, engine.EventFailed, "该教学班已无余量") {
 		t.Fatalf("缺少满员失败事件: %+v", events)
 	}
 	if !findEvent(events, engine.EventSuccess, "") {
@@ -286,12 +286,13 @@ func TestRejections(t *testing.T) {
 			wantMsg:  "超过学分上限",
 		},
 		{
+			// 满员时正方返回 flag=-1，客户端把它翻成固定提示再展示。
 			name: "capacity_full",
 			opts: jwmock.Options{Courses: []jwmock.Seed{{
 				JxbID: "JXB-SOLO", KchID: "KCH-SOLO", Kcmc: "独占课程",
 				Xf: "2", Sksj: "周四第1-2节", Capacity: 1, Enrolled: 1,
 			}}},
-			wantMsg: "人数已满",
+			wantMsg: "该教学班已无余量",
 		},
 	}
 
@@ -325,6 +326,65 @@ func TestRejections(t *testing.T) {
 	}
 }
 
+// 选课接口的 flag 语义照正方脚本 html/zzxkYzbChoosedZy.js 来，不是"成功 1 /
+// 失败 0"两种：满员 -1（msg 是 "分志愿,教学班id,已选人数,本轮已选人数" 的机器
+// 串）、重复选同一教学班 6、上课时间冲突 2、成功 1（不带额外文案）。
+//
+// 这里直接调 Choose 而不是 RunAuto：轮次用尽时 RunAuto 返回的是零值结果，
+// 拿不到失败那次的 flag。
+func TestChooseResultFlags(t *testing.T) {
+	opts := jwmock.Options{Courses: []jwmock.Seed{
+		{JxbID: "JXB-FULL", KchID: "KCH-FULL", Kcmc: "满员课程", Xf: "2", Sksj: "周一第1-2节", Capacity: 1, Enrolled: 1},
+		{JxbID: "JXB-DUP", KchID: "KCH-DUP", Kcmc: "重复课程", Xf: "2", Sksj: "周二第1-2节", Capacity: 5},
+		{JxbID: "JXB-CFA", KchID: "KCH-CFA", Kcmc: "冲突课程A", Xf: "2", Sksj: "周三第1-2节", Capacity: 5},
+		{JxbID: "JXB-CFB", KchID: "KCH-CFB", Kcmc: "冲突课程B", Xf: "2", Sksj: "周三第1-2节", Capacity: 5},
+	}}
+	_, base := startMock(t, opts)
+	eng := newEngine(t, base, jwmock.DefaultUsername, jwmock.DefaultPassword)
+	mustLogin(t, eng)
+
+	choose := func(name string) protocol.ChooseCourseResult {
+		t.Helper()
+		ctx, cancel := testContext(t)
+		defer cancel()
+		candidates, err := eng.CollectCandidates(ctx, want(name))
+		if err != nil || len(candidates) != 1 {
+			t.Fatalf("CollectCandidates(%s) = %d, %v", name, len(candidates), err)
+		}
+		res, err := eng.Choose(ctx, &candidates[0])
+		if err != nil {
+			t.Fatalf("Choose(%s): %v", name, err)
+		}
+		return res
+	}
+
+	// 满员：-1 + 人数机器串。
+	res := choose("满员课程")
+	if res.Flag != "-1" {
+		t.Fatalf("满员 flag = %q，期望 -1", res.Flag)
+	}
+	if parts := strings.Split(res.Msg, ","); len(parts) != 4 || parts[0] != "0" || parts[1] != "JXB-FULL" {
+		t.Fatalf("满员 msg = %q，期望 分志愿,教学班id,已选人数,本轮已选人数", res.Msg)
+	}
+
+	// 成功：1，不带额外文案。
+	if res := choose("重复课程"); res.Flag != "1" || res.Msg != "" {
+		t.Fatalf("成功 flag = %q msg = %q", res.Flag, res.Msg)
+	}
+	// 重复选同一教学班：6。
+	if res := choose("重复课程"); res.Flag != "6" {
+		t.Fatalf("重复选课 flag = %q，期望 6", res.Flag)
+	}
+
+	// 时间冲突：选上 A 后再选同时间的 B，返回 2。
+	if res := choose("冲突课程A"); res.Flag != "1" {
+		t.Fatalf("选冲突课程A flag = %q，期望 1", res.Flag)
+	}
+	if res := choose("冲突课程B"); res.Flag != "2" {
+		t.Fatalf("时间冲突 flag = %q，期望 2", res.Flag)
+	}
+}
+
 func TestDuplicateChoose(t *testing.T) {
 	opts := jwmock.Options{Courses: []jwmock.Seed{{
 		JxbID: "JXB-DS-01", KchID: "KCH-DS", Kcmc: "数据结构",
@@ -345,7 +405,7 @@ func TestDuplicateChoose(t *testing.T) {
 	if res.Flag == "1" {
 		t.Fatal("重复选课不应成功")
 	}
-	if !findEvent(events, engine.EventFailed, "不能重复选择") {
+	if !findEvent(events, engine.EventFailed, "该教学班已选中") {
 		t.Fatalf("缺少重复选课失败事件: %+v", events)
 	}
 }
@@ -452,7 +512,7 @@ func TestTwoAccountsLastSeat(t *testing.T) {
 	if res.Flag == "1" {
 		t.Fatal("最后一个名额被占后账号B不应选上")
 	}
-	if !findEvent(events, engine.EventFailed, "人数已满") {
+	if !findEvent(events, engine.EventFailed, "该教学班已无余量") {
 		t.Fatalf("账号B缺少满员事件: %+v", events)
 	}
 

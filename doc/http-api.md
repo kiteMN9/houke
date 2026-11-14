@@ -138,6 +138,11 @@
 | GET | `/accounts/:id/selected` | `?xnm=2026&xqm=3` | `[]protocol.ChosenDic` | 参数必填；未登录 → 401（避免内部阻塞登录）；无功能权限 → 403 + `code=no_permission` |
 | GET | `/accounts/:id/score` | `?xnm=2026&xqm=3` | `[]protocol.Score` | 参数必填；未登录 → 401；无功能权限 → 403 + `code=no_permission`；超时 → 504 |
 
+**选课结果的 `flag`**（`/choose`、自动选课共用，语义见 `html/zzxkYzbChoosedZy.js`）：
+`1` 成功；`3` 成功但免费学分已达上限（同样算落库）；`6` 该教学班已选中；
+`-1` 容量超出——`msg` 是教务的人数机器串，接口返回前已翻成「该教学班已无余量，不可选！」；
+`2` 上课时间冲突；其它（多为 `0`）是业务拒绝，`msg` 是原因。
+
 **无功能权限**：学校对没有开通的模块（公共账号查成绩、查个人信息等）返回的是
 HTTP 200 + 一张“无功能权限”的 HTML 错误页，不是 JSON，也不是登录页。协议层把它
 识别成 `protocol.ErrNoPermission`（不重试、不当成掉线），HTTP 层统一回

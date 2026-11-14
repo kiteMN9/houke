@@ -318,6 +318,45 @@ type ChooseCourseResult struct {
 	Msg  string `json:"msg"`
 }
 
+// 选课接口（zzxkyzbjk_xkBcZyZzxkYzb）的 flag 取值。
+//
+// 语义照正方页面脚本 html/zzxkYzbChoosedZy.js 来：它对返回值分了 1/3/6/-1/2
+// 等分支，不是"成功 1 / 失败 0"两种。只认 1 会把"免费学分已达上限"（3，课已经
+// 落库）当成失败一直重试，也会把 -1 的机器串直接弹给用户。
+const (
+	// ChooseFlagOK 选课成功。
+	ChooseFlagOK = "1"
+	// ChooseFlagOKFreeCreditLimit 选课成功，免费学分已达上限。
+	ChooseFlagOKFreeCreditLimit = "3"
+	// ChooseFlagAlreadyChosen 该教学班已选中（刷新页面可见）。
+	ChooseFlagAlreadyChosen = "6"
+	// ChooseFlagCapacityFull 容量超出。
+	ChooseFlagCapacityFull = "-1"
+	// ChooseFlagTimeConflict 上课时间冲突（msg 给"查看冲突"弹窗用）。
+	ChooseFlagTimeConflict = "2"
+)
+
+// OK 报告这次提交是否已经选上。
+func (r ChooseCourseResult) OK() bool {
+	return r.Flag == ChooseFlagOK || r.Flag == ChooseFlagOKFreeCreditLimit
+}
+
+// DisplayMsg 返回可以直接展示给用户的文案。
+//
+// -1 和 6 这两个分支，正方页面不显示服务端 msg、而是用固定的提示：
+// flag=-1 的 msg 是 "分志愿,教学班id,已选人数,本轮已选人数" 的机器串（页面拿
+// 它更新列表人数），直接弹出来就是一串数字；flag=6 同理只提示"已选中"。这里
+// 跟页面保持一致，其余分支仍然用服务端给的文案。
+func (r ChooseCourseResult) DisplayMsg() string {
+	switch r.Flag {
+	case ChooseFlagCapacityFull:
+		return "该教学班已无余量，不可选！"
+	case ChooseFlagAlreadyChosen:
+		return "该教学班已选中，刷新页面可见！"
+	}
+	return r.Msg
+}
+
 type CourseListDic struct {
 	Date               string `json:"date"`               // '二○二五年二月二十六日'
 	DateDigit          string `json:"dateDigit"`          // '2025年2月26日'

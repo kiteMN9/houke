@@ -163,6 +163,8 @@ func (s *Server) choose(c *gin.Context) {
 		writeEngineError(c, err)
 		return
 	}
+	// flag=-1 的 msg 是教务的人数机器串，直接回给前端会显示成一串数字。
+	result.Msg = result.DisplayMsg()
 	c.JSON(http.StatusOK, result)
 }
 

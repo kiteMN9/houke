@@ -1,6 +1,7 @@
 package jwmock
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -209,8 +210,18 @@ func (s *Server) handleCourseDetail(c *gin.Context) {
 	c.JSON(http.StatusOK, rows)
 }
 
+// chooseResp 是选课接口的响应体。
+// 成功（flag=1）时真实教务只回 {"flag":"1"}，这里同样不额外塞文案。
+type chooseResp struct {
+	Flag string `json:"flag"`
+	Msg  string `json:"msg,omitempty"`
+}
+
 // handleChoose 按真实选课接口的优先级判定：会话 -> 时间窗口 -> 固定拒绝 -> 重复 ->
 // 容量 -> 时间冲突 -> 学分上限 -> 门数上限 -> 瞬时失败 -> 成功。
+//
+// 返回值的 flag 语义照 html/zzxkYzbChoosedZy.js 来（见 chooseLocked），不是
+// "成功 1 / 失败 0" 两种：客户端要靠 -1、6、2 区分容量不足、重复选课和时间冲突。
 func (s *Server) handleChoose(c *gin.Context) {
 	user, ok := s.userOf(c)
 	if !ok {
@@ -224,9 +235,22 @@ func (s *Server) handleChoose(c *gin.Context) {
 	flag, msg := s.chooseLocked(user, jxbIDs, kchID)
 	s.mu.Unlock()
 
-	c.JSON(http.StatusOK, gin.H{"flag": flag, "msg": msg})
+	c.JSON(http.StatusOK, chooseResp{Flag: flag, Msg: msg})
 }
 
+// chooseLocked 判定一次选课提交，返回真实接口的 (flag, msg)。
+//
+// flag 取值照 html/zzxkYzbChoosedZy.js 对 zzxkyzbjk_xkBcZyZzxkYzb 返回值的分支：
+//
+//	"1"  选课成功
+//	"3"  选课成功、免费学分已达上限（mock 不模拟）
+//	"6"  该教学班已选中（刷新页面可见）
+//	"-1" 容量超出：msg 是 "分志愿,教学班id,已选人数,本轮已选人数" 的机器串，
+//	     页面拿它更新列表人数，不是给人看的文案
+//	"2"  上课时间冲突（msg 给"查看冲突"弹窗）
+//	其他（多为 "0"）：业务拒绝，msg 就是原因
+//
+// -1 的第 3、4 个字段用同一个已选人数：mock 不区分总人数和本轮人数。
 func (s *Server) chooseLocked(user, jxbIDs, kchID string) (string, string) {
 	seed, ok := s.findSeedLocked(jxbIDs, kchID)
 	if !ok {
@@ -245,16 +269,18 @@ func (s *Server) chooseLocked(user, jxbIDs, kchID string) (string, string) {
 
 	set := s.userChosenLocked(user)
 	if set[seed.JxbID] {
-		return "0", "该教学班已选，不能重复选择！"
+		return "6", "该教学班已选中，刷新页面可见！"
 	}
 	if s.sameCourseLocked(user, seed) {
 		return "0", "该课程已选，不能重复选择！"
+		//return "1", ""
 	}
 	if seed.Capacity > 0 && s.enrolledLocked(seed) >= seed.Capacity {
-		return "0", "该教学班人数已满，请选择其他教学班！"
+		enrolled := s.enrolledLocked(seed)
+		return "-1", fmt.Sprintf("0,%s,%d,%d", seed.JxbID, enrolled, enrolled)
 	}
 	if s.timeConflictLocked(user, seed) {
-		return "0", "该教学班与已选课程时间冲突！"
+		return "2", "该教学班与已选课程时间冲突！"
 	}
 	if sc.MaxCredits > 0 && s.creditsLocked(user)+parseCredit(seed.Xf) > sc.MaxCredits {
 		return "0", "超过学分上限！"
@@ -272,7 +298,7 @@ func (s *Server) chooseLocked(user, jxbIDs, kchID string) (string, string) {
 	}
 
 	set[seed.JxbID] = true
-	return "1", "选课成功"
+	return "1", ""
 }
 
 func (s *Server) handleSelected(c *gin.Context) {

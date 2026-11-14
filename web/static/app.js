@@ -2041,8 +2041,9 @@ async function doChoose(kchId, jxbId, btn) {
         const r = await API.choose(state.currentId, { kchId, jxbId });
         const flag = pick(r, 'Flag', 'flag');
         const msg  = pick(r, 'Msg', 'msg') || '';
-        if (flag === '1') {
-            toast('选课成功 ✅ ' + msg, 'ok');
+        // flag=3 也是成功：免费学分已达上限，但课已经落库（见 protocol.ChooseCourseResult.OK）。
+        if (flag === '1' || flag === '3') {
+            toast('选课成功 ✅' + (msg ? ' ' + msg : ''), 'ok');
             setChooseBtnState(btn, true);
             return;
         }

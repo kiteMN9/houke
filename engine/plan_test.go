@@ -250,8 +250,9 @@ func staticSource(list []protocol.CustomCourseDic) Source {
 	return func(context.Context) ([]protocol.CustomCourseDic, error) { return list, nil }
 }
 
-// 满员时教务系统返回的是 flag=0 + 提示语，不是 HTTP 错误，也不是"没这门课"。
-const chooseFullJSON = `{"flag":"0","msg":"该教学班人数已满"}`
+// 满员时教务返回 flag=-1，msg 是 "分志愿,教学班id,已选人数,本轮已选人数" 的
+// 机器串（见 html/zzxkYzbChoosedZy.js），不是 HTTP 错误，也不是"没这门课"。
+const chooseFullJSON = `{"flag":"-1","msg":"0,d1,39,39"}`
 
 // autoServer 在 detailServer 的基础上再伪造选课接口，用来跑 RunAuto 的整条链路。
 func autoServer(t *testing.T, detail string) *httptest.Server {
@@ -287,7 +288,7 @@ func TestRunAutoRetriesFullCandidate(t *testing.T) {
 	}
 
 	var picks, fails int
-	var pickMsg string
+	var pickMsg, failMsg string
 	_, err = e.RunAuto(context.Background(), Plan{Wants: wants, MaxRounds: 1, Interval: time.Millisecond}, staticSource(candidates), func(ev Event) {
 		switch ev.Kind {
 		case EventPick:
@@ -295,6 +296,7 @@ func TestRunAutoRetriesFullCandidate(t *testing.T) {
 			pickMsg = ev.Message
 		case EventFailed:
 			fails++
+			failMsg = ev.Message
 		}
 	})
 	if errors.Is(err, ErrNoWantedCourse) {
@@ -308,6 +310,10 @@ func TestRunAutoRetriesFullCandidate(t *testing.T) {
 	}
 	if !strings.Contains(pickMsg, "已满 39/39") {
 		t.Fatalf("进度文案 = %q，期望写明已满人数", pickMsg)
+	}
+	// flag=-1 的 msg 是人数机器串，展示前要翻成固定提示（DisplayMsg）。
+	if !strings.Contains(failMsg, "该教学班已无余量") {
+		t.Fatalf("失败文案 = %q，期望把 -1 的人数机器串翻成人话", failMsg)
 	}
 }
 

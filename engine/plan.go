@@ -262,7 +262,8 @@ func (e *Engine) RunAuto(ctx context.Context, plan Plan, source Source, sink Sin
 				return zero, ctxErr
 			}
 			// 已经选上就认成功：即使提交期间会话换了代，这门课也已经落库。
-			if result.Flag == "1" {
+			// flag=3（选课成功、免费学分已达上限）同样算落库，见 OK()。
+			if result.OK() {
 				emit(sink, Event{
 					Round:   round,
 					Kind:    EventSuccess,
@@ -285,7 +286,8 @@ func (e *Engine) RunAuto(ctx context.Context, plan Plan, source Source, sink Sin
 				emit(sink, Event{Round: round, Kind: EventFailed, Course: course, Message: err.Error()})
 				continue
 			}
-			emit(sink, Event{Round: round, Kind: EventFailed, Course: course, Message: result.Msg})
+			// flag=-1 的 msg 是人数机器串，展示前翻成人话，见 DisplayMsg。
+			emit(sink, Event{Round: round, Kind: EventFailed, Course: course, Message: result.DisplayMsg()})
 		}
 
 		if p.MaxRounds > 0 && round >= p.MaxRounds {
