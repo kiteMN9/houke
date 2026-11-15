@@ -2093,12 +2093,35 @@ function syncQueryButtons() {
     syncQueryButton($('#btn-ping'), 'ping', 'Ping');
 }
 
-// 未登录时不要发查询：后端的"按需登录"不在任务面板里，会静默卡很久。
+// autoReloginEnabled 返回当前账号是否开启自动重登。
+// 老账号 / 老数据没有该字段时按开启处理，与后端 autoReloginEnabled 一致。
+function autoReloginEnabled() {
+    return !state.current || state.current.autoRelogin !== false;
+}
+
+// 未登录时是否放行查询：
+//   - 自动重登开启：交给后端按需登录——登录会作为一条可见、可取消的任务
+//     （任务面板 + 验证码输入）跑完，再继续这次查询，不用先点「登录」；
+//   - 关闭自动重登 / 微信扫码：没有可用的自动登录，提示用户手动登录。
 function ensureLoggedInForQuery() {
-    if (state.status && state.status.loggedIn === false) {
+    if (!state.status || state.status.loggedIn !== false) return true;
+    // 登录 / 初始化 / 自动选课在跑时后端只允许一个长任务，这里先拦下来，
+    // 免得请求白跑一趟再回 409。
+    if (Task.running()) {
+        toast('有任务正在进行中，请稍后再试', 'warn');
+        return false;
+    }
+    if (!autoReloginEnabled()) {
         toast('尚未登录，请先点击「登录」', 'warn');
         return false;
     }
+    if (state.current && state.current.loginMode === 'wechat') {
+        toast('该账号使用微信扫码登录，请先点击「登录」扫码', 'warn');
+        return false;
+    }
+    // 登录进度与验证码输入靠推送驱动：确保连接在场再放行。
+    Task.ensure();
+    toast('尚未登录，正在自动登录…', 'warn');
     return true;
 }
 

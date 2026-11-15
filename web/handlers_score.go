@@ -27,16 +27,15 @@ func (s *Server) getScore(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
-	// 未登录时直接失败：WebGetScore 内部会触发一次阻塞登录（最长到账号的登录
-	// 超时），这次登录不在任务面板里、也无法取消，前端按钮会一直转圈。
-	if !rt.engine.LoggedIn() {
-		writeUnauthorized(c, "尚未登录，请先登录")
-		return
-	}
 	xnm := c.Query("xnm")
 	xqm := c.Query("xqm")
 	if xnm == "" || xqm == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少 xnm / xqm 参数"})
+		return
+	}
+	// 需要登录：自动重登开启时先跑一次可见登录（任务面板可取消），
+	// 关闭时回 401，交给界面提示手动登录。
+	if !s.ensureLogin(c, c.Param("id"), rt) {
 		return
 	}
 
@@ -49,7 +48,7 @@ func (s *Server) getScore(c *gin.Context) {
 		case errors.Is(err, protocol.ErrNoPermission):
 			writeAPIError(c, http.StatusForbidden, codeNoPermission, "该账号无此功能权限")
 		case errors.Is(err, protocol.ErrUnauthorized):
-			// 成绩接口不走 engine 的统一重试；会话失效同样要按统一协议报 401，
+			// 查询过程中会话失效、且自动重登也没救回来：统一报 401，
 			// 否则前端只会看到 500，登录态也不会切。
 			writeUnauthorized(c, "登录已失效，请重新登录")
 		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):

@@ -46,13 +46,14 @@ func doToolsGET(t *testing.T, srv *Server, path string) *httptest.ResponseRecord
 	return rec
 }
 
-// 未登录时个人信息 / 大头照必须快速失败，不能触发不可见的阻塞登录。
-func TestToolsInfoPhotoRequireLogin(t *testing.T) {
+// 关闭自动重登后，未登录时个人信息 / 大头照必须快速失败，不能偷偷跑登录。
+func TestToolsInfoPhotoRequireLoginWhenAutoReloginOff(t *testing.T) {
 	var hits atomic.Int32
-	srv, acc, _ := newToolsTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	srv, acc, rt := newToolsTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
 		http.Error(w, "should not be called", http.StatusInternalServerError)
 	})
+	rt.engine.SetAutoRelogin(false)
 
 	for _, suffix := range []string{"/tools/info", "/tools/photo"} {
 		rec := doToolsGET(t, srv, "/api/accounts/"+acc.ID+suffix)

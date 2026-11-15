@@ -39,9 +39,10 @@ func newAutoRuntime(t *testing.T, loggedIn bool) (*AccountStore, *accountRuntime
 	return store, rt
 }
 
-// 未登录时不应该开始自动选课：后面每一步都依赖会话。
-func TestAutoChooseRequiresLogin(t *testing.T) {
-	store, _ := newAutoRuntime(t, false)
+// 关闭自动重登后，未登录不应该开始自动选课：后面每一步都依赖会话。
+func TestAutoChooseRequiresLoginWhenAutoReloginOff(t *testing.T) {
+	store, rt := newAutoRuntime(t, false)
+	rt.engine.SetAutoRelogin(false)
 	srv := mustNewServer(t, store)
 	acc := store.order[0]
 

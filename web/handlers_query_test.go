@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-// 未登录时查询已选 / 成绩必须快速失败，而不是在 handler 里触发一次
-// 不可见、不可取消的阻塞登录（那会让前端按钮一直转圈）。
-func TestQueriesRequireLogin(t *testing.T) {
+// 关闭自动重登后，未登录查询已选 / 成绩必须快速失败，而不是在 handler 里
+// 偷偷跑一次登录（那会让前端按钮一直转圈）。
+func TestQueriesRequireLoginWhenAutoReloginOff(t *testing.T) {
 	store := newTestStore(t)
 	acc, err := store.Create(&Account{
 		Name:     "n",
@@ -19,6 +19,11 @@ func TestQueriesRequireLogin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
+	rt, err := store.runtime(acc.ID)
+	if err != nil {
+		t.Fatalf("runtime: %v", err)
+	}
+	rt.engine.SetAutoRelogin(false)
 	srv := mustNewServer(t, store)
 
 	cases := []struct {

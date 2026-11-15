@@ -494,5 +494,6 @@ idToken 给 `ATTR_name` / `ATTR_identityTypeName` / `ATTR_organizationName`。
 仍显示登录进行中"。现在 `startBackgroundLogin` 对 `loginMode=wechat` 的账号直接
 返回 false，`/ping` 的响应多一个 `hint` 字段让界面提示"需要手动点微信扫码登录"。
 另外，账号关闭 `autoRelogin`（自动重登开关）时也不起后台登录，`hint` 会说明
-"已关闭自动重登，请手动点登录"。
+"已关闭自动重登，请手动点登录"。需要登录的接口（成绩 / 已选 / 个人信息 / 头像等）
+走 `ensureLogin` 时对微信账号同样直接 401，不会在业务请求里挂起一次等不到扫码的登录。
 

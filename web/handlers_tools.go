@@ -21,8 +21,9 @@ import (
 // ---------- 其他工具 ----------
 //
 // 这些接口只服务本机 WebUI：个人信息、大头照、当前 Cookie、会话诊断。
-// 前两者要求已登录，避免查询时静默触发登录；Cookie/诊断只读本地运行态，
-// 不要求登录，也不能返回密码或 JWT 明文。
+// 前两者需要登录：未登录且开着自动重登时先跑一次可见登录（见 ensureLogin），
+// 不静默阻塞在请求里；Cookie/诊断只读本地运行态，不要求登录，也不能返回
+// 密码或 JWT 明文。
 
 func (s *Server) toolsInfo(c *gin.Context) {
 	c.Header("Cache-Control", "no-store")
@@ -31,8 +32,7 @@ func (s *Server) toolsInfo(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
-	if !rt.engine.LoggedIn() {
-		writeUnauthorized(c, "尚未登录，请先登录")
+	if !s.ensureLogin(c, c.Param("id"), rt) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)
@@ -52,8 +52,7 @@ func (s *Server) toolsPhoto(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
-	if !rt.engine.LoggedIn() {
-		writeUnauthorized(c, "尚未登录，请先登录")
+	if !s.ensureLogin(c, c.Param("id"), rt) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)

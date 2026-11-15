@@ -200,16 +200,15 @@ func (s *Server) selected(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
-	// 未登录时直接失败：Session.Selected 会在内部触发一次阻塞登录（最长到账号的
-	// 登录超时），这次登录不在任务面板里、也无法取消，前端按钮会一直转圈。
-	if !rt.engine.LoggedIn() {
-		writeUnauthorized(c, "尚未登录，请先登录")
-		return
-	}
 	xn := c.Query("xnm")
 	qm := c.Query("xqm")
 	if xn == "" || qm == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "缺少 xnm / xqm 参数"})
+		return
+	}
+	// 需要登录：自动重登开启时先跑一次可见登录（任务面板可取消），
+	// 关闭时回 401，交给界面提示手动登录。
+	if !s.ensureLogin(c, c.Param("id"), rt) {
 		return
 	}
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 30*time.Second)

@@ -63,7 +63,7 @@
                 <div class="actions">
                     <span class="badge" id="login-state">未登录</span>
                     <label class="toggle-inline" id="auto-relogin-wrap"
-                           title="会话失效时自动重新登录一次；关闭后需要手动点「登录」">
+                           title="未登录或会话失效时自动登录（任务面板里可见、可取消）；关闭后需要手动点「登录」">
                         <input type="checkbox" id="chk-auto-relogin">
                         <span>自动重登</span>
                     </label>
@@ -255,7 +255,7 @@
                 <div class="card">
                     <h3>个人信息</h3>
                     <p class="muted note">
-                        从学校教务系统读取当前账号的学籍信息。查询要求已登录，不会在后台静默重登。
+                        从学校教务系统读取当前账号的学籍信息。未登录且开启自动重登时会先自动登录（任务面板里可见、可取消）；关闭开关后需要先手动登录。
                     </p>
                     <div class="row mb-12">
                         <button type="button" class="btn primary" id="btn-tools-info">获取个人信息</button>

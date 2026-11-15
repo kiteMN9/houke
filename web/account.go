@@ -42,9 +42,11 @@ type Account struct {
 	HedgingDelay string   `json:"hedgingDelay"` // 对冲请求之间的间隔
 	Routes       []string `json:"routes"`       // 自定义 route cookie 列表（空 = 使用内置默认）
 
-	// AutoRelogin 是"会话失效时是否自动重新登录一次"的开关（默认开启）。
-	// 用指针是为了区分"老账号没写过这个字段"（按开启处理）和"显式关闭"；
-	// 它只影响 engine 的重登策略，不属于 protocol 配置。
+	// AutoRelogin 是"未登录 / 会话失效时是否自动登录"的开关（默认开启）。
+	// 未登录时 web.ensureLogin 先跑一次可见登录再继续本次请求；会话中途失效
+	// 由 engine 重登一次再重试。用指针是为了区分"老账号没写过这个字段"
+	// （按开启处理）和"显式关闭"；它只影响宿主与 engine 的策略，不属于
+	// protocol 配置。
 	AutoRelogin *bool `json:"autoRelogin,omitempty"`
 
 	// AutoNotify 是"自动选课结束时是否发结果邮件"的账号级开关（默认开启）。

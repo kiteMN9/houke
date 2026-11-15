@@ -42,9 +42,20 @@
 登录失败同样用 401，但 code 是 `login_failed`——两种语义必须分开，否则输错密码
 会被界面显示成"登录已失效"。
 
-**自动重登是账号级开关**（`autoRelogin`，默认开）。开启时，业务请求 / 初始化发现
-会话失效会重登一次并重试一次；关闭时只返回 `401 + unauthorized`，不偷偷跑登录，
-由界面提示手动登录。开关通过 `PUT /accounts/:id/auto-relogin` 热切换。
+**自动重登是账号级开关**（`autoRelogin`，默认开）。开启时：
+
+- 需要登录的接口（成绩 / 已选 / 个人信息 / 头像 / 自动选课）发现未登录，
+  会先跑一次**可见的登录任务**（任务面板 + SSE、可取消），成功后再继续本次请求
+  （`web/handlers_login.go` 的 `ensureLogin`）；
+- 业务请求 / 初始化进行中发现会话失效，会重登一次并重试一次。
+
+关闭时只返回 `401 + unauthorized`，不偷偷跑登录，由界面提示手动登录。微信扫码账号
+（`loginMode=wechat`）不走自动登录：没有二维码弹窗就没人扫，接口返回 401 并说明
+需要手动登录。开关通过 `PUT /accounts/:id/auto-relogin` 热切换。
+
+自动登录失败沿用登录接口的语义：`401 + login_failed`（密码 / 流程失败）、
+`408 + cancelled`（用户取消）、`504 + timeout`（超过 `loginTimeout`）；
+已有长任务在跑时直接 `409 + busy`，不排队。
 
 ---
 
@@ -135,8 +146,8 @@
 | DELETE | `/accounts/:id/courses` | — | `{"status":"ok"}` | 清空内存缓存 |
 | POST | `/accounts/:id/choose` | `{"kchId":"…","jxbId":"…","xxkbj":"…","cxbj":"…"}` | `protocol.ChooseCourseResult` | `kchId` / `jxbId` 必填；参数过期时 engine 会自动重抓一次再试 |
 | POST | `/accounts/:id/quit` | `{"kchId":"…","jxbId":"…"}` | `{"ok":bool,"msg":"…"}` | |
-| GET | `/accounts/:id/selected` | `?xnm=2026&xqm=3` | `[]protocol.ChosenDic` | 参数必填；未登录 → 401（避免内部阻塞登录）；无功能权限 → 403 + `code=no_permission` |
-| GET | `/accounts/:id/score` | `?xnm=2026&xqm=3` | `[]protocol.Score` | 参数必填；未登录 → 401；无功能权限 → 403 + `code=no_permission`；超时 → 504 |
+| GET | `/accounts/:id/selected` | `?xnm=2026&xqm=3` | `[]protocol.ChosenDic` | 参数必填；未登录且关闭自动重登 → 401，开启时先跑一次可见登录、成功后继续；无功能权限 → 403 + `code=no_permission` |
+| GET | `/accounts/:id/score` | `?xnm=2026&xqm=3` | `[]protocol.Score` | 参数必填；未登录且关闭自动重登 → 401，开启时先跑一次可见登录、成功后继续；无功能权限 → 403 + `code=no_permission`；超时 → 504 |
 
 **选课结果的 `flag`**（`/choose`、自动选课共用，语义见 `html/zzxkYzbChoosedZy.js`，
 错误样本见 `html/_xkBcZyZzxkYzb.html`）：`1` 成功；`3` 成功但免费学分已达上限（同样算落库）；
@@ -168,7 +179,7 @@ HTTP 200 + 一张“无功能权限”的 HTML 错误页，不是 JSON，也不�
   `no_candidates` / `not_initialized` / `unauthorized` / `failed`。
   `task.status` 只表示任务生命周期（`running` / `done` / `failed` / `timeout` /
   `cancelled`），两者不要混用。
-* **前置条件**：已登录（401）、已初始化（400）；请求里的三项清单先按保存路径的同一套规则清洗（trim、丢空行、去重），清洗后为空时回落到账号里已保存的清单，仍为空则 400。
+* **前置条件**：已登录（未登录且开启自动重登时先跑一次可见登录；关闭时 401）、已初始化（400）；请求里的三项清单先按保存路径的同一套规则清洗（trim、丢空行、去重），清洗后为空时回落到账号里已保存的清单，仍为空则 400。
   空白条目不会被当成"命中所有课程"（`protocol.WishList.Match` 会跳过它们）。
 * **预算**：`endAt` > `durationSeconds` > 默认 24h；非法参数在建任务**之前**就 400。
 * **确定性拒绝立即停止**：提交返回 `flag=0` 且 `msg` 不是"选课频率过高"（中英文两种文案）时，
@@ -187,14 +198,14 @@ HTTP 200 + 一张“无功能权限”的 HTML 错误页，不是 JSON，也不�
 
 ### 4.2 其他工具
 
-只服务本机 WebUI，路由前缀 `/accounts/:id/tools`。个人信息和大头照要求账号已登录
-（避免查询时静默触发登录）；Cookie、脚本哈希和会话诊断只读本地运行态或公开静态资源，
-不要求登录。
+只服务本机 WebUI，路由前缀 `/accounts/:id/tools`。个人信息和大头照要求账号已登录；
+未登录且开启自动重登时先跑一次可见登录（与手动登录同一条链路），关闭时 401。
+Cookie、脚本哈希和会话诊断只读本地运行态或公开静态资源，不要求登录。
 
 | 方法 | 路径 | 响应 | 备注 |
 |---|---|---|---|
-| GET | `/accounts/:id/tools/info` | `protocol.UserInfo` | 未登录 → 401；无功能权限 → 403 + `code=no_permission`；超时 → 504 |
-| GET | `/accounts/:id/tools/photo` | 原图字节 + `image/*` | 未登录 → 401；未上传/非图片 → 500；响应带 `Cache-Control: no-store` |
+| GET | `/accounts/:id/tools/info` | `protocol.UserInfo` | 未登录且关闭自动重登 → 401，开启时先跑一次可见登录；无功能权限 → 403 + `code=no_permission`；超时 → 504 |
+| GET | `/accounts/:id/tools/photo` | 原图字节 + `image/*` | 未登录且关闭自动重登 → 401，开启时先跑一次可见登录；未上传/非图片 → 500；响应带 `Cache-Control: no-store` |
 | GET | `/accounts/:id/tools/cookies` | `{"cookies":[…],"header":"name=value; …","count":N,"loggedIn":bool}` | 不要求登录；只读内存 cookie jar |
 | GET | `/accounts/:id/tools/jshash` | `{"generatedAt":…,"snapshotDir":"html","saved":N,"files":[{"name","path","ok","status","size","sha1","localFound","localSize","localSha1","localMatch","saved","error","saveError"}]}` | 不要求登录；逐份抓取，失败只记在该文件上 |
 | POST | `/accounts/:id/tools/jshash/save` | 同上，另带 `overwritten=true` | 抓一遍并覆盖本地快照（学校更新 JS 后同步基准） |
@@ -202,7 +213,7 @@ HTTP 200 + 一张“无功能权限”的 HTML 错误页，不是 JSON，也不�
 
 要点：
 
-* `/tools/info` 与 `/tools/photo` **不会**在后台静默重登；未登录直接 401，前端提示先登录。
+* `/tools/info` 与 `/tools/photo` 未登录时按 `autoRelogin` 决定：开启则先跑一次可见登录再查询，关闭则直接 401，由前端提示先登录。
 * `/tools/photo` 先嗅探图片字节再判断登录态：学校未上传照片时返回的 HTML 页面不会被误判成掉线。
 * `/tools/cookies` 的 `header` 可直接作为 Cookie 请求头，等同于登录凭证；只在本机 WebUI 展示。
 * `/tools/jshash` 抓的是 `config` 的 `JSzzxkYzb` / `JSzzxkYzbZy` / `JSzzxkYzbChoosedZy` 三份

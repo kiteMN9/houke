@@ -135,7 +135,7 @@ go run . -webAddr 0.0.0.0:9000 # 换监听地址
 | `userAgent` | string | `FireFoxUA` | 必须含 `/`，否则回落默认（见 §6） |
 | `timeout` | string | `"43s"` | 单请求超时，Go duration 字符串，< 4s 会在客户端被抬到 4s |
 | `loginTimeout` | string | `"10m"` | 登录/初始化长任务的最长等待时间 |
-| `autoRelogin` | bool | `true` | 会话失效时是否自动重登一次；关闭后点具体功能遇到失效只提示手动登录（初始化也不会预登录） |
+| `autoRelogin` | bool | `true` | 未登录 / 会话失效时是否自动登录：需要登录的接口（成绩、已选、个人信息、头像、自动选课）先跑一次可见登录任务，再继续本次请求；关闭后点具体功能只提示手动登录（初始化也不会预登录）。微信扫码账号不自动登录 |
 | `autoNotify` | bool | `true` | 自动选课结束时是否给该账号发结果邮件；服务端 `smtp.notifyAutoChoose` 仍是总开关，这里只能再关闭。WebUI 自动选课页可热切换 |
 | `hedging` | bool | `false` | 是否启用请求对冲（同一请求延迟后重发） |
 | `hedgingDelay` | string | `"21s"` | 对冲间隔，仅 `hedging=true` 时生效 |

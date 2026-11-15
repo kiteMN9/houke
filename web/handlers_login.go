@@ -10,6 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"school_sdk/engine"
 	"school_sdk/protocol/config"
 )
 
@@ -197,6 +198,58 @@ func (s *Server) startBackgroundLogin(id string, rt *accountRuntime) bool {
 		_ = s.doLogin(id, ctx, rt, true)
 	}()
 	return true
+}
+
+// ensureLogin 是"需要登录"的同步接口（成绩 / 已选 / 个人信息 / 大头照…）的统一入口。
+//
+// 自动重登开启时，未登录不再直接甩 401，而是先把登录跑完再继续这次请求：
+// 登录走与手动登录完全相同的可见任务（任务面板 + SSE + 可取消），验证码 /
+// 新密码仍由界面接管。关闭自动重登、或账号是微信扫码登录时只提示手动登录：
+// 前者是用户明确的意愿，后者没有二维码弹窗就没人扫。
+//
+// 返回 false 表示已经写好错误响应。
+func (s *Server) ensureLogin(c *gin.Context, id string, rt *accountRuntime) bool {
+	if rt.engine.LoggedIn() {
+		return true
+	}
+	if !rt.engine.AutoRelogin() {
+		writeUnauthorized(c, "尚未登录，请先登录")
+		return false
+	}
+	// 微信扫码必须由用户显式发起。这里虽然来自一次显式点击，但没有登录按钮
+	// 就不会弹二维码；在业务请求里静默挂起只会等到登录超时。
+	if rt.engine.LoginKind() == engine.LoginWeChat {
+		writeUnauthorized(c, "该账号使用微信扫码登录，请先手动登录")
+		return false
+	}
+	// 同一账号只允许一个长任务。已有登录 / 初始化 / 自动选课在跑时不排队：
+	// 排队会让这条 HTTP 请求一直挂到另一个任务结束，前端只能看到转圈。
+	if s.tasks.running(id, "") {
+		writeAPIError(c, http.StatusConflict, codeBusy, "已有任务在进行中，请稍后再试")
+		return false
+	}
+
+	// 与手动登录共用同一套预算与取消语义：登录产物由 doLogin 落盘，
+	// 失败 / 取消 / 超时都已经写进任务快照。
+	ctx, cancel := context.WithTimeout(context.Background(), rt.longTaskTimeout())
+	defer cancel()
+	err := s.doLogin(id, ctx, rt, true)
+	switch {
+	case err == nil:
+		return true
+	case errors.Is(err, errLoginInProgress):
+		writeAPIError(c, http.StatusConflict, codeBusy, err.Error())
+	case errors.Is(err, context.Canceled):
+		writeAPIError(c, http.StatusRequestTimeout, codeCancelled, "登录已取消")
+	case errors.Is(err, context.DeadlineExceeded):
+		writeAPIError(c, http.StatusGatewayTimeout, codeTimeout,
+			"登录超时（"+loginTimeoutText(rt.longTaskTimeout())+"）")
+	default:
+		// 这是"登录动作"失败，不是会话刚失效：用 login_failed，
+		// 前端不会把它显示成"登录已失效"。
+		writeAPIError(c, http.StatusUnauthorized, codeLoginFailed, "登录失败")
+	}
+	return false
 }
 
 // finishLoginTask 按 ctx 的结束原因收尾登录任务。

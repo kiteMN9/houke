@@ -150,8 +150,9 @@ func (s *Server) autoChoose(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if !rt.engine.LoggedIn() {
-		writeUnauthorized(c, "尚未登录，请先登录")
+	// 需要登录：自动重登开启时先跑一次可见登录（任务面板可取消），
+	// 关闭时回 401，交给界面提示手动登录。
+	if !s.ensureLogin(c, id, rt) {
 		return
 	}
 	if !rt.engine.Inited() {
