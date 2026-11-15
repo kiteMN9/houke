@@ -8,6 +8,7 @@
 
 ### 变更
 
+- **WebUI「其他工具」新增教务脚本哈希**：用当前会话抓 `config` 里的三份自主选课脚本（`JSzzxkYzb` / `JSzzxkYzbZy` / `JSzzxkYzbChoosedZy`）并算 `sha1` / 大小，卡片放在「当前 Cookie」下面（`GET /api/accounts/:id/tools/jshash`）。正方换掉这些 JS 时本工具的选择器与参数推断就可能失效，报障时给出哈希即可定位版本。本地没有快照时自动存一份到 `html/`，已有快照只比对不覆盖；要更新基准点「存为快照」（`POST /tools/jshash/save`，临时文件 + Rename 原子替换）。静态脚本不需要登录，未登录也返回 200；学校把请求拦到登录页时按单份失败记录（`protocol.WebFetchStatic` 先嗅探内容再判登录态）。
 - **字符验证码设置并入 `server.json`**：验证码模型设置（`enabled` / `modelPath` / `threshold` / `workers`）从 `kaptcha.json` 迁到 `server.json` 的 `kaptcha` 节点，与 SMTP 配置统一由 `web/serverSettingsManager` 落盘。启动时若 `server.json` 没有 `kaptcha` 节点，会只读导入同目录的旧版 `kaptcha.json` 一次，之后旧文件不再读写；上传的模型仍在 `models/`。
 - **自动选课找到一个能选的候选就直接提交**：整表扫描（填了教师 / 类型——列表里没有教师字段，只能逐门抓详情）扫到第一个此刻还有名额的候选就先返回、立即进入提交循环，不再等整页几十个课程号的详情抓完再提交。通识选修课整页有几十个课程号、每个课程号一两个教学班，限流下全抓一遍约一分钟；现在第一次提交只要一次详情的时间。提前收手不丢低优先级的课：下一次刷新从还没补详情的课程号接着扫，补过详情的课程号在缓存里带着 `Do_jxb_id`、不会再发请求，队列只会变长。满员的候选仍留在队列里等名额释放，只有“一个有名额的都没有”时才继续扫完整页。
 

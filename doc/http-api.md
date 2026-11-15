@@ -188,13 +188,16 @@ HTTP 200 + 一张“无功能权限”的 HTML 错误页，不是 JSON，也不�
 ### 4.2 其他工具
 
 只服务本机 WebUI，路由前缀 `/accounts/:id/tools`。个人信息和大头照要求账号已登录
-（避免查询时静默触发登录）；Cookie 和会话诊断只读本地运行态，不要求登录。
+（避免查询时静默触发登录）；Cookie、脚本哈希和会话诊断只读本地运行态或公开静态资源，
+不要求登录。
 
 | 方法 | 路径 | 响应 | 备注 |
 |---|---|---|---|
 | GET | `/accounts/:id/tools/info` | `protocol.UserInfo` | 未登录 → 401；无功能权限 → 403 + `code=no_permission`；超时 → 504 |
 | GET | `/accounts/:id/tools/photo` | 原图字节 + `image/*` | 未登录 → 401；未上传/非图片 → 500；响应带 `Cache-Control: no-store` |
 | GET | `/accounts/:id/tools/cookies` | `{"cookies":[…],"header":"name=value; …","count":N,"loggedIn":bool}` | 不要求登录；只读内存 cookie jar |
+| GET | `/accounts/:id/tools/jshash` | `{"generatedAt":…,"snapshotDir":"html","saved":N,"files":[{"name","path","ok","status","size","sha1","localFound","localSize","localSha1","localMatch","saved","error","saveError"}]}` | 不要求登录；逐份抓取，失败只记在该文件上 |
+| POST | `/accounts/:id/tools/jshash/save` | 同上，另带 `overwritten=true` | 抓一遍并覆盖本地快照（学校更新 JS 后同步基准） |
 | GET | `/accounts/:id/tools/debug` | `{"generatedAt":…,"account":{…},"engine":{…},"session":{…},"settings":{…}}` | 不要求登录；只返回 hasPassword / hasTicketJWT 等标志 |
 
 要点：
@@ -202,7 +205,14 @@ HTTP 200 + 一张“无功能权限”的 HTML 错误页，不是 JSON，也不�
 * `/tools/info` 与 `/tools/photo` **不会**在后台静默重登；未登录直接 401，前端提示先登录。
 * `/tools/photo` 先嗅探图片字节再判断登录态：学校未上传照片时返回的 HTML 页面不会被误判成掉线。
 * `/tools/cookies` 的 `header` 可直接作为 Cookie 请求头，等同于登录凭证；只在本机 WebUI 展示。
-* 四个 `/tools/*` 响应都带 `Cache-Control: no-store`，个人信息与 Cookie 不会被浏览器缓存。
+* `/tools/jshash` 抓的是 `config` 的 `JSzzxkYzb` / `JSzzxkYzbZy` / `JSzzxkYzbChoosedZy` 三份
+  自主选课脚本，算 `sha1`（只用来发现"学校换了 JS"，不需要更强的摘要）：正常返回时给
+  `sha1` / `size`。静态资源不需要登录，所以**未登录也返回 200**；学校若把请求拦到登录页，
+  该项 `ok=false` + `error`，不会把登录页的哈希当脚本哈希。
+* `local*` 字段是与 `snapshotDir`（默认进程工作目录下的 `html/`）里同名快照的比对结果。
+  **本地没有副本时自动存一份**（`saved=true`），之后就能比对；已有副本**不覆盖**——
+  "已变化"本身就是要看的信息，更新基准得显式 `POST /tools/jshash/save`。
+* 六个 `/tools/*` 响应都带 `Cache-Control: no-store`，个人信息与 Cookie 不会被浏览器缓存。
 * `/tools/debug` 用显式结构体组装，**不会 marshal `Account`**：只暴露 `hasPassword` /
   `hasCasPassword`，以及 JWT 是否存在和长度，不返回密码或 JWT 明文。
 

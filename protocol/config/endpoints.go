@@ -90,3 +90,9 @@ const (
 
 // "https://newjw.hdu.edu.cn/jwglxt/rwlscx/rwlscx_cxRwlsIndex.html?doType=query&gnmkdm=N1548":       true, // 获取课程
 )
+
+const (
+	JSzzxkYzb          = "/js/comp/jwglxt/xkgl/xsxk/zzxkYzb.js"
+	JSzzxkYzbZy        = "/js/comp/jwglxt/xkgl/xsxk/zzxkYzbZy.js"
+	JSzzxkYzbChoosedZy = "/js/comp/jwglxt/xkgl/xsxk/zzxkYzbChoosedZy.js"
+)

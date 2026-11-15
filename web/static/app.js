@@ -152,9 +152,11 @@ const API = {
         API.req('GET', `/accounts/${id}/score?xnm=${encodeURIComponent(xnm)}&xqm=${encodeURIComponent(xqm)}`),
     scoreSuggest:  (id) => API.req('GET', `/accounts/${id}/score/suggest`),
 
-    // 其他工具：个人信息 / 大头照 / Cookie / 会话诊断
+    // 其他工具：个人信息 / 大头照 / Cookie / 脚本哈希 / 会话诊断
     userInfo:      (id) => API.req('GET', `/accounts/${id}/tools/info`),
     cookies:       (id) => API.req('GET', `/accounts/${id}/tools/cookies`),
+    jsHash:        (id) => API.req('GET', `/accounts/${id}/tools/jshash`),
+    jsHashSave:    (id) => API.req('POST', `/accounts/${id}/tools/jshash/save`),
     toolsDebug:    (id) => API.req('GET', `/accounts/${id}/tools/debug`),
     photo:         (id) => API.blob(`/accounts/${id}/tools/photo`),
 
@@ -202,12 +204,13 @@ const state = {
         photoUrl: null,
         photoType: '',
         cookies: null,
+        jsHash: null,
         debug: null,
     },
 };
 
 // 其他工具按钮的忙态。按请求发起时的账号校验回包，切账号不会把结果画错。
-const toolsBusy = { info: false, photo: false, cookies: false, debug: false };
+const toolsBusy = { info: false, photo: false, cookies: false, jsHash: false, debug: false };
 
 // /status 的单飞标记：多个调用点（任务收尾、兜底轮询）不会叠着拉
 let statusInflight = null;
@@ -2475,6 +2478,7 @@ function resetToolsUI() {
     state.tools.info = null;
     state.tools.photoType = '';
     state.tools.cookies = null;
+    state.tools.jsHash = null;
     state.tools.debug = null;
     Object.keys(toolsBusy).forEach(k => { toolsBusy[k] = false; });
 
@@ -2483,22 +2487,29 @@ function resetToolsUI() {
     $('#tools-photo-container').innerHTML = '<p class="muted">尚未加载。</p>';
     $('#tools-cookies-container').innerHTML =
         '<p class="muted">打开本页会自动读取当前 Cookie。</p>';
+    $('#tools-jshash-container').innerHTML =
+        '<p class="muted">点击「计算哈希」后显示三份脚本的大小与 SHA-1。</p>';
     $('#tools-debug-container').innerHTML =
         '<p class="muted">打开本页会自动生成诊断快照。</p>';
 
     $('#btn-tools-info-copy').disabled = true;
     $('#btn-tools-photo-download').disabled = true;
     $('#btn-tools-cookies-copy').disabled = true;
+    $('#btn-tools-jshash-copy').disabled = true;
+    $('#btn-tools-jshash-save').disabled = true;
     $('#btn-tools-debug-copy').disabled = true;
 
     $('#tools-info-hint').textContent = '';
     $('#tools-photo-hint').textContent = '';
     $('#tools-cookies-hint').textContent = '';
+    $('#tools-jshash-hint').textContent = '';
     $('#tools-debug-hint').textContent = '';
 
     syncToolsButton($('#btn-tools-info'), false, '获取个人信息');
     syncToolsButton($('#btn-tools-photo'), false, '获取大头照');
     syncToolsButton($('#btn-tools-cookies'), false, '刷新 Cookie');
+    syncToolsButton($('#btn-tools-jshash'), false, '计算哈希');
+    syncToolsButton($('#btn-tools-jshash-save'), false, '存为快照');
     syncToolsButton($('#btn-tools-debug'), false, '刷新诊断');
 }
 
@@ -2668,6 +2679,132 @@ async function fetchToolsCookies(auto) {
         toolsBusy.cookies = false;
         if (state.currentId === id) {
             syncToolsButton($('#btn-tools-cookies'), false, '刷新 Cookie');
+        }
+    }
+}
+
+function toolsSizeText(n) {
+    if (n == null || isNaN(n) || n < 0) return '';
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1024 / 1024).toFixed(2) + ' MB';
+}
+
+function renderToolsJSHash(data) {
+    const c = $('#tools-jshash-container');
+    if (!c) return;
+    const files = (data && Array.isArray(data.files)) ? data.files : [];
+    if (!files.length) {
+        c.innerHTML = '<p class="muted">没有可展示的脚本。</p>';
+        return;
+    }
+    const rows = files.map(f => {
+        f = f || {};
+        let localText = '';
+        let localCls = 'muted';
+        if (f.saved) {
+            localText = '已保存';
+            localCls = 'hash-match';
+        } else if (f.localFound) {
+            if (f.ok && f.localMatch) {
+                localText = '一致';
+                localCls = 'hash-match';
+            } else if (f.ok) {
+                localText = '已变化';
+                localCls = 'hash-changed';
+            } else {
+                localText = '本地有快照';
+            }
+        } else {
+            localText = '无';
+        }
+        const stateCell = f.ok
+            ? esc(String(f.status || 200))
+            : '<span class="hash-changed">失败</span>';
+        let digest = '';
+        if (f.ok) {
+            digest = '<span class="hash-value">' + esc(f.sha1 || '') + '</span>';
+        } else {
+            digest = esc(f.error || '抓取失败');
+        }
+        if (f.saveError) {
+            digest += '<div class="hash-changed">保存失败：' + esc(f.saveError) + '</div>';
+        }
+        return '<tr>' +
+            '<td>' + esc(f.name || '') +
+                '<div class="muted">' + esc(f.path || '') + '</div></td>' +
+            '<td>' + stateCell + '</td>' +
+            '<td>' + esc(f.ok ? toolsSizeText(f.size) : '') + '</td>' +
+            '<td>' + digest + '</td>' +
+            '<td class="' + localCls + '">' + esc(localText) + '</td>' +
+            '</tr>';
+    }).join('');
+    c.innerHTML = '<div style="overflow-x:auto"><table>' +
+        '<thead><tr><th>文件</th><th>状态</th><th>大小</th>' +
+        '<th>SHA-1</th><th>本地快照</th></tr></thead>' +
+        '<tbody>' + rows + '</tbody></table></div>';
+}
+
+// applyToolsJSHash 把一次 GET/POST 的结果画出来并给一句人话总结。
+function applyToolsJSHash(data) {
+    state.tools.jsHash = data || null;
+    renderToolsJSHash(state.tools.jsHash);
+    const list = (data && Array.isArray(data.files)) ? data.files : [];
+    const okCount = list.filter(f => f && f.ok).length;
+    const changed = list.filter(f => f && f.ok && f.localFound && !f.localMatch && !f.saved).length;
+    const saved = (data && typeof data.saved === 'number') ? data.saved : 0;
+    let hint = '已抓取 ' + okCount + '/' + list.length + ' 份脚本';
+    if (saved) hint += '，新存了 ' + saved + ' 份快照';
+    if (changed) hint += '，其中 ' + changed + ' 份与本地快照不一致';
+    $('#tools-jshash-hint').textContent = hint;
+    $('#btn-tools-jshash-copy').disabled = !list.length;
+    $('#btn-tools-jshash-save').disabled = okCount === 0;
+}
+
+async function fetchToolsJSHash() {
+    const id = state.currentId;
+    if (!id || toolsBusy.jsHash) return;
+    toolsBusy.jsHash = true;
+    syncToolsButton($('#btn-tools-jshash'), true, '计算哈希');
+    $('#tools-jshash-hint').textContent = '';
+    try {
+        const data = await API.jsHash(id);
+        if (state.currentId !== id) return;
+        applyToolsJSHash(data);
+    } catch (e) {
+        if (state.currentId !== id) return;
+        $('#tools-jshash-hint').textContent = (e && e.message) || '计算失败';
+        toast('计算脚本哈希失败: ' + ((e && e.message) || e), 'err');
+    } finally {
+        toolsBusy.jsHash = false;
+        if (state.currentId === id) {
+            syncToolsButton($('#btn-tools-jshash'), false, '计算哈希');
+        }
+    }
+}
+
+// saveToolsJSHash 覆盖本地快照：学校更新 JS 之后才用，平时不需要点。
+async function saveToolsJSHash() {
+    const id = state.currentId;
+    if (!id || toolsBusy.jsHash) return;
+    const dir = (state.tools.jsHash && state.tools.jsHash.snapshotDir) || 'html';
+    if (!confirm('用当前抓到的内容覆盖本地 ' + dir + '/ 下的三份脚本快照？')) return;
+    toolsBusy.jsHash = true;
+    syncToolsButton($('#btn-tools-jshash-save'), true, '存为快照');
+    $('#tools-jshash-hint').textContent = '';
+    try {
+        const data = await API.jsHashSave(id);
+        if (state.currentId !== id) return;
+        applyToolsJSHash(data);
+        toast('本地快照已更新', 'ok');
+    } catch (e) {
+        if (state.currentId !== id) return;
+        $('#tools-jshash-hint').textContent = (e && e.message) || '保存失败';
+        toast('保存本地快照失败: ' + ((e && e.message) || e), 'err');
+    } finally {
+        toolsBusy.jsHash = false;
+        if (state.currentId === id) {
+            syncToolsButton($('#btn-tools-jshash-save'), false, '存为快照');
         }
     }
 }
@@ -3731,8 +3868,12 @@ function bindEvents() {
         toast(ok ? 'Cookie 请求头已复制' : '复制失败，请手动选择文本',
             ok ? 'ok' : 'warn');
     };
-    $('#btn-tools-debug').onclick = () => { fetchToolsDebug(false); };
-    $('#btn-tools-debug-copy').onclick = () => {
+    $('#btn-tools-jshash').onclick = () => { fetchToolsJSHash(); };
+    $('#btn-tools-jshash-save').onclick = () => { saveToolsJSHash(); };
+    $('#btn-tools-jshash-copy').onclick = () => {
+        copyToolsJSON(state.tools.jsHash, '脚本哈希 JSON 已复制');
+    };
+    $('#btn-tools-debug').onclick = () => { fetchToolsDebug(false); };    $('#btn-tools-debug-copy').onclick = () => {
         copyToolsJSON(state.tools.debug, '诊断 JSON 已复制');
     };
 

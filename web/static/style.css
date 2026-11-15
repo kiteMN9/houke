@@ -1024,6 +1024,17 @@ tr.course-row.unloaded:hover { background: #fffbeb; }
     word-break: break-all;
 }
 
+/* 脚本哈希：SHA-256 有 64 个十六进制字符，必须允许换行，否则整张表会被撑破 */
+.hash-value {
+    max-width: 420px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    word-break: break-all;
+}
+
+.hash-match { color: #166534; }
+.hash-changed { color: var(--danger); }
+
 .code-block {
     max-height: 420px;
     overflow: auto;

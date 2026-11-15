@@ -295,6 +295,23 @@
                     </div>
                 </div>
                 <div class="card">
+                    <h3>教务脚本哈希</h3>
+                    <p class="muted note">
+                        拉取学校上的三份自主选课脚本并算 SHA-1（静态资源，不要求登录）。正方换掉这些 JS 时
+                        本工具的选择器可能失效，报障时把哈希发给作者即可定位版本。本地没有副本时会自动存到
+                        html/，之后就能比对；要更新基准点「存为快照」。
+                    </p>
+                    <div class="row mb-12">
+                        <button type="button" class="btn primary" id="btn-tools-jshash">计算哈希</button>
+                        <button type="button" class="btn" id="btn-tools-jshash-save" disabled>存为快照</button>
+                        <button type="button" class="btn" id="btn-tools-jshash-copy" disabled>复制 JSON</button>
+                        <span id="tools-jshash-hint" class="muted"></span>
+                    </div>
+                    <div id="tools-jshash-container">
+                        <p class="muted">点击「计算哈希」后显示三份脚本的大小与 SHA-1。</p>
+                    </div>
+                </div>
+                <div class="card">
                     <h3>会话诊断</h3>
                     <p class="muted note">
                         账号、登录态、页签、课程缓存和会话产物的只读快照，不含密码与 JWT 明文。排查问题时可直接复制给作者。

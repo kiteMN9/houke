@@ -439,3 +439,10 @@ func (e *Engine) UserPhoto(ctx context.Context) ([]byte, string, error) {
 func (e *Engine) Cookies() ([]protocol.CookieSnapshot, string) {
 	return e.client.Cookies()
 }
+
+// FetchStatic 抓取教务前端的静态脚本（诊断用：算哈希判断学校是否更新了 JS）。
+// 不走 retryOnUnauthorized：诊断要看到当下会话真实返回了什么，掉线就如实报错，
+// 顺手重登会让"看起来正常但哈希对不上"这种情况更难排查。
+func (e *Engine) FetchStatic(ctx context.Context, path string) (protocol.StaticAsset, error) {
+	return e.client.WebFetchStatic(ctx, path)
+}

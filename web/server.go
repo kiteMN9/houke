@@ -219,11 +219,13 @@ func (s *Server) registerRoutes() {
 		api.GET("/accounts/:id/score/suggest", s.scoreSuggest) // 建议学年学期
 		api.GET("/accounts/:id/score", s.getScore)             // 成绩查询
 
-		// 其他工具（个人资料 / 大头照 / Cookie / 会话诊断）
-		api.GET("/accounts/:id/tools/info", s.toolsInfo)       // 个人信息（需登录）
-		api.GET("/accounts/:id/tools/photo", s.toolsPhoto)     // 学生大头照（需登录）
-		api.GET("/accounts/:id/tools/cookies", s.toolsCookies) // 当前 Cookie（不要求登录）
-		api.GET("/accounts/:id/tools/debug", s.toolsDebug)     // 会话诊断（不要求登录，不含密码）
+		// 其他工具（个人资料 / 大头照 / Cookie / 脚本哈希 / 会话诊断）
+		api.GET("/accounts/:id/tools/info", s.toolsInfo)               // 个人信息（需登录）
+		api.GET("/accounts/:id/tools/photo", s.toolsPhoto)             // 学生大头照（需登录）
+		api.GET("/accounts/:id/tools/cookies", s.toolsCookies)         // 当前 Cookie（不要求登录）
+		api.GET("/accounts/:id/tools/jshash", s.toolsJSHash)           // 自主选课脚本哈希（不要求登录）
+		api.POST("/accounts/:id/tools/jshash/save", s.toolsJSHashSave) // 覆盖本地脚本快照
+		api.GET("/accounts/:id/tools/debug", s.toolsDebug)             // 会话诊断（不要求登录，不含密码）
 
 		api.GET("/accounts/:id/ping", s.ping) // 探测会话（不重新登录）
 
