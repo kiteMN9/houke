@@ -257,18 +257,93 @@ const chooseFullJSON = `{"flag":"-1","msg":"0,d1,39,39"}`
 // autoServer 在 detailServer 的基础上再伪造选课接口，用来跑 RunAuto 的整条链路。
 func autoServer(t *testing.T, detail string) *httptest.Server {
 	t.Helper()
+	return autoServerWithChoose(t, detail, chooseFullJSON)
+}
+
+// autoServerWithChoose 同 autoServer，但选课接口返回指定响应体。
+func autoServerWithChoose(t *testing.T, detail, chooseBody string) *httptest.Server {
+	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.Contains(r.URL.Path, "cxJxbWithKchZzxkYzb"):
 			_, _ = io.WriteString(w, detail)
+		case strings.Contains(r.URL.Path, "zzxkybk_xkBcZyZzxkYzb"):
+			_, _ = io.WriteString(w, chooseBody)
 		case strings.Contains(r.URL.Path, "zzxkyzbjk_xkBcZyZzxkYzb"):
-			_, _ = io.WriteString(w, chooseFullJSON)
+			_, _ = io.WriteString(w, chooseBody)
 		default:
 			_, _ = io.WriteString(w, indexOKHTML)
 		}
 	}))
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// 准备一个"一门课、详情已经补好"的引擎，用来自定义选课接口的返回。
+func rejectTestEngine(t *testing.T, chooseBody string) (*Engine, []protocol.CustomCourseDic) {
+	t.Helper()
+	srv := autoServerWithChoose(t, detailJSON, chooseBody)
+	e := newCandidateEngine(t, srv, []protocol.CourseListDic{courseListEntry("k1", "j1", "定向越野")})
+	e.CacheCourseDetail([]protocol.CourseDetail{{JxbId: "j1", DoJxbId: "d1", Jxbrl: "50", Yxzrs: "10"}})
+	wants := protocol.WishList{WantClassList: []string{"定向越野"}}
+	candidates, err := e.CollectCandidates(context.Background(), wants)
+	if err != nil {
+		t.Fatalf("CollectCandidates: %v", err)
+	}
+	return e, candidates
+}
+
+// flag=0 且不是"频率过高"是确定性拒绝：RunAuto 必须立即停，不能把同一门课
+// 按轮次再打一遍，否则会白跑几小时。
+func TestRunAutoStopsOnNonRetryableReject(t *testing.T) {
+	const chooseRejectedJSON = `{"flag":"0","msg":"超过学分上限！"}`
+	e, candidates := rejectTestEngine(t, chooseRejectedJSON)
+	wants := protocol.WishList{WantClassList: []string{"定向越野"}}
+
+	var picks, fails int
+	var failMsg string
+	_, err := e.RunAuto(context.Background(), Plan{Wants: wants, MaxRounds: 5, Interval: time.Millisecond}, staticSource(candidates), func(ev Event) {
+		switch ev.Kind {
+		case EventPick:
+			picks++
+		case EventFailed:
+			fails++
+			failMsg = ev.Message
+		}
+	})
+	if !errors.Is(err, ErrChooseRejected) {
+		t.Fatalf("err = %v，期望 ErrChooseRejected", err)
+	}
+	if picks != 1 || fails != 1 {
+		t.Fatalf("pick/failed = %d/%d，期望 1/1（拒绝后不再重试）", picks, fails)
+	}
+	var rej *ChooseRejectError
+	if !errors.As(err, &rej) || rej.Result.Msg != "超过学分上限！" {
+		t.Fatalf("err = %v，期望带上教务文案", err)
+	}
+	if !strings.Contains(failMsg, "超过学分上限") {
+		t.Fatalf("失败事件 = %q，期望带上教务文案", failMsg)
+	}
+}
+
+// 频率限制是唯一值得重试的 flag=0：同一门课要按轮次继续提交。
+func TestRunAutoRetriesRateLimitedChoose(t *testing.T) {
+	const chooseBusyJSON = `{"flag":"0","msg":"选课频率过高，请稍后重试！"}`
+	e, candidates := rejectTestEngine(t, chooseBusyJSON)
+	wants := protocol.WishList{WantClassList: []string{"定向越野"}}
+
+	var picks int
+	_, err := e.RunAuto(context.Background(), Plan{Wants: wants, MaxRounds: 2, Interval: time.Millisecond}, staticSource(candidates), func(ev Event) {
+		if ev.Kind == EventPick {
+			picks++
+		}
+	})
+	if !errors.Is(err, ErrNotChosen) {
+		t.Fatalf("err = %v，期望 ErrNotChosen", err)
+	}
+	if picks != 2 {
+		t.Fatalf("pick = %d，期望 2（频率限制继续重试）", picks)
+	}
 }
 
 // 命中但满员的候选必须真的进队列重试：旧实现把它当"没有候选"，一轮都不提交就

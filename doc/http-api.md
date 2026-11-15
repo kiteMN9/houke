@@ -138,10 +138,11 @@
 | GET | `/accounts/:id/selected` | `?xnm=2026&xqm=3` | `[]protocol.ChosenDic` | 参数必填；未登录 → 401（避免内部阻塞登录）；无功能权限 → 403 + `code=no_permission` |
 | GET | `/accounts/:id/score` | `?xnm=2026&xqm=3` | `[]protocol.Score` | 参数必填；未登录 → 401；无功能权限 → 403 + `code=no_permission`；超时 → 504 |
 
-**选课结果的 `flag`**（`/choose`、自动选课共用，语义见 `html/zzxkYzbChoosedZy.js`）：
-`1` 成功；`3` 成功但免费学分已达上限（同样算落库）；`6` 该教学班已选中；
-`-1` 容量超出——`msg` 是教务的人数机器串，接口返回前已翻成「该教学班已无余量，不可选！」；
-`2` 上课时间冲突；其它（多为 `0`）是业务拒绝，`msg` 是原因。
+**选课结果的 `flag`**（`/choose`、自动选课共用，语义见 `html/zzxkYzbChoosedZy.js`，
+错误样本见 `html/_xkBcZyZzxkYzb.html`）：`1` 成功；`3` 成功但免费学分已达上限（同样算落库）；
+`6` 该教学班已选中；`-1` 容量超出——`msg` 是教务的人数机器串，接口返回前已翻成
+「该教学班已无余量，不可选！」；`0` 是业务拒绝（时间冲突、重复选课、窗口关闭、门次上限、
+非法操作、加密串过期），`msg` 是原因。
 
 **无功能权限**：学校对没有开通的模块（公共账号查成绩、查个人信息等）返回的是
 HTTP 200 + 一张“无功能权限”的 HTML 错误页，不是 JSON，也不是登录页。协议层把它
@@ -162,7 +163,7 @@ HTTP 200 + 一张“无功能权限”的 HTML 错误页，不是 JSON，也不�
   选上/超时/取消。最终结果从 `GET /accounts/:id/status` 的 `task` 或
   `GET /accounts/:id/events` 的 SSE 快照读取。
 * **结果在任务快照里**：`task.result` 是
-  `{status,flag,msg,course?,error?}`；`status` 可取 `ok` / `not_chosen` /
+  `{status,flag,msg,course?,error?}`；`status` 可取 `ok` / `not_chosen` / `rejected` /
   `cancelled` / `timeout` / `session_changed` / `session_reset` / `no_wanted` /
   `no_candidates` / `not_initialized` / `unauthorized` / `failed`。
   `task.status` 只表示任务生命周期（`running` / `done` / `failed` / `timeout` /
@@ -170,6 +171,11 @@ HTTP 200 + 一张“无功能权限”的 HTML 错误页，不是 JSON，也不�
 * **前置条件**：已登录（401）、已初始化（400）；请求里的三项清单先按保存路径的同一套规则清洗（trim、丢空行、去重），清洗后为空时回落到账号里已保存的清单，仍为空则 400。
   空白条目不会被当成"命中所有课程"（`protocol.WishList.Match` 会跳过它们）。
 * **预算**：`endAt` > `durationSeconds` > 默认 24h；非法参数在建任务**之前**就 400。
+* **确定性拒绝立即停止**：提交返回 `flag=0` 且 `msg` 不是"选课频率过高"（中英文两种文案）时，
+  说明教务是确定性拒绝（上课时间冲突、重复选课、不在选课时间、门次上限、非法操作……），
+  重试不会改变结果：任务立即结束，`result.status=rejected`、`result.error` 是教务文案，
+  不再换轮次白打请求。`flag=-1`（容量）、`6`（已选中）仍按轮次重试；加密串过期在 engine
+  里已经续期并重试过一次，仍失败同样停止。
 * **节奏**：`intervalSeconds` 默认 1.5s（两轮提交之间）；`refreshSeconds` 默认 30s（重拉候选，让新放出的名额进入队列）。
   整表扫描（填了教师 / 类型）扫到第一个此刻还有名额的候选就先返回、立即进入提交循环，
   不等整页几十个课程号的详情抓完；剩下的课程号在下次刷新时接着扫，已补过详情的不再重复请求。

@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"strings"
 	"time"
 )
 
@@ -320,9 +321,16 @@ type ChooseCourseResult struct {
 
 // 选课接口（zzxkyzbjk_xkBcZyZzxkYzb）的 flag 取值。
 //
-// 语义照正方页面脚本 html/zzxkYzbChoosedZy.js 来：它对返回值分了 1/3/6/-1/2
-// 等分支，不是"成功 1 / 失败 0"两种。只认 1 会把"免费学分已达上限"（3，课已经
-// 落库）当成失败一直重试，也会把 -1 的机器串直接弹给用户。
+// 语义以实测错误样本 html/_xkBcZyZzxkYzb.html 为准（与正方页面脚本
+// html/zzxkYzbChoosedZy.js 的分支一致；脚本里的 2 分支本校园没有实测到）：
+//
+//	"1"  选课成功
+//	"3"  选课成功，免费学分已达上限
+//	"6"  该教学班已选中（刷新页面可见）
+//	"-1" 容量超出：msg 是 "分志愿,教学班id,已选人数,本轮已选人数" 的机器串
+//	      （样本里第 4 段为空）
+//	"0"  业务拒绝，msg 是原因：上课时间冲突、一门课只能选一个教学班、
+//	     不在选课时间、门次限制、非法操作、加密串过期都走 0
 const (
 	// ChooseFlagOK 选课成功。
 	ChooseFlagOK = "1"
@@ -330,10 +338,10 @@ const (
 	ChooseFlagOKFreeCreditLimit = "3"
 	// ChooseFlagAlreadyChosen 该教学班已选中（刷新页面可见）。
 	ChooseFlagAlreadyChosen = "6"
+	// ChooseFlagRejected 教务的业务拒绝，msg 是原因。
+	ChooseFlagRejected = "0"
 	// ChooseFlagCapacityFull 容量超出。
 	ChooseFlagCapacityFull = "-1"
-	// ChooseFlagTimeConflict 上课时间冲突（msg 给"查看冲突"弹窗用）。
-	ChooseFlagTimeConflict = "2"
 )
 
 // OK 报告这次提交是否已经选上。
@@ -355,6 +363,35 @@ func (r ChooseCourseResult) DisplayMsg() string {
 		return "该教学班已选中，刷新页面可见！"
 	}
 	return r.Msg
+}
+
+// chooseRetryMessages 是 flag=0 里"稍后重试有意义"的文案：只有选课频率限制，
+// 等服务端冷却一下就能过。中英文两种文案教务都会回，用子串匹配兼容前后缀。
+var chooseRetryMessages = []string{
+	"选课频率过高",
+	"frequency of course selection is too high",
+}
+
+// Retryable 报告这次失败是否值得再试。
+//
+// flag=0 是教务的业务拒绝，只有"选课频率过高"值得等一会儿再提交；其它拒绝
+// 都是确定性的，再打一遍也不会变（见 html/_xkBcZyZzxkYzb.html 的错误样本）：
+// 上课时间冲突、一门课只能选一个教学班、不在选课时间、门次限制、非法操作。
+// 加密串过期也是 flag=0，但 engine.Choose 已经续期并重试过一次，到这里说明
+// 续期没救回来，同样不再重试。
+//
+// 其它 flag（-1 容量、6 已选中、-5 请求没拿到结果）仍按可重试处理：名额会变。
+func (r ChooseCourseResult) Retryable() bool {
+	if r.Flag != ChooseFlagRejected {
+		return true
+	}
+	msg := strings.ToLower(r.Msg)
+	for _, hint := range chooseRetryMessages {
+		if strings.Contains(msg, strings.ToLower(hint)) {
+			return true
+		}
+	}
+	return false
 }
 
 type CourseListDic struct {

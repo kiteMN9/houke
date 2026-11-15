@@ -297,6 +297,17 @@ func autoOutcome(ctx context.Context, err error, timeout time.Duration) autoTask
 			detail:     err.Error(),
 			result:     &taskResult{Status: "not_chosen", Error: err.Error()},
 		}
+	case errors.Is(err, engine.ErrChooseRejected):
+		reason := err.Error()
+		if rej, ok := errors.AsType[*engine.ChooseRejectError](err); ok {
+			reason = rej.Result.DisplayMsg()
+		}
+		return autoTaskOutcome{
+			taskStatus: taskStatusFailed,
+			text:       "自动选课已停止：" + reason,
+			detail:     err.Error(),
+			result:     &taskResult{Status: "rejected", Error: reason},
+		}
 	case errors.Is(err, engine.ErrNoWantedCourse):
 		return autoTaskOutcome{
 			taskStatus: taskStatusFailed,

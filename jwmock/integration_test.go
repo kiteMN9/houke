@@ -269,30 +269,36 @@ func TestRejections(t *testing.T) {
 		opts     jwmock.Options
 		scenario jwmock.Scenario
 		wantMsg  string
+		wantErr  error
 	}{
 		{
+			// flag=0 的确定性拒绝：不再按轮次重试，直接停。
 			name:     "window_closed",
 			scenario: jwmock.Scenario{WindowClosed: true},
-			wantMsg:  "当前不在选课时间内",
+			wantMsg:  "不在选课时间内",
+			wantErr:  engine.ErrChooseRejected,
 		},
 		{
 			name:     "global_reject",
 			scenario: jwmock.Scenario{RejectAll: "选课通道已关闭"},
 			wantMsg:  "选课通道已关闭",
+			wantErr:  engine.ErrChooseRejected,
 		},
 		{
 			name:     "credit_limit",
 			scenario: jwmock.Scenario{MaxCredits: 3},
 			wantMsg:  "超过学分上限",
+			wantErr:  engine.ErrChooseRejected,
 		},
 		{
-			// 满员时正方返回 flag=-1，客户端把它翻成固定提示再展示。
+			// 满员是 flag=-1，名额可能释放，仍按轮次重试到用尽。
 			name: "capacity_full",
 			opts: jwmock.Options{Courses: []jwmock.Seed{{
 				JxbID: "JXB-SOLO", KchID: "KCH-SOLO", Kcmc: "独占课程",
 				Xf: "2", Sksj: "周四第1-2节", Capacity: 1, Enrolled: 1,
 			}}},
 			wantMsg: "该教学班已无余量",
+			wantErr: engine.ErrNotChosen,
 		},
 	}
 
@@ -310,8 +316,8 @@ func TestRejections(t *testing.T) {
 				wants = want("独占课程")
 			}
 			res, err, events := runAuto(t, eng, engine.Plan{Wants: wants, Once: true})
-			if !errors.Is(err, engine.ErrNotChosen) {
-				t.Fatalf("err = %v, want ErrNotChosen", err)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
 			}
 			if res.Flag == "1" {
 				t.Fatalf("不应选上, msg = %q", res.Msg)
@@ -326,9 +332,9 @@ func TestRejections(t *testing.T) {
 	}
 }
 
-// 选课接口的 flag 语义照正方脚本 html/zzxkYzbChoosedZy.js 来，不是"成功 1 /
-// 失败 0"两种：满员 -1（msg 是 "分志愿,教学班id,已选人数,本轮已选人数" 的机器
-// 串）、重复选同一教学班 6、上课时间冲突 2、成功 1（不带额外文案）。
+// 选课接口的 flag 语义以 html/_xkBcZyZzxkYzb.html 的错误样本为准，不是
+// "成功 1 / 失败 0"两种：满员 -1（msg 是 "分志愿,教学班id,已选人数,本轮已选
+// 人数" 的机器串）、重复选同一教学班 6、上课时间冲突走 0、成功 1（不带文案）。
 //
 // 这里直接调 Choose 而不是 RunAuto：轮次用尽时 RunAuto 返回的是零值结果，
 // 拿不到失败那次的 flag。
@@ -363,8 +369,8 @@ func TestChooseResultFlags(t *testing.T) {
 	if res.Flag != "-1" {
 		t.Fatalf("满员 flag = %q，期望 -1", res.Flag)
 	}
-	if parts := strings.Split(res.Msg, ","); len(parts) != 4 || parts[0] != "0" || parts[1] != "JXB-FULL" {
-		t.Fatalf("满员 msg = %q，期望 分志愿,教学班id,已选人数,本轮已选人数", res.Msg)
+	if parts := strings.Split(res.Msg, ","); len(parts) != 4 || parts[0] != "0" || parts[1] != "JXB-FULL" || parts[3] != "" {
+		t.Fatalf("满员 msg = %q，期望 0,教学班id,已选人数,（第 4 段为空）", res.Msg)
 	}
 
 	// 成功：1，不带额外文案。
@@ -376,12 +382,12 @@ func TestChooseResultFlags(t *testing.T) {
 		t.Fatalf("重复选课 flag = %q，期望 6", res.Flag)
 	}
 
-	// 时间冲突：选上 A 后再选同时间的 B，返回 2。
+	// 时间冲突：选上 A 后再选同时间的 B，实测走 0 + 文案。
 	if res := choose("冲突课程A"); res.Flag != "1" {
 		t.Fatalf("选冲突课程A flag = %q，期望 1", res.Flag)
 	}
-	if res := choose("冲突课程B"); res.Flag != "2" {
-		t.Fatalf("时间冲突 flag = %q，期望 2", res.Flag)
+	if res := choose("冲突课程B"); res.Flag != "0" || !strings.Contains(res.Msg, "冲突") {
+		t.Fatalf("时间冲突 flag = %q msg = %q，期望 0 + 文案", res.Flag, res.Msg)
 	}
 }
 
@@ -424,13 +430,14 @@ func TestTimeConflict(t *testing.T) {
 	}
 
 	res, err, events := runAuto(t, eng, engine.Plan{Wants: want("课程B"), Once: true})
-	if !errors.Is(err, engine.ErrNotChosen) {
-		t.Fatalf("时间冲突 err = %v, want ErrNotChosen", err)
+	// 时间冲突是 flag=0 的确定性拒绝：直接停止，不再按轮次重试。
+	if !errors.Is(err, engine.ErrChooseRejected) {
+		t.Fatalf("时间冲突 err = %v, want ErrChooseRejected", err)
 	}
 	if res.Flag == "1" {
 		t.Fatal("时间冲突时不应选上")
 	}
-	if !findEvent(events, engine.EventFailed, "时间冲突") {
+	if !findEvent(events, engine.EventFailed, "有冲突") {
 		t.Fatalf("缺少时间冲突失败事件: %+v", events)
 	}
 }
@@ -448,38 +455,89 @@ func TestMaxCourses(t *testing.T) {
 	}
 
 	res, err, events := runAuto(t, eng, engine.Plan{Wants: want("西方美术鉴赏"), Once: true})
-	if !errors.Is(err, engine.ErrNotChosen) {
-		t.Fatalf("门数上限 err = %v, want ErrNotChosen", err)
+	if !errors.Is(err, engine.ErrChooseRejected) {
+		t.Fatalf("门数上限 err = %v, want ErrChooseRejected", err)
 	}
 	if res.Flag == "1" {
 		t.Fatal("超过门数上限时不应选上")
 	}
-	if !findEvent(events, engine.EventFailed, "门数已达上限") {
+	if !findEvent(events, engine.EventFailed, "最高选课门次限制") {
 		t.Fatalf("缺少门数上限失败事件: %+v", events)
 	}
 }
 
+// 只有"选课频率过高"这种 flag=0 值得重试：中英文两种文案都认。
 func TestTransientRejectRecovers(t *testing.T) {
+	cases := []struct {
+		name    string
+		msg     string
+		wantSub string
+	}{
+		{"中文", "选课频率过高，请稍后重试！", "频率过高"},
+		{"英文", "The frequency of course selection is too high, please try again in 20 seconds!", "frequency of course selection is too high"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, base := startMock(t, jwmock.Options{})
+			eng := newEngine(t, base, jwmock.DefaultUsername, jwmock.DefaultPassword)
+			mustLogin(t, eng)
+			if err := srv.SetScenario(jwmock.Scenario{
+				RejectNext:    map[string]int{"JXB-MATH-01": 1},
+				RejectNextMsg: tc.msg,
+			}); err != nil {
+				t.Fatalf("SetScenario: %v", err)
+			}
+
+			res, err, events := runAuto(t, eng, engine.Plan{
+				Wants:     want("高等数学"),
+				Interval:  20 * time.Millisecond,
+				MaxRounds: 4,
+			})
+			if err != nil {
+				t.Fatalf("RunAuto: %v", err)
+			}
+			if res.Flag != "1" {
+				t.Fatalf("频率限制后应重试成功: flag=%q msg=%q", res.Flag, res.Msg)
+			}
+			if !findEvent(events, engine.EventFailed, tc.wantSub) {
+				t.Fatalf("缺少频率限制失败事件: %+v", events)
+			}
+		})
+	}
+}
+
+// 确定性拒绝（flag=0 且不是频率限制）要立即停止：同一门课不会被按轮次反复提交。
+func TestNonRetryableRejectStops(t *testing.T) {
 	srv, base := startMock(t, jwmock.Options{})
 	eng := newEngine(t, base, jwmock.DefaultUsername, jwmock.DefaultPassword)
 	mustLogin(t, eng)
-	if err := srv.SetScenario(jwmock.Scenario{RejectNext: map[string]int{"JXB-MATH-01": 1}}); err != nil {
+	if err := srv.SetScenario(jwmock.Scenario{MaxCredits: 3}); err != nil {
 		t.Fatalf("SetScenario: %v", err)
 	}
 
-	res, err, events := runAuto(t, eng, engine.Plan{
+	_, err, events := runAuto(t, eng, engine.Plan{
 		Wants:     want("高等数学"),
-		Interval:  20 * time.Millisecond,
-		MaxRounds: 4,
+		Interval:  10 * time.Millisecond,
+		MaxRounds: 5,
 	})
-	if err != nil {
-		t.Fatalf("RunAuto: %v", err)
+	if !errors.Is(err, engine.ErrChooseRejected) {
+		t.Fatalf("err = %v, want ErrChooseRejected", err)
 	}
-	if res.Flag != "1" {
-		t.Fatalf("瞬时失败后应重试成功: flag=%q msg=%q", res.Flag, res.Msg)
+	picks := 0
+	for _, ev := range events {
+		if ev.Kind == engine.EventPick {
+			picks++
+		}
 	}
-	if !findEvent(events, engine.EventFailed, "系统繁忙") {
-		t.Fatalf("缺少瞬时失败事件: %+v", events)
+	if picks != 1 {
+		t.Fatalf("pick = %d，期望 1（拒绝后不再重试）", picks)
+	}
+	if !findEvent(events, engine.EventFailed, "超过学分上限") {
+		t.Fatalf("缺少学分上限失败事件: %+v", events)
+	}
+	var rej *engine.ChooseRejectError
+	if !errors.As(err, &rej) || !strings.Contains(rej.Result.Msg, "超过学分上限") {
+		t.Fatalf("err = %v，期望带上教务文案", err)
 	}
 }
 

@@ -61,7 +61,24 @@ var (
 	ErrNoWantedCourse = errors.New("engine: 愿望清单没有命中可选的课程")
 	// ErrNotChosen 表示轮次用尽仍未选上。
 	ErrNotChosen = errors.New("engine: 重试用尽仍未选上")
+	// ErrChooseRejected 表示教务明确拒绝了这次选课，而且再试也不会变：
+	// flag=0 且文案不是"选课频率过高"（见 protocol.ChooseCourseResult.Retryable）。
+	// 运行会立即停止，不再按轮次重试——学分 / 门数上限、不在选课时间这类拒绝
+	// 不会自己好，继续跑只是白耗请求。
+	ErrChooseRejected = errors.New("engine: 选课被拒绝且重试没有意义")
 )
+
+// ChooseRejectError 带走教务返回的原始结果，供任务结果和邮件展示原因。
+type ChooseRejectError struct {
+	Result protocol.ChooseCourseResult
+}
+
+func (e *ChooseRejectError) Error() string {
+	return ErrChooseRejected.Error() + ": " + e.Result.DisplayMsg()
+}
+
+// Unwrap 让 errors.Is(err, ErrChooseRejected) 成立。
+func (e *ChooseRejectError) Unwrap() error { return ErrChooseRejected }
 
 // Event 是自动选课过程中的进度事件。
 //
@@ -147,6 +164,10 @@ func (p Plan) normalized() (Plan, error) {
 //
 // 刷新失败不是致命错误：教务抖一下、这次列表查询被"加密串"挡回来都很常见，
 // 沿用上一次的队列继续提交，只在进度里留一条 EventRefreshFailed。
+//
+// 提交被教务业务拒绝时，只有"选课频率过高"值得再试；其它 flag=0 的原因
+// （上课时间冲突、重复选课、学分 / 门数上限、不在选课时间……）不会因为重试而改变，
+// RunAuto 立即停止并返回 ErrChooseRejected，原因在 ChooseRejectError 里。
 func (e *Engine) RunAuto(ctx context.Context, plan Plan, source Source, sink Sink) (protocol.ChooseCourseResult, error) {
 	var zero protocol.ChooseCourseResult
 
@@ -285,6 +306,12 @@ func (e *Engine) RunAuto(ctx context.Context, plan Plan, source Source, sink Sin
 				}
 				emit(sink, Event{Round: round, Kind: EventFailed, Course: course, Message: err.Error()})
 				continue
+			}
+			// 教务的确定性拒绝（flag=0 且不是"选课频率过高"）：换轮次、换页面
+			// 都不会变，立即停止，别把几小时耗在必然失败的请求上。
+			if !result.Retryable() {
+				emit(sink, Event{Round: round, Kind: EventFailed, Course: course, Message: result.DisplayMsg()})
+				return zero, &ChooseRejectError{Result: result}
 			}
 			// flag=-1 的 msg 是人数机器串，展示前翻成人话，见 DisplayMsg。
 			emit(sink, Event{Round: round, Kind: EventFailed, Course: course, Message: result.DisplayMsg()})

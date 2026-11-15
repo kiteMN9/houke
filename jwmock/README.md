@@ -166,7 +166,7 @@ go run ./jwmock/cmd/mockjw -config ./jwmock/config.json
 curl -X POST http://127.0.0.1:8099/__mock/scenario \
   -H 'Content-Type: application/json' \
   -d '{
-    "rejectAll": "当前不在选课时间内",
+    "rejectAll": "不在选课时间内！",
     "rejectByJxb": {"DO-JXB-MATH-01": "该教学班与已选课程冲突"},
     "maxCredits": 8,
     "maxCourses": 3,
@@ -184,47 +184,49 @@ curl -X POST http://127.0.0.1:8099/__mock/scenario \
 
 | 字段 | 作用 |
 | --- | --- |
-| `windowClosed` | 为 true 时所有提交返回「当前不在选课时间内」 |
+| `windowClosed` | 为 true 时所有提交返回「不在选课时间内！」 |
 | `maxCredits` | >0 时，已选学分 + 本次学分超过它会被拒 |
 | `maxCourses` | >0 时，已选门数达到它后再提交会被拒 |
 | `rejectAll` | 所有选课请求都返回这条 `flag=0` 文案 |
 | `rejectByJxb` | 按教学班覆盖拒绝文案，key 可以是 `JXB-x` 或 `DO-JXB-x` |
-| `rejectNext` | 某个教学班接下来 N 次提交返回瞬时失败，之后恢复 |
-| `rejectNextMsg` | 瞬时失败的文案，默认「系统繁忙，请稍后再试」 |
+| `rejectNext` | 某个教学班接下来 N 次提交返回 flag=0 瞬时失败，之后恢复 |
+| `rejectNextMsg` | 瞬时失败的文案，默认「选课频率过高，请稍后重试！」——客户端只对频率限制这类 flag=0 重试，其它 flag=0 会让自动选课立即停止 |
 | `paramExpire` | 触发几次「参数过期」：列表返回不带 `tmpList` 的 `msg/flag`，详情返回 `"0"` |
 | `faults` | HTTP 层故障，按请求路径子串匹配，可回状态码或延迟 |
 | `enrolledPhases` | 场景生效后第 N 毫秒把教学班的已选人数改成指定值 |
 
 ## 选课判定顺序
 
-`ChooseCourse` 模拟 `zzxkyzbjk_xkBcZyZzxkYzb` 的判定顺序与返回值。`flag` 语义照
-正方页面脚本 `html/zzxkYzbChoosedZy.js` 来，不是"成功 1 / 失败 0"两种：
+`ChooseCourse` 模拟 `zzxkyzbjk_xkBcZyZzxkYzb` 的判定顺序与返回值。flag 与文案以
+实测错误样本 `html/_xkBcZyZzxkYzb.html` 为准（与页面脚本 `html/zzxkYzbChoosedZy.js`
+的分支一致；脚本里的 2 分支本校园没有实测到）：
 
 | flag | 含义 | msg |
 | --- | --- | --- |
 | `1` | 选课成功 | 空（真实教务也只回 `{"flag":"1"}`） |
 | `3` | 选课成功、免费学分已达上限 | 文案（mock 不模拟） |
 | `6` | 该教学班已选中 | 「该教学班已选中，刷新页面可见！」 |
-| `-1` | 容量超出 | `分志愿,教学班id,已选人数,本轮已选人数` 的机器串，页面拿它更新人数 |
-| `2` | 上课时间冲突 | 「该教学班与已选课程时间冲突！」 |
-| `0` | 其它业务拒绝 | 原因 |
+| `-1` | 容量超出 | `分志愿,教学班id,已选人数,`（第 4 段样本里为空） |
+| `0` | 业务拒绝 | 原因：冲突 / 重复 / 窗口 / 门次上限 / 非法操作 / 加密串过期 |
 
 顺序固定，便于写断言：
 
-1. 教学班不存在 → `0`「教学班不存在或已失效」
-2. `windowClosed` → `0`「当前不在选课时间内」
+1. 教学班不存在或参数非法 → `0`「警告:你正在非法操作！」
+2. `windowClosed` → `0`「不在选课时间内！」
 3. `rejectByJxb` → `0` + 配置的文案
 4. `rejectAll` → `0` + 配置的文案
 5. 同教学班已选 → `6`「该教学班已选中，刷新页面可见！」
-6. 同课程（`kch_id`）其他班已选 → `0`「该课程已选，不能重复选择！」
-7. 已选人数 ≥ 容量 → `-1` + `0,教学班id,已选人数,本轮已选人数`
-8. 与已选课程 `sksj` 相同 → `2`「该教学班与已选课程时间冲突！」
+6. 同课程（`kch_id`）其他班已选 → `0`「一门课程只能选一个教学班，不可再选！」
+7. 已选人数 ≥ 容量 → `-1` + `0,教学班id,已选人数,`
+8. 与已选课程 `sksj` 相同 → `0`「所选教学班的上课时间与其他教学班有冲突！」
 9. 超过 `maxCredits` → `0`「超过学分上限！」
-10. 达到 `maxCourses` → `0`「选课门数已达上限！」
-11. `rejectNext` 仍有次数 → `0`「系统繁忙，请稍后再试」
+10. 达到 `maxCourses` → `0`「超过通识选修课本学期本专业最高选课门次限制，不可选！」
+11. `rejectNext` 仍有次数 → `0` + 配置的文案（默认「选课频率过高，请稍后重试！」）
 12. 否则 `1`（不带文案），并把教学班写进该账号的已选集合
 
-满员 `-1` 的第 3、4 个字段都用同一个已选人数：mock 不区分总人数和本轮人数。
+客户端只对 `flag=0` 里的「选课频率过高」继续重试，其它 `flag=0`（时间冲突、重复选课、
+窗口关闭、门次上限、非法操作……）会让自动选课立即停止（见
+`protocol.ChooseCourseResult.Retryable`）。
 
 已选人数 = 场景阶段基线 + 所有账号成功选课数；列表每轮刷新都会重新计算，详情里的
 容量固定为教学班容量（客户端只在第一次拿到 `Do_jxb_id` 前抓详情）。
@@ -234,7 +236,8 @@ curl -X POST http://127.0.0.1:8099/__mock/scenario \
 - **登录**：账号密码错误返回 `#tips`「用户名或密码不正确」，engine 的 `Login` 返回 false；
   成功返回 `302` 到 `/xtgl/index_initMenu.html` 并下发 `JSESSIONID`。
 - **选课业务拒绝**：`rejectAll` / `rejectByJxb` / `windowClosed` / `maxCredits` /
-  `maxCourses` / 满员 / 重复 / 时间冲突都会进入自动选课的 `failed` 事件。
+  `maxCourses` / 满员 / 重复 / 时间冲突都会进入自动选课的 `failed` 事件；其中
+  `flag=0` 的非频率限制会直接结束自动选课（`result.status=rejected`），满员 `-1` 继续按轮次重试。
 - **名额分阶段放出**：`enrolledPhases` 只改 `yxzrs`（列表人数），不改容量；先满员失败、
   放出后同一轮刷新即可选上，用来验证 `Refresh` 与满员排序。
 - **会话失效 / 被踢**：`POST /__mock/revoke` 后下一次业务请求收到

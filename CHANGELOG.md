@@ -13,13 +13,17 @@
 
 ### 修复
 
-- **jwmock 的选课返回值按正方脚本对齐**：`zzxkyzbjk_xkBcZyZzxkYzb` 的 `flag` 不再是"成功 1 / 失败 0"两种——满员 / 容量超出 `-1`（`msg` 是 `分志愿,教学班id,已选人数,本轮已选人数` 的机器串）、重复选同一教学班 `6`、上课时间冲突 `2`、成功 `1`（不再附带「选课成功」文案）；窗口关闭、`rejectAll`、学分 / 门数上限等业务拒绝仍是 `0` + 文案。
+- **jwmock 的选课返回值按实测样本对齐**：`zzxkyzbjk_xkBcZyZzxkYzb` 的 `flag` 不再是"成功 1 / 失败 0"两种——满员 / 容量超出 `-1`（`msg` 是 `分志愿,教学班id,已选人数,` 的机器串，样本里第 4 段为空）、重复选同一教学班 `6`、成功 `1`（不再附带「选课成功」文案）；上课时间冲突、一门课只能选一个教学班、窗口关闭、门次上限、非法操作等业务拒绝是 `0` + 实测文案（以 `html/_xkBcZyZzxkYzb.html` 为准，脚本里的 `2` 分支本校园没实测到）。
 - **客户端按这套语义展示选课结果**：`protocol.ChooseCourseResult` 新增 `OK()` / `DisplayMsg()`；`flag=3`（选课成功、免费学分已达上限）也算选上，自动选课不会把它当失败一直重试；`flag=-1` 不再把人数串直接弹给用户，自动选课的失败事件和 `POST /choose` 都显示「该教学班已无余量，不可选！」，WebUI 手动选课也把 `3` 当成功。
+- **自动选课遇到确定性拒绝立即停止**：提交返回 `flag=0` 且文案不是"选课频率过高"（中英文两种）时，说明是时间冲突、重复选课、学分 / 门数上限、不在选课时间这类不会因为重试而改变的拒绝，`RunAuto` 立即结束并返回 `ErrChooseRejected`（任务 `result.status=rejected`，带上教务原因），不再把几小时耗在必然失败的请求上。`flag=-1`（容量）、`6`（已选中）仍按轮次重试；加密串过期由 engine 先续期重试一次，仍失败同样停止。`protocol.ChooseCourseResult` 新增 `Retryable()`；jwmock 的 `rejectNext` 默认文案改成「选课频率过高，请稍后重试！」。
 
 ### 测试
 
+- `protocol/choose_result_test.go`：`OK()` / `DisplayMsg()` 的 flag 语义；新增 `TestChooseCourseResultRetryable`（中英文频率限制可重试；学分 / 门次 / 窗口 / 冲突 / 重复 / 非法操作 / 空文案不可重试；-1 / 6 仍可重试）。
+- `engine/plan_test.go`：新增 `TestRunAutoStopsOnNonRetryableReject` / `TestRunAutoRetriesRateLimitedChoose`；满员夹具改成 `flag=-1` 并校验失败文案已被翻成人话。
 - `engine/candidates_test.go`：新增 `TestCandidateSourceStopsAtFirstVacancy`（扫到第一个有名额的候选就收手，下一次刷新接着扫、补过详情的课程号不再请求）；`TestCandidateSourceNameFirstFallsBackToFullScan` 改为验证回落扫描同样收手、下一次刷新补扫剩余课程号。
-- `protocol/choose_result_test.go`：`OK()` / `DisplayMsg()` 的 flag 语义；`jwmock/integration_test.go` 新增 `TestChooseResultFlags`（`-1` / `6` / `2` / `1` 与 `-1` 的人数字段），满员 / 重复 / 时间冲突用例改按新文案断言；`engine/plan_test.go` 的满员夹具改成 `flag=-1` 并校验失败文案已被翻成人话。
+- `jwmock/integration_test.go`：新增 `TestChooseResultFlags`（`-1` / `6` / `0` / `1` 与 `-1` 的人数字段）和 `TestNonRetryableRejectStops`；`TestRejections` / `TestMaxCourses` / `TestTransientRejectRecovers` 按新语义调整。
+- `web/handlers_auto_test.go`：覆盖 `rejected` 结果映射。
 
 ## [2.2.0] - 2026-11-07
 

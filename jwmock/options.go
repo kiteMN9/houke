@@ -102,7 +102,8 @@ type Scenario struct {
 	RejectByJxb map[string]string `json:"rejectByJxb,omitempty"`
 	// RejectNext 表示某教学班接下来 N 次提交返回瞬时失败，之后恢复正常。
 	RejectNext map[string]int `json:"rejectNext,omitempty"`
-	// RejectNextMsg 是 RejectNext 使用的文案。
+	// RejectNextMsg 是 RejectNext 使用的文案；默认是"选课频率过高"，
+	// 因为只有频率限制这类 flag=0 客户端才会重试。
 	RejectNextMsg string `json:"rejectNextMsg,omitempty"`
 	// ParamExpire 表示接下来 N 次课程列表/详情请求返回“参数过期”。
 	ParamExpire int `json:"paramExpire,omitempty"`

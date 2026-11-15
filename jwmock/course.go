@@ -129,7 +129,8 @@ func (s *Server) coursesForTab(tab Tab) []Seed {
 func (s *Server) handleCourseList(c *gin.Context) {
 	if s.takeParamExpire() {
 		// 参数过期响应故意不带 tmpList：客户端会先判断 tmpList 再判断 msg/flag。
-		c.JSON(http.StatusOK, gin.H{"msg": "参数已过期，请刷新页面重试", "flag": "0"})
+		// 文案照实测样本，客户端靠"加密串错误"识别参数过期。
+		c.JSON(http.StatusOK, gin.H{"msg": "加密串错误，可以清除浏览器缓存后刷新网页重试！", "flag": "0"})
 		return
 	}
 
@@ -220,8 +221,8 @@ type chooseResp struct {
 // handleChoose 按真实选课接口的优先级判定：会话 -> 时间窗口 -> 固定拒绝 -> 重复 ->
 // 容量 -> 时间冲突 -> 学分上限 -> 门数上限 -> 瞬时失败 -> 成功。
 //
-// 返回值的 flag 语义照 html/zzxkYzbChoosedZy.js 来（见 chooseLocked），不是
-// "成功 1 / 失败 0" 两种：客户端要靠 -1、6、2 区分容量不足、重复选课和时间冲突。
+// 返回值的 flag 语义以 html/_xkBcZyZzxkYzb.html 的错误样本为准（见 chooseLocked），
+// 不是"成功 1 / 失败 0"两种：客户端要靠 -1、6 和 0 的文案区分容量不足、重复选课和业务拒绝。
 func (s *Server) handleChoose(c *gin.Context) {
 	user, ok := s.userOf(c)
 	if !ok {
@@ -240,25 +241,23 @@ func (s *Server) handleChoose(c *gin.Context) {
 
 // chooseLocked 判定一次选课提交，返回真实接口的 (flag, msg)。
 //
-// flag 取值照 html/zzxkYzbChoosedZy.js 对 zzxkyzbjk_xkBcZyZzxkYzb 返回值的分支：
+// flag 与文案照 html/_xkBcZyZzxkYzb.html 的实测错误样本：
 //
-//	"1"  选课成功
+//	"1"  选课成功（{"flag":"1"}，不带文案）
 //	"3"  选课成功、免费学分已达上限（mock 不模拟）
 //	"6"  该教学班已选中（刷新页面可见）
 //	"-1" 容量超出：msg 是 "分志愿,教学班id,已选人数,本轮已选人数" 的机器串，
-//	     页面拿它更新列表人数，不是给人看的文案
-//	"2"  上课时间冲突（msg 给"查看冲突"弹窗）
-//	其他（多为 "0"）：业务拒绝，msg 就是原因
-//
-// -1 的第 3、4 个字段用同一个已选人数：mock 不区分总人数和本轮人数。
+//	     页面拿它更新列表人数，不是给人看的文案（样本里第 4 段为空）
+//	"0"  业务拒绝，msg 就是原因：时间冲突、一门课只能选一个教学班、不在选课
+//	     时间、门次限制、非法操作、加密串过期都走 0
 func (s *Server) chooseLocked(user, jxbIDs, kchID string) (string, string) {
 	seed, ok := s.findSeedLocked(jxbIDs, kchID)
 	if !ok {
-		return "0", "教学班不存在或已失效"
+		return "0", "警告:你正在非法操作！"
 	}
 	sc := s.scenario
 	if sc.WindowClosed {
-		return "0", "当前不在选课时间内"
+		return "0", "不在选课时间内！"
 	}
 	if msg := s.rejectionLocked(seed); msg != "" {
 		return "0", msg
@@ -272,27 +271,28 @@ func (s *Server) chooseLocked(user, jxbIDs, kchID string) (string, string) {
 		return "6", "该教学班已选中，刷新页面可见！"
 	}
 	if s.sameCourseLocked(user, seed) {
-		return "0", "该课程已选，不能重复选择！"
-		//return "1", ""
+		return "0", "一门课程只能选一个教学班，不可再选！"
 	}
 	if seed.Capacity > 0 && s.enrolledLocked(seed) >= seed.Capacity {
-		enrolled := s.enrolledLocked(seed)
-		return "-1", fmt.Sprintf("0,%s,%d,%d", seed.JxbID, enrolled, enrolled)
+		// 第 4 段（本轮已选人数）样本里是空的，这里照抄。
+		return "-1", fmt.Sprintf("0,%s,%d,", seed.JxbID, s.enrolledLocked(seed))
 	}
 	if s.timeConflictLocked(user, seed) {
-		return "2", "该教学班与已选课程时间冲突！"
+		return "0", "所选教学班的上课时间与其他教学班有冲突！"
 	}
 	if sc.MaxCredits > 0 && s.creditsLocked(user)+parseCredit(seed.Xf) > sc.MaxCredits {
 		return "0", "超过学分上限！"
 	}
 	if sc.MaxCourses > 0 && len(set) >= sc.MaxCourses {
-		return "0", "选课门数已达上限！"
+		return "0", "超过通识选修课本学期本专业最高选课门次限制，不可选！"
 	}
 	if n := s.scenario.RejectNext[seed.JxbID]; n > 0 {
 		s.scenario.RejectNext[seed.JxbID] = n - 1
 		msg := s.scenario.RejectNextMsg
 		if msg == "" {
-			msg = "系统繁忙，请稍后再试"
+			// 默认用"频率限制"：客户端只对这类 flag=0 重试，其它业务拒绝会
+			// 直接停止自动选课（见 protocol.ChooseCourseResult.Retryable）。
+			msg = "选课频率过高，请稍后重试！"
 		}
 		return "0", msg
 	}
