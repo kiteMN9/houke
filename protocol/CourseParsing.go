@@ -98,6 +98,8 @@ func parseYzbIndexHtml(cfg *APIConfig, docNode *html.Node) bool {
 	cfg.Tabs.Kklxmc = getXpathValue(docNode, "firstKklxmc")
 	cfg.Index.njdm_id = getXpathValue(docNode, "firstNjdmId")
 	cfg.Index.zyh_id = getXpathValue(docNode, "firstZyhId")
+	cfg.Index.njdm_id_xs = getXpathValue(docNode, "njdm_id_xs")
+	cfg.Index.zyh_id_xs = getXpathValue(docNode, "zyh_id_xs")
 	//cfg.Index.njdm_id_list0 = cfg.Index.njdm_id
 	cfg.Index.bh_id = getXpathValue(docNode, "bh_id")   // 班号
 	cfg.Index.xkxnm = getXpathValue(docNode, "xkxnm")   // 学年
@@ -116,6 +118,12 @@ func parseYzbIndexHtml(cfg *APIConfig, docNode *html.Node) bool {
 	cfg.Window.zxfs = getXpathValue(docNode, "zxfs")
 	cfg.Index.tkzgcs_qt = getXpathValue(docNode, "tkzgcs_qt")
 	cfg.Index.currentsj = getXpathValue(docNode, "currentsj") // 当前时间
+
+	// getConditionCols 过滤用的大部分都没用
+	// zzxkgjcxkg_tjbj, zzxkgjcxkg_kkxy, zzxkgjcxkg_nj, zzxkgjcxkg_xy
+	// zzxkgjcxkg_zy, zzxkgjcxkg_zyfx, zzxkgjcxkg_bj, zzxkgjcxkg_xqu, zzxkgjcxkg_yqu
+	// zzxkgjcxkg_kclb, zzxkgjcxkg_kcxz, zzxkgjcxkg_kcgs, zzxkgjcxkg_kcz, zzxkgjcxkg_jxms
+	// zzxkgjcxkg_skxq, zzxkgjcxkg_skjc
 
 	// 解析总学分最低
 	minCreditNode := htmlquery.FindOne(docNode, `//h5[contains(., "总学分最低")]/font[@color='red'][1]`)

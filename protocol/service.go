@@ -75,7 +75,7 @@ func (a *APIClient) CheckSession2(ctx context.Context) bool {
 	return false
 }
 
-// LoginCheck false 触发 ReLogin
+// LoginCheck false 需要触发 ReLogin
 func (a *APIClient) LoginCheck(resp *resty.Response) bool {
 	if resp == nil {
 		return true

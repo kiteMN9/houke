@@ -36,12 +36,15 @@ type IndexInfo struct {
 	xkkz_xh string
 	kklxdm  string // 课程类型代码
 
-	bh_id   string // 班号
-	xqh_id  string // 校区号
-	zyh_id  string // 专业号
-	njdm_id string // 年级代码
-	xkxqm   string // 学期 3 12 16
-	xkxnm   string // 学年
+	bh_id      string // 班号
+	xqh_id     string // 校区号
+	zyh_id     string // 专业号
+	njdm_id    string // 年级代码
+	zyh_id_xs  string // 特色设计如果有则必须有
+	njdm_id_xs string
+
+	xkxqm string // 学期 3 12 16
+	xkxnm string // 学年
 
 	xz   string // 学制4年
 	xxdm string // 学校代码

@@ -252,7 +252,7 @@ func (a *APIClient) GetCourseTabParams(ctx context.Context, cfg *APIConfig, save
 	// 本学期本类型课程选课最高门次要求为 bxqzgxkmc ，不可选
 }
 
-// GetCourseList 拿到课程号全集
+// GetCourseList 拿到课程号全集即课程全集
 func (a *APIClient) GetCourseList(ctx context.Context, cfg *APIConfig) ([]CourseListDic, error) {
 	// 搜索课程，主页面的查询
 	if !cfg.State.listDump {
@@ -271,12 +271,10 @@ func (a *APIClient) GetCourseList(ctx context.Context, cfg *APIConfig) ([]Course
 			"xqh_id":       cfg.Index.xqh_id,
 			"jg_id":        cfg.Index.jg_id,
 			"zyh_id":       cfg.Index.zyh_id,
-			//"zyh_id_xs":    cfg.Index.zyh_id,
-			"njdm_id": cfg.Index.njdm_id,
-			//"njdm_id_xs":   cfg.Index.njdm_id,
-			// bjgkczxbbjwcx: 0
-			"xbm": cfg.Index.xbm,
-			//"xslbdm":   cfg.Index.xslbdm,
+			"njdm_id":      cfg.Index.njdm_id,
+			// "bjgkczxbbjwcx": "0",
+			"xbm":      cfg.Index.xbm,
+			"xslbdm":   cfg.Index.xslbdm,
 			"mzm":      cfg.Index.mzm,
 			"xz":       cfg.Index.xz,
 			"ccdm":     cfg.Index.ccdm,
@@ -291,17 +289,21 @@ func (a *APIClient) GetCourseList(ctx context.Context, cfg *APIConfig) ([]Course
 			"sfkcfx":   cfg.Window.sfkcfx,
 			"kkbk":     cfg.Window.kkbk,
 			"kkbkdj":   cfg.Window.kkbkdj,
-			// 	sfkgbcx: 0
-			// 	sfrxtgkcxd: 0
-			// 	tykczgxdcs: 0
+			// 	"sfkgbcx": "0",
+			// 	"sfrxtgkcxd": "0",
+			// 	"tykczgxdcs": "0",
 			"xkxnm":  cfg.Index.xkxnm,  // 当前学期年份, 如2021-2022 即2021，必须
 			"xkxqm":  cfg.Index.xkxqm,  // 3 12 16
 			"kklxdm": cfg.Index.kklxdm, // 01为主修课 10为选修课，校选10 专选01，英语进阶06，必须
 			"rlkz":   cfg.Window.rlkz,
-			// 	xkzgbj: 0
+			// 	"xkzgbj": "0",
 			"kspage": "1",
 			"jspage": "222", // 页号，一页显示的数量，必须
 			//"jxbzb":  "",
+		}
+		if cfg.Index.zyh_id_xs != "" {
+			formData["zyh_id_xs"] = cfg.Index.zyh_id_xs
+			formData["njdm_id_xs"] = cfg.Index.njdm_id_xs
 		}
 		if cfg.Index.xkkz_xh != "" {
 			formData["xkkz_xh"] = cfg.Index.xkkz_xh // 有xh可以没有id
@@ -388,7 +390,8 @@ func (a *APIClient) GetCourseList(ctx context.Context, cfg *APIConfig) ([]Course
 	}
 }
 
-// GetCourseDetail 根据课程号查询该课程号下的所有教学班补齐剩余参数
+// GetCourseDetail loadJxbxxZzxk 加载某门课程的教学班
+// 主键是 kch_id，一次拉该课程号下全部教学班，返回 JSON 数组；jxb_id 用于对外关联，do_jxb_id 才是提交选课用的
 func (a *APIClient) GetCourseDetail(ctx context.Context, cfg *APIConfig, kch_id string) ([]CourseDetail, error) {
 	// 	查询课程具体信息
 	// 	获得do_jxb_id（选课的必要参数）以及很重要的容量信息等等
@@ -408,16 +411,14 @@ func (a *APIClient) GetCourseDetail(ctx context.Context, cfg *APIConfig, kch_id 
 			"bklx_id":      cfg.Window.bklx_id,
 			"sfkkjyxdxnxq": cfg.Window.sfkkjyxdxnxq,
 
-			"xqh_id": cfg.Index.xqh_id,
-			"jg_id":  cfg.Index.jg_id,
-			"zyh_id": cfg.Index.zyh_id,
-			//"zyh_id_xs":  cfg.Index.zyh_id,
+			"xqh_id":  cfg.Index.xqh_id,
+			"jg_id":   cfg.Index.jg_id,
+			"zyh_id":  cfg.Index.zyh_id,
 			"njdm_id": cfg.Index.njdm_id,
-			//"njdm_id_xs": cfg.Index.njdm_id,
-			"bh_id": cfg.Index.bh_id,
-			// bjgkczxbbjwcx: 0
-			"xbm": cfg.Index.xbm,
-			//"xslbdm":   cfg.Index.xslbdm,
+			"bh_id":   cfg.Index.bh_id,
+			// "bjgkczxbbjwcx": "0"
+			"xbm":      cfg.Index.xbm,
+			"xslbdm":   cfg.Index.xslbdm,
 			"mzm":      cfg.Index.mzm,
 			"xz":       cfg.Index.xz,
 			"ccdm":     cfg.Index.ccdm,
@@ -434,18 +435,25 @@ func (a *APIClient) GetCourseDetail(ctx context.Context, cfg *APIConfig, kch_id 
 			"kkbk":     cfg.Window.kkbk,
 			"kkbkdj":   cfg.Window.kkbkdj,
 
-			// 	sfkgbcx: 0
-			// 	sfrxtgkcxd: 0
-			// 	tykczgxdcs: 0
+			//"sfkgbcx": "0",
+			//"sfrxtgkcxd": "0",
+			//"tykczgxdcs": "0",
 			"xkxnm": cfg.Index.xkxnm, // 当前学期年份, 如2021-2022 即2021，必须
 			"xkxqm": cfg.Index.xkxqm, // 3 12 16
 
 			"rlkz":   cfg.Window.rlkz,
 			"kklxdm": cfg.Index.kklxdm, // 01为主修课 10为选修课，校选10 专选01，英语进阶06，必须
 
-			// 	xkzgbj: 0
+			//"xkzgbj": "0",
 			"kch_id": kch_id, // 课程号，必须
 			"xklc":   cfg.Window.xklc,
+			// 重修/辅修标记
+			//"cxbj": "",
+			//"fxbj": "",
+		}
+		if cfg.Index.zyh_id_xs != "" {
+			formData["zyh_id_xs"] = cfg.Index.zyh_id_xs
+			formData["njdm_id_xs"] = cfg.Index.njdm_id_xs
 		}
 		if cfg.Index.xkkz_id != "" {
 			formData["xkkz_id"] = cfg.Index.xkkz_id
