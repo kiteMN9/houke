@@ -126,8 +126,7 @@ func TestShutdownClosesSSE(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
 	}
-	reqCtx, reqCancel := context.WithCancel(context.Background())
-	defer reqCancel()
+	reqCtx := t.Context()
 	resp, err := http.DefaultClient.Do(req.WithContext(reqCtx))
 	if err != nil {
 		t.Fatalf("打开 SSE: %v", err)

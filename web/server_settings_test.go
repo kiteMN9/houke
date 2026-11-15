@@ -10,10 +10,6 @@ import (
 	"school_sdk/check_code/kaptcha"
 )
 
-func boolPtr(v bool) *bool       { return &v }
-func stringPtr(v string) *string { return &v }
-func intPtr(v int) *int          { return &v }
-
 func TestServerSettingsLegacyImport(t *testing.T) {
 	dir := t.TempDir()
 	legacy := filepath.Join(dir, "SMTP.json")
@@ -142,12 +138,12 @@ func TestServerSettingsUpdateKeepsPassword(t *testing.T) {
 	}
 
 	view, err := m.update(smtpPatch{
-		Enabled:  boolPtr(true),
-		Host:     stringPtr("smtp.example.com"),
-		Port:     intPtr(587),
-		From:     stringPtr("sender@example.com"),
+		Enabled:  new(true),
+		Host:     new("smtp.example.com"),
+		Port:     new(587),
+		From:     new("sender@example.com"),
 		To:       &[]string{"one@example.com"},
-		Password: stringPtr("secret"),
+		Password: new("secret"),
 	})
 	if err != nil {
 		t.Fatalf("update: %v", err)
@@ -158,8 +154,8 @@ func TestServerSettingsUpdateKeepsPassword(t *testing.T) {
 
 	// 空密码 = 保持原密码。
 	view, err = m.update(smtpPatch{
-		Host:     stringPtr("smtp2.example.com"),
-		Password: stringPtr(""),
+		Host:     new("smtp2.example.com"),
+		Password: new(""),
 	})
 	if err != nil {
 		t.Fatalf("update keep password: %v", err)
@@ -194,30 +190,30 @@ func TestServerSettingsValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := m.update(smtpPatch{Enabled: boolPtr(true)}); err == nil {
+	if _, err := m.update(smtpPatch{Enabled: new(true)}); err == nil {
 		t.Error("启用但没有任何 SMTP 字段时应报错")
 	}
 	if _, err := m.update(smtpPatch{
-		Enabled: boolPtr(false),
-		Host:    stringPtr("smtp://smtp.example.com"),
+		Enabled: new(false),
+		Host:    new("smtp://smtp.example.com"),
 	}); err == nil {
 		t.Error("带协议的服务器地址应报错")
 	}
 	if _, err := m.update(smtpPatch{
-		Enabled: boolPtr(false),
-		From:    stringPtr("not-an-email"),
+		Enabled: new(false),
+		From:    new("not-an-email"),
 	}); err == nil {
 		t.Error("非法发件人应报错")
 	}
 	if _, err := m.update(smtpPatch{
-		Enabled: boolPtr(false),
+		Enabled: new(false),
 		To:      &[]string{"not-an-email"},
 	}); err == nil {
 		t.Error("非法收件人应报错")
 	}
 
 	// 关闭通知时允许保存半成品，方便用户先停掉再慢慢改。
-	if _, err := m.update(smtpPatch{Enabled: boolPtr(false), Host: stringPtr("smtp.example.com")}); err != nil {
+	if _, err := m.update(smtpPatch{Enabled: new(false), Host: new("smtp.example.com")}); err != nil {
 		t.Errorf("关闭状态下保存部分字段不应失败: %v", err)
 	}
 }
@@ -299,8 +295,8 @@ func TestServerSettingsSaveKaptchaKeepsSMTP(t *testing.T) {
 		t.Fatalf("saveKaptcha: %v", err)
 	}
 	if _, err := m.update(smtpPatch{
-		Enabled: boolPtr(false),
-		Host:    stringPtr("smtp.example.com"),
+		Enabled: new(false),
+		Host:    new("smtp.example.com"),
 	}); err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -324,17 +320,17 @@ func TestServerSettingsTestConfigUsesSavedPassword(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := m.update(smtpPatch{
-		Enabled:  boolPtr(false),
-		Host:     stringPtr("smtp.example.com"),
-		Port:     intPtr(587),
-		From:     stringPtr("sender@example.com"),
+		Enabled:  new(false),
+		Host:     new("smtp.example.com"),
+		Port:     new(587),
+		From:     new("sender@example.com"),
 		To:       &[]string{"one@example.com"},
-		Password: stringPtr("secret"),
+		Password: new("secret"),
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	cfg, err := m.smtpForTest(&smtpPatch{Host: stringPtr("smtp2.example.com"), Password: stringPtr("")})
+	cfg, err := m.smtpForTest(&smtpPatch{Host: new("smtp2.example.com"), Password: new("")})
 	if err != nil {
 		t.Fatalf("smtpForTest: %v", err)
 	}
