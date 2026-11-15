@@ -54,7 +54,7 @@ func Gray(img image.Image, w, h int) ([]float32, error) {
 	gray := make([]float32, sw*sh)
 	switch src := img.(type) {
 	case *image.Gray:
-		for y := 0; y < sh; y++ {
+		for y := range sh {
 			row := src.Pix[(y+b.Min.Y-src.Rect.Min.Y)*src.Stride:][:sw]
 			dst := gray[y*sw : (y+1)*sw]
 			for x, v := range row {
@@ -62,28 +62,28 @@ func Gray(img image.Image, w, h int) ([]float32, error) {
 			}
 		}
 	case *image.RGBA:
-		for y := 0; y < sh; y++ {
+		for y := range sh {
 			row := src.Pix[(y+b.Min.Y-src.Rect.Min.Y)*src.Stride:][:sw*4]
 			dst := gray[y*sw : (y+1)*sw]
-			for x := 0; x < sw; x++ {
+			for x := range sw {
 				p := row[x*4:]
 				dst[x] = luma(p[0], p[1], p[2])
 			}
 		}
 	case *image.NRGBA:
-		for y := 0; y < sh; y++ {
+		for y := range sh {
 			row := src.Pix[(y+b.Min.Y-src.Rect.Min.Y)*src.Stride:][:sw*4]
 			dst := gray[y*sw : (y+1)*sw]
-			for x := 0; x < sw; x++ {
+			for x := range sw {
 				p := row[x*4:]
 				dst[x] = luma(p[0], p[1], p[2])
 			}
 		}
 	default:
 		// YCbCr/CMYK/调色板等交给标准库转换，再按同样的公式取亮度。
-		for y := 0; y < sh; y++ {
+		for y := range sh {
 			dst := gray[y*sw : (y+1)*sw]
-			for x := 0; x < sw; x++ {
+			for x := range sw {
 				r, g, bl, _ := img.At(b.Min.X+x, b.Min.Y+y).RGBA()
 				dst[x] = luma(uint8(r>>8), uint8(g>>8), uint8(bl>>8))
 			}
@@ -98,7 +98,7 @@ func Gray(img image.Image, w, h int) ([]float32, error) {
 // resizeBilinear 双线性缩放灰度图。验证码图不要求像素级一致，双线性足够。
 func resizeBilinear(src []float32, sw, sh, dw, dh int) []float32 {
 	dst := make([]float32, dw*dh)
-	for y := 0; y < dh; y++ {
+	for y := range dh {
 		// 用像素中心对齐，避免整体偏移半个像素。
 		sy := (float64(y)+0.5)*float64(sh)/float64(dh) - 0.5
 		y0 := int(sy)
@@ -108,15 +108,12 @@ func resizeBilinear(src []float32, sw, sh, dw, dh int) []float32 {
 		if y0 > sh-1 {
 			y0 = sh - 1
 		}
-		y1 := y0 + 1
-		if y1 > sh-1 {
-			y1 = sh - 1
-		}
+		y1 := min(y0+1, sh-1)
 		fy := float32(sy - float64(y0))
 		if fy < 0 {
 			fy = 0
 		}
-		for x := 0; x < dw; x++ {
+		for x := range dw {
 			sx := (float64(x)+0.5)*float64(sw)/float64(dw) - 0.5
 			x0 := int(sx)
 			if sx < 0 {
@@ -125,10 +122,7 @@ func resizeBilinear(src []float32, sw, sh, dw, dh int) []float32 {
 			if x0 > sw-1 {
 				x0 = sw - 1
 			}
-			x1 := x0 + 1
-			if x1 > sw-1 {
-				x1 = sw - 1
-			}
+			x1 := min(x0+1, sw-1)
 			fx := float32(sx - float64(x0))
 			if fx < 0 {
 				fx = 0

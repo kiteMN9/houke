@@ -19,6 +19,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -274,7 +275,7 @@ func (r *Recognizer) recognizeGray(gray []float32) (*Result, error) {
 	res := &Result{Chars: make([]Char, 0, NumChars)}
 	text := make([]byte, 0, NumChars)
 	joint := 1.0
-	for i := 0; i < NumChars; i++ {
+	for i := range NumChars {
 		seg := logits[i*NumClasses : (i+1)*NumClasses]
 		best := 0
 		for j := 1; j < len(seg); j++ {
@@ -354,10 +355,8 @@ func modelCandidates() []string {
 		if dir == "" {
 			return
 		}
-		for _, existing := range dirs {
-			if existing == dir {
-				return
-			}
+		if slices.Contains(dirs, dir) {
+			return
 		}
 		dirs = append(dirs, dir)
 	}

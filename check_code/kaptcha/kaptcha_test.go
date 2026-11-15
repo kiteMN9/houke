@@ -237,9 +237,7 @@ func TestRecognizeConcurrent(t *testing.T) {
 	var wg sync.WaitGroup
 	errs := make(chan error, workers)
 	for range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			text, _, err := rec.Recognize(context.Background(), raw)
 			if err != nil {
 				errs <- err
@@ -248,7 +246,7 @@ func TestRecognizeConcurrent(t *testing.T) {
 			if text != want {
 				errs <- errors.New("并发识别结果不一致: " + text)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	close(errs)

@@ -2,6 +2,7 @@ package onnx
 
 import (
 	"fmt"
+	"maps"
 	"runtime"
 )
 
@@ -132,9 +133,7 @@ func (s *Session) Run(input *Tensor) (*Tensor, error) {
 	}
 
 	env := make(map[string]*Tensor, len(s.init)+len(s.nodes))
-	for k, v := range s.init {
-		env[k] = v
-	}
+	maps.Copy(env, s.init)
 	x := *input
 	if x.DataType == 0 {
 		x.DataType = DataTypeFloat32

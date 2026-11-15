@@ -173,11 +173,9 @@ func TestConcurrentInitializeRunsOnce(t *testing.T) {
 	var wg sync.WaitGroup
 	errCh := make(chan error, n)
 	for range n {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			errCh <- s.Initialize(context.Background())
-		}()
+		})
 	}
 	wg.Wait()
 	close(errCh)

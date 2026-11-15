@@ -49,7 +49,7 @@ func QrCodePrint(content string) error {
 // ClearQrCode 清空二维码
 func ClearQrCode() {
 	// 清空26行
-	for i := 0; i < 26; i++ {
+	for range 26 {
 		fmt.Print("\033[1A\033[K")
 	}
 }

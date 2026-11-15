@@ -69,9 +69,7 @@ func TestInitStageConcurrent(t *testing.T) {
 
 	var wg sync.WaitGroup
 	for range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for i := range 50 {
 				// 每轮换一个阶段，确保 observer 真的被调用
 				phase := InitPhaseIndex
@@ -81,7 +79,7 @@ func TestInitStageConcurrent(t *testing.T) {
 				a.reportInitStage(phase, "")
 				_ = a.InitStage()
 			}
-		}()
+		})
 	}
 	wg.Wait()
 	if n.Load() == 0 {

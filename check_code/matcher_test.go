@@ -256,13 +256,11 @@ func TestFindBestMatchConcurrent(t *testing.T) {
 	got := make([]int, workers)
 	var wg sync.WaitGroup
 	for i := range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for range iterations {
 				got[i] = FindBestMatch(data)
 			}
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -296,21 +294,17 @@ func TestCacheInitConcurrent(t *testing.T) {
 	const recognizers = 8
 	var wg sync.WaitGroup
 	for range recognizers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for range 3 {
 				// 初始化完成前会阻塞在 cacheReady 上，这里不校验返回值。
 				_ = FindBestMatch(data)
 			}
-		}()
+		})
 	}
 	for range 4 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			PreloadCache()
-		}()
+		})
 	}
 	wg.Wait()
 

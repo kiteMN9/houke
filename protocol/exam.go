@@ -20,7 +20,7 @@ func (a *APIClient) GetExam(ctx context.Context, year string, term int) ([]ExamI
 	}
 
 	var exam Exam
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}

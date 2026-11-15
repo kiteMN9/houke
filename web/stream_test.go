@@ -308,7 +308,7 @@ func TestPublishNeverBlocksOnSlowSubscriber(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for i := 0; i < 200; i++ {
+		for range 200 {
 			store.tasks.emit(id, taskEvent{Kind: "login.retry", Text: "重试中"})
 		}
 	}()
@@ -349,7 +349,7 @@ func TestProgressFrameIsFarSmallerThanFullSnapshot(t *testing.T) {
 
 	// 模拟一次"每步都有新事件"的登录：填满事件预览上限。
 	// 文字必须各不相同，否则会被去重折叠成一行（那正是 emitLocked 的另一个优化）。
-	for i := 0; i < taskEventsPreview+20; i++ {
+	for i := range taskEventsPreview + 20 {
 		store.tasks.emitRequest(id, taskEvent{
 			Kind:   "login.page",
 			Stage:  "login.page",
@@ -440,7 +440,7 @@ func TestStreamWorksOverRealServerRun(t *testing.T) {
 
 	// 等服务器起来
 	var up bool
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		if resp, err := http.Get(base + "/healthz"); err == nil { //nolint:noctx // 测试
 			resp.Body.Close()
 			up = true

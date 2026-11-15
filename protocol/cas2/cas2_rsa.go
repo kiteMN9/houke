@@ -24,7 +24,7 @@ func NewRSAEncryptorFromPEM(publicKeyPEM string) (*RSAEncryptor, error) {
 	}
 
 	// 根据 PEM 类型处理
-	var pub interface{}
+	var pub any
 	var err error
 
 	switch block.Type {

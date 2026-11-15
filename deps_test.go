@@ -12,6 +12,7 @@ package main
 
 import (
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -28,7 +29,7 @@ func loadImportGraph(t *testing.T) importGraph {
 	}
 
 	graph := make(importGraph)
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		if line == "" {
 			continue
 		}
@@ -49,12 +50,7 @@ func loadImportGraph(t *testing.T) importGraph {
 }
 
 func (g importGraph) imports(pkg, target string) bool {
-	for _, imp := range g[pkg] {
-		if imp == target {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(g[pkg], target)
 }
 
 // TestDependencyDirection 守住 main -> web -> engine -> protocol 这个单向方向。

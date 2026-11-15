@@ -247,7 +247,7 @@ func (c *Client) wxUUID(ctx context.Context) (uuid, imgURL, pageURL, state strin
 		return "", "", "", "", errors.New("微信登录：微信跳转地址缺少 state")
 	}
 
-	for attempt := 0; attempt < 3; attempt++ {
+	for range 3 {
 		if err := ctx.Err(); err != nil {
 			return "", "", "", "", err
 		}
@@ -293,22 +293,22 @@ func parseQRPage(html string) (uuid, imgURL string, ok bool) {
 	const uuidMark = `"/connect/qrcode/`
 	const imgMark = `web_qrcode_img" src="`
 
-	i := strings.Index(html, uuidMark)
-	if i < 0 {
+	_, after, ok := strings.Cut(html, uuidMark)
+	if !ok {
 		return "", "", false
 	}
-	rest := html[i+len(uuidMark):]
+	rest := after
 	j := strings.IndexByte(rest, '"')
 	if j < 0 {
 		return "", "", false
 	}
 	uuid = rest[:j]
 
-	k := strings.Index(html, imgMark)
-	if k < 0 {
+	_, after2, ok := strings.Cut(html, imgMark)
+	if !ok {
 		return "", "", false
 	}
-	rest = html[k+len(imgMark):]
+	rest = after2
 	j = strings.IndexByte(rest, '"')
 	if j < 0 {
 		return "", "", false

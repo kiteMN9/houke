@@ -21,12 +21,12 @@ type fakeKaptcha struct {
 	text    string  // 返回的验证码
 	conf    float64 // 返回的置信度
 	err     error   // 非空时模拟识别失败（例如低置信度）
-	calls   int32
+	calls   atomic.Int32
 	lastImg []byte
 }
 
 func (f *fakeKaptcha) RecognizeKaptcha(_ context.Context, img []byte) (string, float64, error) {
-	atomic.AddInt32(&f.calls, 1)
+	f.calls.Add(1)
 	f.lastImg = img
 	if f.err != nil {
 		return "", 0, f.err
@@ -34,7 +34,7 @@ func (f *fakeKaptcha) RecognizeKaptcha(_ context.Context, img []byte) (string, f
 	return f.text, f.conf, nil
 }
 
-func (f *fakeKaptcha) Calls() int { return int(atomic.LoadInt32(&f.calls)) }
+func (f *fakeKaptcha) Calls() int { return int(f.calls.Load()) }
 
 // kaptchaTestServer 起一个只要字符验证码的正方登录页：
 //   - yzmWant 是唯一正确的验证码，提交对了就 302 到首页；
@@ -42,9 +42,9 @@ func (f *fakeKaptcha) Calls() int { return int(atomic.LoadInt32(&f.calls)) }
 type kaptchaTestServer struct {
 	srv     *httptest.Server
 	yzmWant string
-	posts   []string // 每次 POST 提交的 yzm
-	images  int32    // /kaptcha 被取了几次
-	submits int32    // POST 次数
+	posts   []string     // 每次 POST 提交的 yzm
+	images  atomic.Int32 // /kaptcha 被取了几次
+	submits atomic.Int32 // POST 次数
 }
 
 func newKaptchaTestServer(t *testing.T, yzmWant string) *kaptchaTestServer {
@@ -69,7 +69,7 @@ func newKaptchaTestServer(t *testing.T, yzmWant string) *kaptchaTestServer {
 		}
 		_ = r.ParseForm()
 		got := r.PostForm.Get("yzm")
-		atomic.AddInt32(&ts.submits, 1)
+		ts.submits.Add(1)
 		ts.posts = append(ts.posts, got)
 		if got != yzmWant {
 			// 注意不要回显 value="<account>"，否则会被 isLogin 判成登录成功。
@@ -80,7 +80,7 @@ func newKaptchaTestServer(t *testing.T, yzmWant string) *kaptchaTestServer {
 		w.WriteHeader(http.StatusFound)
 	})
 	mux.HandleFunc(config.KAPTCHA, func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&ts.images, 1)
+		ts.images.Add(1)
 		_, _ = w.Write([]byte("fake-kaptcha-bytes"))
 	})
 	mux.HandleFunc(config.PublicKey, func(w http.ResponseWriter, r *http.Request) {
@@ -137,9 +137,9 @@ func TestKaptchaFallsBackToInput(t *testing.T) {
 	api := newStateTestClient(t, ts.srv.URL)
 	api.Kaptcha = &fakeKaptcha{err: errors.New("置信度 0.42 < 0.90")}
 
-	var asked int32
+	var asked atomic.Int32
 	api.InputHandler = func(_ context.Context, req *InputRequest) (string, error) {
-		atomic.AddInt32(&asked, 1)
+		asked.Add(1)
 		if req.Kind != "captcha" {
 			t.Errorf("InputHandler kind = %q", req.Kind)
 		}
@@ -159,7 +159,7 @@ func TestKaptchaFallsBackToInput(t *testing.T) {
 	if !api.LoginWithContext(context.Background()) {
 		t.Fatal("登录失败")
 	}
-	if got := atomic.LoadInt32(&asked); got != 1 {
+	if got := asked.Load(); got != 1 {
 		t.Errorf("人工输入被请求 %d 次，want 1", got)
 	}
 	if posts := ts.Posts(); len(posts) != 1 || posts[0] != "human1" {
@@ -194,9 +194,9 @@ func TestKaptchaGivesUpAfterTwoFailures(t *testing.T) {
 	api := newStateTestClient(t, ts.srv.URL)
 	fake := &fakeKaptcha{text: "wrong1", conf: 0.99}
 	api.Kaptcha = fake
-	var asked int32
+	var asked atomic.Int32
 	api.InputHandler = func(context.Context, *InputRequest) (string, error) {
-		atomic.AddInt32(&asked, 1)
+		asked.Add(1)
 		return "true1x", nil
 	}
 
@@ -206,7 +206,7 @@ func TestKaptchaGivesUpAfterTwoFailures(t *testing.T) {
 	if fake.Calls() != maxKaptchaAutoFails {
 		t.Errorf("识别器被调用 %d 次，want %d", fake.Calls(), maxKaptchaAutoFails)
 	}
-	if got := atomic.LoadInt32(&asked); got != 1 {
+	if got := asked.Load(); got != 1 {
 		t.Errorf("人工输入被请求 %d 次，want 1", got)
 	}
 	posts := ts.Posts()
@@ -230,7 +230,7 @@ func TestKaptchaNilUsesInputHandler(t *testing.T) {
 	if posts := ts.Posts(); len(posts) != 1 || posts[0] != "plain1" {
 		t.Errorf("提交的 yzm = %v，want [plain1]", posts)
 	}
-	if got := atomic.LoadInt32(&ts.images); got != 1 {
+	if got := ts.images.Load(); got != 1 {
 		t.Errorf("取图 %d 次，want 1", got)
 	}
 }

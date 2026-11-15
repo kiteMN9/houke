@@ -380,7 +380,7 @@ type KbList struct {
 
 func (a *APIClient) getSelectedList(ctx context.Context, xkxnm, xkxqm string) (KbList, error) {
 	var result KbList
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		if err := ctx.Err(); err != nil {
 			return result, err
 		}
