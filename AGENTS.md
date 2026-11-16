@@ -3,7 +3,7 @@
 > 本文件是给**在本仓库里工作的 AI agent（以及人类贡献者）**的工作约定。
 > 产品介绍看 [README.md](README.md)；本文件只讲「怎么改、别踩什么坑」。
 > 本文件与代码/测试冲突时，以代码和测试为准，并顺手把本文件修对。
-> 快照：2026-11-11，HEAD `5fea063`（v2.2.0 之后），分支 `webui`。版本号与行号会漂移，别当契约。
+> 快照：2026-11-16，v2.3.0，分支 `webui`。版本号与行号会漂移，别当契约。
 
 ## 0. 项目速览
 
@@ -164,7 +164,7 @@ jwmock 还能通过 `/__mock/scenario` 注入窗口关闭、容量满、拒绝�
 ## 10. 已知陷阱 / 现状例外
 
 - `gofmt -l .` 会报 `utils/color/color.go`：历史 CRLF 文件，是当前唯一例外；不要为了让这条命令全绿而重排它（roadmap Q5 计划用 `.gitattributes` 统一处理）。
-- README 顶部的版本号会落后（快照时写 `2.1.0`，而 `main.go` 已是 `2.2.0`）；`doc/analysis.md`/`doc/architecture.md` 里的 baseline 行号与数字也会漂移。以 `main.go`、`git log`、实际符号为准，发现明显过时就顺手修。
+- `doc/analysis.md`/`doc/architecture.md` 里的 baseline 行号与数字会漂移。以 `main.go`、`git log`、实际符号为准，发现明显过时就顺手修。
 - `engine/engine.go` 等处的旧注释里还残留 `tui` 字样（历史），不要据此认为 TUI 还在，也不要新增 tui 相关引用。
 - `POST /api/accounts/:id/auto-choose` 是**异步任务**（202 + SSE 进度），别改回同步长请求。
 - 长任务用 `context.Background` 是设计选择（浏览器断连不取消），但必须能被 `/cancel` 和进程 `Shutdown` 取消；新增长任务若绕过 `taskStore` 会破坏这个不变量。

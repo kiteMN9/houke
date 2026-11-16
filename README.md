@@ -3,7 +3,7 @@
 正方教务系统（zfsoft / jwglxt）选课工具。一套协议实现（`protocol`）+ 一个 WebUI 宿主（`web`），
 登录、初始化、选课、自动选课与查询能力都在协议层，宿主只负责交互与展示。
 
-> 版本：`2.1.0`（`go run . -V`）· Go 1.27 · Windows 为主（`utils/` 有少量 `_windows.go`）
+> 版本：`2.3.0`（`go run . -V`）· Go 1.27 · Windows 为主（`utils/` 有少量 `_windows.go`）
 >
 > 本项目只用于个人账号的辅助操作，请自行确认符合所在学校的使用规定。
 
