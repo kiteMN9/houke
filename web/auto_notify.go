@@ -86,6 +86,8 @@ func autoNotificationStatus(ctx context.Context, err error, course *protocol.Cus
 		return "超时", "本次运行时间用尽，尚未选上。"
 	case errors.Is(err, engine.ErrNotChosen):
 		return "未选上", "重试用尽仍未选上。"
+	case errors.Is(err, engine.ErrAllChosen):
+		return "已选上", "愿望命中的课程此前都已选上，本次运行没有需要再提交的课程。"
 	case errors.Is(err, engine.ErrChooseRejected):
 		if rej, ok := errors.AsType[*engine.ChooseRejectError](err); ok {
 			return "已停止", "教务拒绝了本次选课，重试没有意义：" + rej.Result.DisplayMsg()

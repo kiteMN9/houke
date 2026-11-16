@@ -227,6 +227,7 @@ func TestAutoOutcome(t *testing.T) {
 		{"session_changed", context.Background(), engine.ErrSessionChanged, taskStatusFailed, "session_changed", "会话已变更"},
 		{"session_reset", context.Background(), engine.ErrSessionReset, taskStatusFailed, "session_reset", "会话已重置"},
 		{"not_chosen", context.Background(), engine.ErrNotChosen, taskStatusFailed, "not_chosen", "未选上"},
+		{"all_chosen", context.Background(), engine.ErrAllChosen, taskStatusDone, "all_chosen", "都已选上"},
 		{"rejected", context.Background(), &engine.ChooseRejectError{Result: protocol.ChooseCourseResult{Flag: protocol.ChooseFlagRejected, Msg: "超过学分上限！"}}, taskStatusFailed, "rejected", "自动选课已停止"},
 		{"no_wanted", context.Background(), engine.ErrNoWantedCourse, taskStatusFailed, "no_wanted", "愿望清单"},
 		{"no_candidates", context.Background(), engine.ErrNoCandidates, taskStatusFailed, "no_candidates", "候选课程"},

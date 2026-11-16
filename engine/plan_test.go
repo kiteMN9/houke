@@ -3,10 +3,12 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -255,18 +257,30 @@ func staticSource(list []protocol.CustomCourseDic) Source {
 const chooseFullJSON = `{"flag":"-1","msg":"0,d1,39,39"}`
 
 // autoServer 在 detailServer 的基础上再伪造选课接口，用来跑 RunAuto 的整条链路。
+// 已选课程查询接口返回空列表：RunAuto 即使查了也拿不到已选名单，只能靠提交反馈
+// 剔除（预过滤的用例走 autoServerFull）。
 func autoServer(t *testing.T, detail string) *httptest.Server {
 	t.Helper()
-	return autoServerWithChoose(t, detail, chooseFullJSON)
+	return autoServerFull(t, detail, chooseFullJSON, `[]`)
 }
 
 // autoServerWithChoose 同 autoServer，但选课接口返回指定响应体。
 func autoServerWithChoose(t *testing.T, detail, chooseBody string) *httptest.Server {
 	t.Helper()
+	return autoServerFull(t, detail, chooseBody, `[]`)
+}
+
+// autoServerFull 同 autoServerWithChoose，另带已选课程查询接口的响应体：
+// 候选横跨多个课程号时，RunAuto 开跑前和每次刷新都会查一次已选课程
+// （chosenFilterOf，见 needChosenQuery）。
+func autoServerFull(t *testing.T, detail, chooseBody, chosenBody string) *httptest.Server {
+	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.Contains(r.URL.Path, "cxJxbWithKchZzxkYzb"):
 			_, _ = io.WriteString(w, detail)
+		case strings.Contains(r.URL.Path, "cxZzxkYzbChoosedDisplay"):
+			_, _ = io.WriteString(w, chosenBody)
 		case strings.Contains(r.URL.Path, "zzxkybk_xkBcZyZzxkYzb"):
 			_, _ = io.WriteString(w, chooseBody)
 		case strings.Contains(r.URL.Path, "zzxkyzbjk_xkBcZyZzxkYzb"):
@@ -538,6 +552,384 @@ func TestRunAutoKeepsQueueWhenRefreshHasNoUsableCourse(t *testing.T) {
 	}
 	if picks != 2 {
 		t.Fatalf("提交次数 = %d，期望 2（两轮各试一次旧队列）", picks)
+	}
+}
+
+// needChosenQuery 决定"值不值得查已选课程表"：只有候选横跨多个课程号时才查。
+// 板块课整个页签只有一种课程号（下面几十个教学班），查了也只省一次提交，
+// 不如把最贵的请求省掉。
+func TestNeedChosenQuery(t *testing.T) {
+	cases := []struct {
+		name string
+		list []protocol.CustomCourseDic
+		want bool
+	}{
+		{"空列表", nil, false},
+		{"单个教学班", []protocol.CustomCourseDic{{Kch_id: "k1"}}, false},
+		{"板块课：一门课多个教学班", []protocol.CustomCourseDic{
+			{Kch_id: "k1"}, {Kch_id: "k1"}, {Kch_id: "k1"},
+		}, false},
+		{"通识选修：多个课程号", []protocol.CustomCourseDic{
+			{Kch_id: "k1"}, {Kch_id: "k2"}, {Kch_id: "k1"},
+		}, true},
+		{"课程号缺失时保守地查", []protocol.CustomCourseDic{
+			{Kch_id: ""}, {Kch_id: ""},
+		}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := needChosenQuery(tc.list); got != tc.want {
+				t.Fatalf("needChosenQuery = %v，期望 %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// 开跑前查到的已选教学班必须从队列剔除：不能每轮都对已选的课白打一次请求；
+// 同课程号的其它教学班也要一起剔除——教务规定"一门课只能选一个教学班"，
+// 对着兄弟班级提交会收到 flag=0 的拒绝。
+func TestRunAutoSkipsAlreadyChosenCandidates(t *testing.T) {
+	// 已选：k1 课程的 j1、j2 两个教学班（k1 整门课都要剔除）。
+	srv := autoServerFull(t, detailJSON, chooseFullJSON,
+		`[{"jxb_id":"j1","kch_id":"k1"},{"jxb_id":"j2","kch_id":"k1"}]`)
+	e := newCandidateEngine(t, srv, []protocol.CourseListDic{
+		courseListEntry("k1", "j1", "定向越野"),
+		courseListEntry("k1", "j2", "定向越野"),
+		courseListEntry("k2", "j3", "乒乓球"),
+	})
+	e.CacheCourseDetail([]protocol.CourseDetail{
+		{JxbId: "j1", DoJxbId: "d1", Jxbrl: "50", Yxzrs: "10"},
+		{JxbId: "j2", DoJxbId: "d2", Jxbrl: "50", Yxzrs: "10"},
+		{JxbId: "j3", DoJxbId: "d3", Jxbrl: "50", Yxzrs: "10"},
+	})
+
+	wants := protocol.WishList{WantClassList: []string{"定向越野", "乒乓球"}}
+	candidates, err := e.CollectCandidates(context.Background(), wants)
+	if err != nil {
+		t.Fatalf("CollectCandidates: %v", err)
+	}
+
+	var picks int
+	var pickIDs []string
+	var beginMsg string
+	_, err = e.RunAuto(context.Background(), Plan{
+		Wants:     wants,
+		MaxRounds: 2,
+		Interval:  time.Millisecond,
+		Refresh:   time.Hour, // 不触发刷新，只验证开跑前的预过滤
+	}, staticSource(candidates), func(ev Event) {
+		switch ev.Kind {
+		case EventBegin:
+			beginMsg = ev.Message
+		case EventPick:
+			picks++
+			pickIDs = append(pickIDs, ev.Course.Do_jxb_id)
+		}
+	})
+	if !errors.Is(err, ErrNotChosen) {
+		t.Fatalf("err = %v，期望 ErrNotChosen（满员重试到轮次用尽）", err)
+	}
+	// 两轮都只提交 j3；j1 / j2（已选）一次都不该碰。
+	if want := []string{"d3", "d3"}; !equalStrings(pickIDs, want) {
+		t.Fatalf("提交序列 = %v，期望 %v（已选的 j1/j2 不提交）", pickIDs, want)
+	}
+	if picks != 2 {
+		t.Fatalf("提交次数 = %d，期望 2", picks)
+	}
+	if !strings.Contains(beginMsg, "剔除") {
+		t.Fatalf("开跑文案 = %q，期望说明剔除了已选课程", beginMsg)
+	}
+}
+
+// 命中的候选全部已选上时，任务应该干脆地结束（ErrAllChosen），而不是空转；
+// 首次加载可能是提前收手的局部名单，所以要再整页刷新确认一次。
+//
+// 用两个课程号：已选查询只在候选横跨多个课程号时才做（见 needChosenQuery），
+// 单课程号的形态走的是"不查、靠提交反馈"那条路。
+func TestRunAutoStopsWhenAllCandidatesChosen(t *testing.T) {
+	srv := autoServerFull(t, detailJSON, chooseFullJSON,
+		`[{"jxb_id":"j1","kch_id":"k1"},{"jxb_id":"j2","kch_id":"k2"}]`)
+	e := newCandidateEngine(t, srv, []protocol.CourseListDic{
+		courseListEntry("k1", "j1", "定向越野"),
+		courseListEntry("k2", "j2", "乒乓球"),
+	})
+	e.CacheCourseDetail([]protocol.CourseDetail{
+		{JxbId: "j1", DoJxbId: "d1", Jxbrl: "50", Yxzrs: "10"},
+		{JxbId: "j2", DoJxbId: "d2", Jxbrl: "50", Yxzrs: "10"},
+	})
+
+	wants := protocol.WishList{WantClassList: []string{"定向越野", "乒乓球"}}
+	candidates, err := e.CollectCandidates(context.Background(), wants)
+	if err != nil {
+		t.Fatalf("CollectCandidates: %v", err)
+	}
+
+	var picks int
+	_, err = e.RunAuto(context.Background(), Plan{
+		Wants:     wants,
+		MaxRounds: 5,
+		Interval:  time.Millisecond,
+	}, staticSource(candidates), func(ev Event) {
+		if ev.Kind == EventPick {
+			picks++
+		}
+	})
+	if !errors.Is(err, ErrAllChosen) {
+		t.Fatalf("err = %v，期望 ErrAllChosen", err)
+	}
+	if picks != 0 {
+		t.Fatalf("提交次数 = %d，期望 0（已选课程不该提交）", picks)
+	}
+}
+
+// 板块课形态（整个页签只有一种课程号，下面挂着几十个教学班）不查已选课程表：
+// 已选接口比课程列表贵得多，而这门课选上一个班就结束了，查它的唯一作用是省掉
+// 一次提交——不查也只白提交那一次，flag=6 会在一次提交内把"已选"认出来。
+func TestRunAutoSkipsChosenQueryForSingleCourseNumber(t *testing.T) {
+	var chosenCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "cxZzxkYzbChoosedDisplay"):
+			chosenCalls.Add(1)
+			// 就算真的查了，也回一份"j1 已选"的名单：用来确认跳过查询不是
+			// 因为查不到数据，而是压根没发这个请求。
+			_, _ = io.WriteString(w, `[{"jxb_id":"j1","kch_id":"k1"}]`)
+		case strings.Contains(r.URL.Path, "zzxkyzbjk_xkBcZyZzxkYzb"):
+			_, _ = io.WriteString(w, `{"flag":"6","msg":"该教学班已选中，刷新页面可见！"}`)
+		default:
+			_, _ = io.WriteString(w, indexOKHTML)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	e := newCandidateEngine(t, srv, []protocol.CourseListDic{
+		courseListEntry("k1", "j1", "体育Ⅳ"),
+		courseListEntry("k1", "j2", "体育Ⅳ"),
+		courseListEntry("k1", "j3", "体育Ⅳ"),
+	})
+	e.CacheCourseDetail([]protocol.CourseDetail{
+		{JxbId: "j1", DoJxbId: "d1", Jxbrl: "50", Yxzrs: "10"},
+		{JxbId: "j2", DoJxbId: "d2", Jxbrl: "50", Yxzrs: "10"},
+		{JxbId: "j3", DoJxbId: "d3", Jxbrl: "50", Yxzrs: "10"},
+	})
+
+	wants := protocol.WishList{WantClassList: []string{"体育Ⅳ"}}
+	candidates, err := e.CollectCandidates(context.Background(), wants)
+	if err != nil {
+		t.Fatalf("CollectCandidates: %v", err)
+	}
+	if len(candidates) != 3 {
+		t.Fatalf("候选数 = %d，期望 3: %+v", len(candidates), candidates)
+	}
+
+	var picks, already int
+	_, err = e.RunAuto(context.Background(), Plan{
+		Wants:     wants,
+		MaxRounds: 3,
+		Interval:  time.Millisecond,
+		Refresh:   20 * time.Millisecond,
+	}, staticSource(candidates), func(ev Event) {
+		switch ev.Kind {
+		case EventPick:
+			picks++
+		case EventAlreadyChosen:
+			already++
+		}
+	})
+	if !errors.Is(err, ErrAllChosen) {
+		t.Fatalf("err = %v，期望 ErrAllChosen", err)
+	}
+	if n := chosenCalls.Load(); n != 0 {
+		t.Fatalf("已选课程接口被请求 %d 次，期望 0（板块课不查已选课表）", n)
+	}
+	if picks != 1 || already != 1 {
+		t.Fatalf("pick/already = %d/%d，期望 1/1（只靠一次提交反馈认出已选）", picks, already)
+	}
+}
+
+// 板块课不查已选，兄弟教学班撞上的 flag=0「一门课程只能选一个教学班」必须当
+// "这门课已选"处理：否则它会被当成确定性拒绝，把已经满足愿望的任务打死；
+// 也不能每轮都对着同课程号的其它教学班重打。
+func TestRunAutoTreatsSiblingRejectAsAlreadyChosen(t *testing.T) {
+	const chooseSiblingJSON = `{"flag":"0","msg":"一门课程只能选一个教学班，不可再选！"}`
+	srv := autoServerWithChoose(t, detailJSON, chooseSiblingJSON)
+	e := newCandidateEngine(t, srv, []protocol.CourseListDic{
+		courseListEntry("k1", "j1", "体育Ⅳ"),
+		courseListEntry("k1", "j2", "体育Ⅳ"),
+		courseListEntry("k1", "j3", "体育Ⅳ"),
+	})
+	e.CacheCourseDetail([]protocol.CourseDetail{
+		{JxbId: "j1", DoJxbId: "d1", Jxbrl: "50", Yxzrs: "10"},
+		{JxbId: "j2", DoJxbId: "d2", Jxbrl: "50", Yxzrs: "10"},
+		{JxbId: "j3", DoJxbId: "d3", Jxbrl: "50", Yxzrs: "10"},
+	})
+
+	wants := protocol.WishList{WantClassList: []string{"体育Ⅳ"}}
+	candidates, err := e.CollectCandidates(context.Background(), wants)
+	if err != nil {
+		t.Fatalf("CollectCandidates: %v", err)
+	}
+
+	var picks, already, fails int
+	var alreadyMsg string
+	_, err = e.RunAuto(context.Background(), Plan{
+		Wants:     wants,
+		MaxRounds: 3,
+		Interval:  time.Millisecond,
+		Refresh:   20 * time.Millisecond,
+	}, staticSource(candidates), func(ev Event) {
+		switch ev.Kind {
+		case EventPick:
+			picks++
+		case EventAlreadyChosen:
+			already++
+			alreadyMsg = ev.Message
+		case EventFailed:
+			fails++
+		}
+	})
+	if !errors.Is(err, ErrAllChosen) {
+		t.Fatalf("err = %v，期望 ErrAllChosen（愿望已经满足，不是拒绝）", err)
+	}
+	if picks != 1 || already != 1 || fails != 0 {
+		t.Fatalf("pick/already/failed = %d/%d/%d，期望 1/1/0（一次反馈就整门课收工）", picks, already, fails)
+	}
+	if !strings.Contains(alreadyMsg, "其它教学班") {
+		t.Fatalf("已选事件文案 = %q，期望说明选上的是别的教学班", alreadyMsg)
+	}
+}
+
+// 不查已选课表的形态（这里是单教学班的候选）靠 flag=6 的反馈剔除：撞上"已选中"
+// 的教学班记进过滤器，之后的轮次不再对它和同课程的兄弟班级提交。
+func TestRunAutoDropsCourseOnAlreadyChosenFlag(t *testing.T) {
+	const chooseAlreadyJSON = `{"flag":"6","msg":"该教学班已选中，刷新页面可见！"}`
+	// 用 autoServerWithChoose：候选只有一个教学班，needChosenQuery 为 false，
+	// 已选接口根本不会被请求，只能靠提交反馈。
+	e, candidates := rejectTestEngine(t, chooseAlreadyJSON)
+	wants := protocol.WishList{WantClassList: []string{"定向越野"}}
+
+	var picks, already int
+	var alreadyMsg string
+	_, err := e.RunAuto(context.Background(), Plan{
+		Wants:     wants,
+		MaxRounds: 3,
+		Interval:  time.Millisecond,
+		Refresh:   time.Hour,
+	}, staticSource(candidates), func(ev Event) {
+		switch ev.Kind {
+		case EventPick:
+			picks++
+		case EventAlreadyChosen:
+			already++
+			alreadyMsg = ev.Message
+		}
+	})
+	if !errors.Is(err, ErrAllChosen) {
+		t.Fatalf("err = %v，期望 ErrAllChosen（队列只剩已选课程时停止）", err)
+	}
+	if picks != 1 || already != 1 {
+		t.Fatalf("pick/already = %d/%d，期望 1/1（之后的轮次不再提交已选课程）", picks, already)
+	}
+	if !strings.Contains(alreadyMsg, "不再重复尝试") {
+		t.Fatalf("已选事件文案 = %q，期望说明不再重试", alreadyMsg)
+	}
+}
+
+// 刷新时已选名单要跟着更新：用户在别的窗口手动选了课，队列要立即剔除。
+func TestRunAutoReloadsChosenOnRefresh(t *testing.T) {
+	var chosenBody atomic.Value
+	chosenBody.Store(`[]`)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "cxZzxkYzbChoosedDisplay"):
+			_, _ = io.WriteString(w, chosenBody.Load().(string))
+		case strings.Contains(r.URL.Path, "zzxkyzbjk_xkBcZyZzxkYzb"):
+			_, _ = io.WriteString(w, chooseFullJSON)
+		default:
+			_, _ = io.WriteString(w, indexOKHTML)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	e := newCandidateEngine(t, srv, nil)
+	e.CacheCourseList([]protocol.CourseListDic{
+		courseListEntry("k1", "j1", "定向越野"),
+		courseListEntry("k2", "j2", "乒乓球"),
+	})
+	e.CacheCourseDetail([]protocol.CourseDetail{
+		{JxbId: "j1", DoJxbId: "d1", Jxbrl: "50", Yxzrs: "10"},
+		{JxbId: "j2", DoJxbId: "d2", Jxbrl: "50", Yxzrs: "10"},
+	})
+	wants := protocol.WishList{WantClassList: []string{"定向越野", "乒乓球"}}
+	candidates, err := e.CollectCandidates(context.Background(), wants)
+	if err != nil {
+		t.Fatalf("CollectCandidates: %v", err)
+	}
+
+	// 模拟用户在别的窗口手动选课：第一轮把 d1、d2 各试了一次（满员失败），
+	// 第二轮的刷新前 j1 已经选上，应从队列剔除。
+	var pickCount int
+	var pickIDs []string
+	_, err = e.RunAuto(context.Background(), Plan{
+		Wants:     wants,
+		MaxRounds: 2,
+		Interval:  80 * time.Millisecond,
+		Refresh:   20 * time.Millisecond,
+	}, staticSource(candidates), func(ev Event) {
+		if ev.Kind != EventPick {
+			return
+		}
+		pickCount++
+		pickIDs = append(pickIDs, ev.Course.Do_jxb_id)
+		if pickCount == 2 {
+			// 第一轮结束（两个候选都试过一遍）后、第二轮刷新查询前，
+			// 把 j1 标成已选。
+			chosenBody.Store(`[{"jxb_id":"j1","kch_id":"k1"}]`)
+		}
+	})
+	if !errors.Is(err, ErrNotChosen) {
+		t.Fatalf("err = %v，期望 ErrNotChosen", err)
+	}
+	// 第一轮试 d1、d2；刷新后 d1 已选被剔除，第二轮只剩 d2。
+	if want := []string{"d1", "d2", "d2"}; !equalStrings(pickIDs, want) {
+		t.Fatalf("提交序列 = %v，期望 %v（刷新后剔除手动选上的 d1）", pickIDs, want)
+	}
+}
+
+// 一轮只提交优先级最前面的几个候选：通识选修命中几十个教学班时，
+// 逐个提交整个队列会把选课接口打进限流。
+func TestRunAutoCapsAttemptsPerRound(t *testing.T) {
+	e, _ := rejectTestEngine(t, chooseFullJSON)
+	wants := protocol.WishList{WantClassList: []string{"定向越野"}}
+
+	candidates := make([]protocol.CustomCourseDic, 0, 8)
+	for i := 0; i < 8; i++ {
+		candidates = append(candidates, protocol.CustomCourseDic{
+			Kch_id:    fmt.Sprintf("k%d", i),
+			Jxb_id:    fmt.Sprintf("j%d", i),
+			Jxbmc:     fmt.Sprintf("定向越野%d", i),
+			Kcmc:      "定向越野",
+			Do_jxb_id: fmt.Sprintf("d%d", i),
+			Jxbrl:     "39",
+			Yxzrs:     "39", // 全部满员，保证每轮都从头尝试整个队列
+		})
+	}
+
+	var picks int
+	_, err := e.RunAuto(context.Background(), Plan{
+		Wants:     wants,
+		MaxRounds: 2,
+		Interval:  time.Millisecond,
+		Refresh:   time.Hour,
+	}, staticSource(candidates), func(ev Event) {
+		if ev.Kind == EventPick {
+			picks++
+		}
+	})
+	if !errors.Is(err, ErrNotChosen) {
+		t.Fatalf("err = %v，期望 ErrNotChosen", err)
+	}
+	if picks != 2*maxAttemptsPerRound {
+		t.Fatalf("提交次数 = %d，期望 %d（两轮各 %d）", picks, 2*maxAttemptsPerRound, maxAttemptsPerRound)
 	}
 }
 

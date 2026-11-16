@@ -17,13 +17,19 @@ var ErrNotInitialized = errors.New("engine: 会话尚未初始化")
 //
 // 与 CollectCandidates 的区别有三处：**每次调用都重拉课程列表**；第一次调用
 // 如果愿望里填了课程名，先走"名字优先"——只抓课程名命中的课程号，命中就立即
-// 返回，一门都没命中时才回落到整表扫描；整表扫描**找到一个此刻能提交的候选就
-// 先返回**，剩下的课程号留到下一次刷新接着扫。
+// 返回，一门都没命中时才回落到整表扫描；整表扫描走"快速首扫"——找到一个此刻
+// 能提交的候选就先返回，让第一次提交尽快发出去。
 //
 // 名字优先是为学校的两类选课设计的：板块课一个课程号下挂着全部教学班，一次
 // 详情就能补齐，怎么算都不慢；通识选修课整页有几十个课程号、每个课程号一两个
 // 教学班，全抓一遍要几十次详情（限流下约一分钟）。用户点名的课经常不在整页的
 // 开头，名字优先把它从"扫完整页才能提交"变成"第一次请求就能提交"。
+//
+// 快速首扫只发生在第一次调用：抢课的第一发请求不值得等整页详情抓完。之后的
+// 调用（自动选课的周期性刷新）会把整页扫完——补过详情的课程号在缓存里带着
+// Do_jxb_id、不会再发请求，所以整页扫描的代价只是一次列表请求加"还没抓过的
+// 课程号"的详情；通识选修的全部课程和教学班在第一次刷新后就都在队列里，不再
+// 只围着最先扫到的几个教学班反复尝试。
 //
 // 教师 / 类型愿望只能在整表扫描里命中（教师只出现在详情里），没有名字可以提前
 // 定位；同理，扫到一个能提交的就先提交，不把整页详情拖到第一次提交之前。提前
@@ -37,16 +43,19 @@ func (e *Engine) CandidateSource(wants protocol.WishList) Source {
 	var first atomic.Bool
 	first.Store(true)
 	return func(ctx context.Context) ([]protocol.CustomCourseDic, error) {
-		if first.CompareAndSwap(true, false) && wants.HasCourseNames() {
-			nameOnly, err := e.collect(ctx, wants, collectOptions{refreshList: true, nameOnly: true})
-			if err != nil {
-				return nil, err
+		if first.CompareAndSwap(true, false) {
+			if wants.HasCourseNames() {
+				nameOnly, err := e.collect(ctx, wants, collectOptions{refreshList: true, nameOnly: true})
+				if err != nil {
+					return nil, err
+				}
+				if len(nameOnly) > 0 {
+					return nameOnly, nil
+				}
+				// 名字没有命中：列表刚刷新过，直接拿它做整表扫描。
+				return e.collect(ctx, wants, collectOptions{quick: true})
 			}
-			if len(nameOnly) > 0 {
-				return nameOnly, nil
-			}
-			// 名字没有命中：列表刚刷新过，直接拿它做整表扫描。
-			return e.collect(ctx, wants, collectOptions{})
+			return e.collect(ctx, wants, collectOptions{refreshList: true, quick: true})
 		}
 		return e.collect(ctx, wants, collectOptions{refreshList: true})
 	}
@@ -79,11 +88,16 @@ type collectOptions struct {
 	// nameOnly 为 true 时只处理课程名命中的课程号，空结果不算错误——调用方要
 	// 回落到整表扫描。
 	nameOnly bool
+	// quick 为 true 时走"快速首扫"：整表扫描找到一个此刻能提交的候选就先
+	// 返回，不把整页详情拖到第一次提交之前。只用于自动选课的第一次加载；
+	// 之后的刷新要把整页扫完，否则通识选修永远只在最先扫到的几个教学班里
+	// 反复尝试。
+	quick bool
 }
 
 // collect 是 CollectCandidates / CandidateSource 的实现。
 //
-// 提前收手的规则：整表扫描里这次调用已经抓过详情（didDetail）、收好的候选里
+// 提前收手（quick）的规则：这次扫描已经抓过详情（didDetail）、收好的候选里
 // 有一个此刻还有名额（hasVacancy）、后面的课程号还要再请求详情
 // （hasDetailWork）——满足就带着已经收好的候选返回，剩下的留到下一次刷新。
 // 补过详情的课程号在缓存里带着 Do_jxb_id，下次扫描到它们不会产生请求，所以
@@ -149,14 +163,16 @@ func (e *Engine) collect(ctx context.Context, wants protocol.WishList, opt colle
 		if matched := matchedClasses(e.Courses(), wants, group.kchID, opt.nameOnly); len(matched) > 0 {
 			out = append(out, matched...)
 		}
-		// 自动选课：这次扫描已经请求过详情，手里也有了一个此刻能提交的候选，
-		// 后面的课程号还要再请求详情，留到下一次刷新接着扫——第一次提交不必等
-		// 整页详情抓完。
+		// 自动选课的快速首扫：这次扫描已经请求过详情，手里也有了一个此刻能
+		// 提交的候选，后面的课程号还要再请求详情，留到下一次刷新接着扫——
+		// 第一次提交不必等整页详情抓完。
 		//
 		// 只在整表扫描里提前收手：名字优先一次只抓点名的课程号（通常一两门），
 		// 没有省头；而且这条路径已经"命中就返回"，再收手只会让同一次里本来就
-		// 抓得完的第二门课白白晚一轮。
-		if !opt.nameOnly && didDetail && hasVacancy(out) && hasDetailWork(groups[i+1:]) {
+		// 抓得完的第二门课白白晚一轮。周期性刷新（quick=false）把整页扫完：
+		// 扫过的课程号不再产生请求，代价可控，而队列覆盖整页才能让通识选修
+		// 的全部教学班都进入轮转。
+		if !opt.nameOnly && opt.quick && didDetail && hasVacancy(out) && hasDetailWork(groups[i+1:]) {
 			return out, nil
 		}
 	}

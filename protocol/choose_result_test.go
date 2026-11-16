@@ -89,3 +89,29 @@ func TestChooseCourseResultRetryable(t *testing.T) {
 		})
 	}
 }
+
+// AlreadyChosen 认两种"这门课已经选上"：flag=6（提交的这个班已选中）和 flag=0
+// 的"一门课程只能选一个教学班"（同课程的另一个班已选中）。它是自动选课不查已选
+// 课程表的前提——板块课全靠这两条反馈判定"整门课收工"。
+func TestChooseCourseResultAlreadyChosen(t *testing.T) {
+	cases := []struct {
+		name   string
+		result ChooseCourseResult
+		want   bool
+	}{
+		{"flag=6 该教学班已选中", ChooseCourseResult{Flag: ChooseFlagAlreadyChosen}, true},
+		{"flag=0 一门课程只能选一个教学班", ChooseCourseResult{Flag: ChooseFlagRejected, Msg: "一门课程只能选一个教学班，不可再选！"}, true},
+		{"flag=0 英文文案", ChooseCourseResult{Flag: ChooseFlagRejected, Msg: "Only one teaching class can be selected for a course!"}, true},
+		{"flag=0 其它拒绝（冲突）", ChooseCourseResult{Flag: ChooseFlagRejected, Msg: "所选教学班的上课时间与其他教学班有冲突！"}, false},
+		{"flag=0 频率限制", ChooseCourseResult{Flag: ChooseFlagRejected, Msg: "选课频率过高，请稍后重试！"}, false},
+		{"容量超出", ChooseCourseResult{Flag: ChooseFlagCapacityFull, Msg: "0,DO-JXB-1,39,"}, false},
+		{"成功", ChooseCourseResult{Flag: ChooseFlagOK}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.result.AlreadyChosen(); got != tc.want {
+				t.Fatalf("AlreadyChosen() = %v，期望 %v", got, tc.want)
+			}
+		})
+	}
+}

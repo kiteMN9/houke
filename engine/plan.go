@@ -24,6 +24,14 @@ const defaultInterval = 1500 * time.Millisecond
 // 感知名额释放，又不会让课程列表接口变成主要流量。
 const defaultRefresh = 30 * time.Second
 
+// maxAttemptsPerRound 限制一轮里真正提交选课的次数。
+//
+// 通识选修一页愿望命中的教学班可能有几十个；候选队列扩到整页之后，若每轮都
+// 把整个队列提交一遍，几秒内就是几十次提交，教务会回"选课频率过高"甚至 5xx。
+// 每轮只按优先级试最前面的几个：排序已经把"有名额的"排在前面，名额的变化
+// 也会在下次刷新后把刚放出名额的教学班重新排到前面，捡漏的机会丢不了。
+const maxAttemptsPerRound = 5
+
 // Plan 是一次自动选课的描述。
 //
 // 它只描述"想要什么、多久试一次、多久刷新一次、最多试几轮"，不含任何会话状态：
@@ -61,6 +69,9 @@ var (
 	ErrNoWantedCourse = errors.New("engine: 愿望清单没有命中可选的课程")
 	// ErrNotChosen 表示轮次用尽仍未选上。
 	ErrNotChosen = errors.New("engine: 重试用尽仍未选上")
+	// ErrAllChosen 表示命中的候选教学班全部已经选上，继续运行没有意义。
+	// 任务结束原因交给上层翻译（WebUI 显示为"愿望命中的课程都已选上"）。
+	ErrAllChosen = errors.New("engine: 候选课程都已选上")
 	// ErrChooseRejected 表示教务明确拒绝了这次选课，而且再试也不会变：
 	// flag=0 且文案不是"选课频率过高"（见 protocol.ChooseCourseResult.Retryable）。
 	// 运行会立即停止，不再按轮次重试——学分 / 门数上限、不在选课时间这类拒绝
@@ -103,6 +114,10 @@ const (
 	// EventRefreshFailed 表示这次刷新没拿到可用名单（查询失败、没有命中的
 	// 教学班），本轮沿用上一次的队列继续提交。
 	EventRefreshFailed = "refresh_failed"
+	// EventAlreadyChosen 表示提交后发现这门课此前已经选上：flag=6 是提交的
+	// 教学班已选中，flag=0 的「一门课程只能选一个教学班」是同课程的另一个教学班
+	// 已选中。本次运行把它连同同课程号的其它教学班从队列剔除，不再重试。
+	EventAlreadyChosen = "already_chosen"
 )
 
 // Sink 接收进度事件；传 nil 表示不关心进度。
@@ -162,6 +177,18 @@ func (p Plan) normalized() (Plan, error) {
 // 每轮重新提交一次，有人退课就有机会选上。只有压根没命中愿望清单才返回
 // ErrNoWantedCourse，满员抢不到算 ErrNotChosen。
 //
+// 已经选上的教学班不进队列也不重试，但"要不要查已选课程表"看候选的形态
+// （见 needChosenQuery）：通识选修课整页几十个课程号，值得查一次已选课表把
+// 已选的整门课剔除；板块课整个页签只有一种课程号、下面挂着几十个教学班，
+// 选上一个就是这门课结束，查一次最贵的接口换不来任何收益，不查——提交反馈
+// 会把"这门课已经选上"告诉 RunAuto：flag=6 是提交的班已选中，flag=0 的
+// "一门课程只能选一个教学班"是同课程的另一个班已选中（见
+// protocol.ChooseCourseResult.AlreadyChosen）。整页命中的候选都已选上时返回
+// ErrAllChosen。
+//
+// 一轮里真正提交的次数有上限（maxAttemptsPerRound）：队列扩到整页后，逐个
+// 提交整个队列会把选课接口打进限流，每轮只试优先级最高的几个。
+//
 // 刷新失败不是致命错误：教务抖一下、这次列表查询被"加密串"挡回来都很常见，
 // 沿用上一次的队列继续提交，只在进度里留一条 EventRefreshFailed。
 //
@@ -206,8 +233,38 @@ func (e *Engine) RunAuto(ctx context.Context, plan Plan, source Source, sink Sin
 	if len(candidates) == 0 {
 		return zero, ErrNoCandidates
 	}
+
+	// 已选过滤：只在值得查的时候查（见 needChosenQuery）。查询失败不致命——
+	// 这条只是辅助信息，拿不到就先不过滤，运行中提交撞上"已选"的反馈照样能把
+	// 已选课程剔除。
 	queue := candidatesByPriority(wants, candidates)
+	var chosen chosenFilter
+	if needChosenQuery(queue) {
+		if f, ferr := e.chosenFilterOf(ctx); ferr == nil {
+			chosen = f
+		}
+		if e.SessionGeneration() != gen {
+			return zero, ErrSessionChanged
+		}
+	}
+
+	queue, dropped := dropChosen(queue, &chosen)
+	if len(queue) == 0 && dropped > 0 {
+		// 命中的候选全都已选：首次加载可能是提前收手的局部名单（见
+		// CandidateSource 的快速首扫），立即整页刷新确认一次，不拿半页
+		// 的结论当"都已选上"。
+		next, nextDropped, rerr := e.loadQueue(ctx, source, wants, &chosen)
+		if e.SessionGeneration() != gen {
+			return zero, asSessionChanged(rerr)
+		}
+		if rerr == nil {
+			queue, dropped = next, nextDropped
+		}
+	}
 	if len(queue) == 0 {
+		if dropped > 0 {
+			return zero, ErrAllChosen
+		}
 		return zero, ErrNoWantedCourse
 	}
 	// 把本次使用的清单写回会话，后续 /status 或重试能看到同一份配置。
@@ -215,7 +272,7 @@ func (e *Engine) RunAuto(ctx context.Context, plan Plan, source Source, sink Sin
 
 	emit(sink, Event{
 		Kind:    EventBegin,
-		Message: fmt.Sprintf("候选 %d 个教学班，开始自动选课", len(queue)),
+		Message: beginMessage(queue, dropped),
 	})
 
 	loadedAt := time.Now()
@@ -231,28 +288,31 @@ func (e *Engine) RunAuto(ctx context.Context, plan Plan, source Source, sink Sin
 		// 先刷新再提交：这一轮的排序和"已满 x/y"都用刷新后的人数。
 		if time.Since(loadedAt) >= p.Refresh {
 			loadedAt = time.Now()
-			next, err := refreshQueue(ctx, source, wants)
+			next, nextDropped, rerr := e.loadQueue(ctx, source, wants, &chosen)
 			if e.SessionGeneration() != gen {
-				return zero, asSessionChanged(err)
+				return zero, asSessionChanged(rerr)
 			}
 			switch {
-			case err != nil:
+			case rerr != nil:
 				if ctxErr := ctx.Err(); ctxErr != nil {
 					return zero, ctxErr
 				}
 				// 会话已经结束（重置 / 页签消失）时沿用旧队列没有意义。
-				if isSessionEnd(err) {
-					return zero, asSessionChanged(err)
+				if isSessionEnd(rerr) {
+					return zero, asSessionChanged(rerr)
 				}
 				// 登录失效时提交也一定失败，交给上层重新登录。
-				if errors.Is(err, protocol.ErrUnauthorized) {
-					return zero, err
+				if errors.Is(rerr, protocol.ErrUnauthorized) {
+					return zero, rerr
 				}
 				emit(sink, Event{
 					Round:   round,
 					Kind:    EventRefreshFailed,
-					Message: fmt.Sprintf("刷新候选失败，沿用上一次的名单：%v", err),
+					Message: fmt.Sprintf("刷新候选失败，沿用上一次的名单：%v", rerr),
 				})
+			case len(next) == 0 && nextDropped > 0:
+				// 整页刷新后命中的候选仍然全部已选，任务没有继续的意义。
+				return zero, ErrAllChosen
 			case len(next) == 0:
 				emit(sink, Event{
 					Round:   round,
@@ -261,12 +321,22 @@ func (e *Engine) RunAuto(ctx context.Context, plan Plan, source Source, sink Sin
 				})
 			default:
 				queue = next
-				emit(sink, Event{Round: round, Kind: EventRefresh, Message: queueMessage(queue)})
+				emit(sink, Event{Round: round, Kind: EventRefresh, Message: queueMessage(queue, nextDropped)})
 			}
 		}
 
+		attempts := 0
 		for i := range queue {
 			course := queue[i]
+			// 本轮中发现已选的（提交反馈、刷新后的已选名单）不再提交。
+			if chosen.matches(course) {
+				continue
+			}
+			// 一轮只提交优先级最前面的几个候选（见 maxAttemptsPerRound）。
+			if attempts >= maxAttemptsPerRound {
+				break
+			}
+			attempts++
 			emit(sink, Event{
 				Round:   round,
 				Kind:    EventPick,
@@ -307,6 +377,26 @@ func (e *Engine) RunAuto(ctx context.Context, plan Plan, source Source, sink Sin
 				emit(sink, Event{Round: round, Kind: EventFailed, Course: course, Message: err.Error()})
 				continue
 			}
+			// 这门课此前已经选上（用户手动选过，或同课程的其它教学班已选）：
+			// 记进过滤器，本轮后续、之后的轮次与刷新都不再尝试它和同课程的
+			// 其它教学班。既不算失败也不值得重试——重试只会白打请求。这条
+			// 反馈是"不查已选课程表"的前提（见 needChosenQuery）。
+			if result.AlreadyChosen() {
+				if result.Flag == protocol.ChooseFlagAlreadyChosen {
+					chosen.add(course.Jxb_id, course.Kch_id)
+				} else {
+					// flag=0"一门课程只能选一个教学班"：选上的是别的班，
+					// 只知道课程号已满足，这个教学班本身没被选中。
+					chosen.add("", course.Kch_id)
+				}
+				emit(sink, Event{
+					Round:   round,
+					Kind:    EventAlreadyChosen,
+					Course:  course,
+					Message: alreadyChosenMessage(course, result),
+				})
+				continue
+			}
 			// 教务的确定性拒绝（flag=0 且不是"选课频率过高"）：换轮次、换页面
 			// 都不会变，立即停止，别把几小时耗在必然失败的请求上。
 			if !result.Retryable() {
@@ -315,6 +405,14 @@ func (e *Engine) RunAuto(ctx context.Context, plan Plan, source Source, sink Sin
 			}
 			// flag=-1 的 msg 是人数机器串，展示前翻成人话，见 DisplayMsg。
 			emit(sink, Event{Round: round, Kind: EventFailed, Course: course, Message: result.DisplayMsg()})
+		}
+
+		// 剔除本轮通过 flag=6 发现已选的候选。队列空了说明剩下的全已选：
+		// 不空转等下个刷新周期，立即把 loadedAt 归零触发一次整页刷新确认，
+		// 仍然全部已选就在刷新分支里返回 ErrAllChosen。
+		queue, _ = dropChosen(queue, &chosen)
+		if len(queue) == 0 {
+			loadedAt = time.Time{}
 		}
 
 		if p.MaxRounds > 0 && round >= p.MaxRounds {
@@ -338,21 +436,186 @@ func asSessionChanged(err error) error {
 	return fmt.Errorf("%w: %v", ErrSessionChanged, err)
 }
 
-// refreshQueue 取一次最新候选并排成队列。返回空队列表示"这次刷新没有可提交
-// 的教学班"，调用方应沿用上一次的队列。
-func refreshQueue(ctx context.Context, source Source, wants protocol.WishList) ([]protocol.CustomCourseDic, error) {
+// loadQueue 取一次最新候选：排序、（值得的时候）查询已选课程、剔除已选教学班。
+//
+// chosen 是运行中累积的过滤器：开跑前查到的名单、提交反馈学到的已选课程都在
+// 里面；无论这次查不查已选课程表，都用它剔除队列。
+//
+// 返回的 dropped 是这次被已选过滤器剔除的数量：队列空且 dropped>0 表示
+// 命中的候选全部已选（区别于"压根没命中"的空队列）。
+func (e *Engine) loadQueue(ctx context.Context, source Source, wants protocol.WishList, chosen *chosenFilter) ([]protocol.CustomCourseDic, int, error) {
 	fresh, err := source(ctx)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return candidatesByPriority(wants, fresh), nil
+	queue := candidatesByPriority(wants, fresh)
+	if needChosenQuery(queue) {
+		// 已选名单跟着刷新一次：用户可能在别的窗口手动选了课，队列要同步剔除；
+		// 查询失败或没拿到数据就沿用旧的过滤器。结果是并进而不是覆盖——提交
+		// 反馈学到的已选信息不能被一次空查询抹掉。
+		if f, ferr := e.chosenFilterOf(ctx); ferr == nil {
+			chosen.merge(f)
+		}
+	}
+	queue, dropped := dropChosen(queue, chosen)
+	return queue, dropped, nil
+}
+
+// needChosenQuery 报告这批候选值不值得查询已选课程表。
+//
+// 已选课程查询比课程列表贵得多：它要把整张已选课表翻出来（分页、带全套用户
+// 参数），而它换来的只是"少提交几次已选的课"。这个收益只在候选横跨多个课程号
+// 时才存在——通识选修课整页几十个课程号，用户可能已经选掉其中若干门，每门都
+// 白提交一次就得不偿失。
+//
+// 板块课正好相反，也是不查的最主要场景：整个页签只有一种课程号，下面挂着几十
+// 个教学班（体育Ⅳ → 足球13 / 瑜伽4 / 舞龙4…）。选上其中任何一个，这门课就
+// 结束了，查已选课表的唯一作用是省掉**一次**提交；而不查的代价也就那一次：
+//
+//   - 选的是同一个教学班 → flag=6，直接认"已选"；
+//   - 选的是兄弟教学班 → flag=0「一门课程只能选一个教学班」，同样认"已选"
+//     （见 protocol.ChooseCourseResult.AlreadyChosen）。
+//
+// 两条都在一次提交内闭环，比把最贵的请求打进每一轮划算得多。课程号缺失时
+// 无法判断形态，按老办法查——查了顶多多花一次请求，不查则可能反复白提交。
+func needChosenQuery(queue []protocol.CustomCourseDic) bool {
+	if len(queue) < 2 {
+		return false
+	}
+	first := queue[0].Kch_id
+	if first == "" {
+		return true
+	}
+	for i := 1; i < len(queue); i++ {
+		if queue[i].Kch_id != first {
+			return true
+		}
+	}
+	return false
+}
+
+// chosenFilter 记录"已经选上"的教学班（jxb_id）与课程号（kch_id）。
+//
+// 教务规定一门课只能选一个教学班：课程号命中时，同课程的其它教学班再提交只会
+// 收到 flag=0 的确定性拒绝（"一门课程只能选一个教学班"），必须跟着剔除。jxb_id /
+// kch_id 为空的候选不参与匹配——空键会把没有 id 的条目全部误剔除。
+type chosenFilter struct {
+	jxb map[string]struct{}
+	kch map[string]struct{}
+}
+
+// matches 报告这个教学班（或它所属的课程）是否已经选上。
+func (f *chosenFilter) matches(c protocol.CustomCourseDic) bool {
+	if f == nil {
+		return false
+	}
+	if c.Jxb_id != "" {
+		if _, ok := f.jxb[c.Jxb_id]; ok {
+			return true
+		}
+	}
+	if c.Kch_id != "" {
+		_, ok := f.kch[c.Kch_id]
+		return ok
+	}
+	return false
+}
+
+// add 把一个已选教学班记进过滤器（jxb_id / kch_id 空的忽略）。
+func (f *chosenFilter) add(jxbID, kchID string) {
+	if jxbID != "" {
+		if f.jxb == nil {
+			f.jxb = make(map[string]struct{}, 4)
+		}
+		f.jxb[jxbID] = struct{}{}
+	}
+	if kchID != "" {
+		if f.kch == nil {
+			f.kch = make(map[string]struct{}, 4)
+		}
+		f.kch[kchID] = struct{}{}
+	}
+}
+
+// merge 把另一次已选查询的结果并进来。只用并集不用覆盖：运行中靠 flag=6
+// 学到的已选信息，不能被一次"成功但为空"的查询抹掉（否则又会开始对已选的
+// 课程反复提交）。代价是"用户退课后想靠正在跑的任务重新抢回这门课"做不到——
+// 那种场景重新启动一次任务即可，开跑前的查询是全新名单。
+func (f *chosenFilter) merge(other chosenFilter) {
+	for k := range other.jxb {
+		f.add(k, "")
+	}
+	for k := range other.kch {
+		f.add("", k)
+	}
+}
+
+// dropChosen 从队列里剔除已选的教学班，返回新队列与剔除数量。
+// 剔除数量 > 0 且队列为空，说明这批命中的候选全部已选上。
+func dropChosen(queue []protocol.CustomCourseDic, chosen *chosenFilter) ([]protocol.CustomCourseDic, int) {
+	if chosen == nil || (len(chosen.jxb) == 0 && len(chosen.kch) == 0) {
+		return queue, 0
+	}
+	out := make([]protocol.CustomCourseDic, 0, len(queue))
+	for i := range queue {
+		if !chosen.matches(queue[i]) {
+			out = append(out, queue[i])
+		}
+	}
+	return out, len(queue) - len(out)
+}
+
+// chosenFilterOf 查询当前已选课程，组装成 chosenFilter。
+//
+// 只在 needChosenQuery 说"值得"时才调用：这个接口要把整张已选课表翻出来，比
+// 课程列表贵得多，板块课（单课程号、几十个教学班）不查它。
+//
+// 学年 / 学期取自选课首页参数（IndexInfo.Term），与当前选课轮次一致，不需要
+// 调用方传参。查询失败时把错误交回调用方：自动选课把它当尽力而为的辅助信息，
+// 失败就先不过滤，运行中靠"已选"的提交反馈照样能剔除已选课程。
+func (e *Engine) chosenFilterOf(ctx context.Context) (chosenFilter, error) {
+	xnm, xqm := e.session.snapshot().Index.Term()
+	if xnm == "" || xqm == "" {
+		return chosenFilter{}, errors.New("engine: 选课参数缺少学年/学期，无法查询已选课程")
+	}
+	list, err := e.Selected(ctx, xnm, xqm)
+	if err != nil {
+		return chosenFilter{}, err
+	}
+	var f chosenFilter
+	for i := range list {
+		f.add(list[i].JxbId, list[i].Kch_id)
+	}
+	return f, nil
+}
+
+// beginMessage 是开跑时的进度文案，带上被剔除的已选课程数，
+// 让用户知道队列里没有已选的课是"主动剔除了"而不是"没扫到"。
+func beginMessage(queue []protocol.CustomCourseDic, dropped int) string {
+	msg := fmt.Sprintf("候选 %d 个教学班，开始自动选课", len(queue))
+	if dropped > 0 {
+		msg += fmt.Sprintf("（已剔除选上的 %d 个）", dropped)
+	}
+	return msg
+}
+
+// alreadyChosenMessage 是撞上"已选"之后的进度文案。
+//
+// 两种来源要分开说：flag=6 是这个教学班本身已选上；flag=0 的"只能选一个教学班"
+// 是这门课的**另一个**教学班已选上（用户手动选的、或上一次运行选的），用户看到
+// 文案才知道选上的是别的班，不用再去翻已选课表。
+func alreadyChosenMessage(course protocol.CustomCourseDic, result protocol.ChooseCourseResult) string {
+	if result.Flag == protocol.ChooseFlagAlreadyChosen {
+		return fmt.Sprintf("《%s》%s 已选上，不再重复尝试", course.Kcmc, course.Jxbmc)
+	}
+	return fmt.Sprintf("《%s》已选过其它教学班，整门课不再重复尝试", course.Kcmc)
 }
 
 // queueMessage 描述刷新后的队列规模与满员情况。
 //
 // 刷新事件每隔 Refresh 才一条，文案里必须带数字：用户盯着任务面板时，能从中
 // 看出"人数确实在变/名额确实放出来了"，而不是以为程序卡住了。
-func queueMessage(queue []protocol.CustomCourseDic) string {
+func queueMessage(queue []protocol.CustomCourseDic, dropped int) string {
 	full := 0
 	for i := range queue {
 		if isFull(queue[i]) {
@@ -360,6 +623,9 @@ func queueMessage(queue []protocol.CustomCourseDic) string {
 		}
 	}
 	msg := fmt.Sprintf("候选已刷新：%d 个可提交教学班", len(queue))
+	if dropped > 0 {
+		msg += fmt.Sprintf("（剔除已选 %d 个）", dropped)
+	}
 	if full > 0 {
 		msg += fmt.Sprintf("，其中 %d 个已满", full)
 	}

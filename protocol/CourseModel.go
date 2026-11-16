@@ -160,6 +160,13 @@ type IndexInfo struct {
 	//<input type="hidden" name="xkxskclxkg" id="xkxskclxkg" value="0"/>
 }
 
+// Term 返回当前选课轮次所属的学年（xkxnm）与学期（xkxqm），来自选课首页。
+// 上层查已选课程（GetSelected）需要这两个参数；字段私有是为了不把整包首页
+// 参数摊出去，读这一对值走访问器。
+func (c IndexInfo) Term() (string, string) {
+	return c.xkxnm, c.xkxqm
+}
+
 // SelectionWindow 选课页签
 //
 // 是选课时间窗与学分统计，用于展示与"距离结束还有多久"。
@@ -375,11 +382,50 @@ var chooseRetryMessages = []string{
 	"frequency of course selection is too high",
 }
 
+// chooseAlreadyChosenMessages 是 flag=0 里"这门课已经选了别的教学班"的文案。
+//
+// 教务规定一门课只能选一个教学班（页面参数 sfqzxk，见 CourseAPI.go）：用户选过
+// 之后，对同课程号的**其它**教学班提交就会收到这条拒绝。它和"时间冲突""超出
+// 学分上限"一样是确定性拒绝，但语义完全不同——愿望其实已经满足了，只是选的不是
+// 这一个班。自动选课要靠它把"该课程已选"认出来（见 AlreadyChosen）。
+var chooseAlreadyChosenMessages = []string{
+	"只能选一个教学班",
+	"only one teaching class", // 未实际确认
+}
+
+// AlreadyChosen 报告这次提交是不是"这门课已经选上了"。
+//
+// 两种形态都算：
+//   - flag=6：提交的这个教学班本身已选中；
+//   - flag=0 且文案是"一门课程只能选一个教学班"：同课程的另一个教学班已选中。
+//
+// 自动选课拿它当"这门课不用再试了"的信号，而不是普通的确定性拒绝：重试确实
+// 改变不了结果，但任务也不该失败——愿望已经满足，只是选上的是别的班。这条反馈
+// 还让自动选课可以**不查已选课程表**就跳过已选的课（见 engine.needChosenQuery），
+// 代价只是每门已选的课白提交一次。
+func (r ChooseCourseResult) AlreadyChosen() bool {
+	if r.Flag == ChooseFlagAlreadyChosen {
+		return true
+	}
+	if r.Flag != ChooseFlagRejected {
+		return false
+	}
+	msg := strings.ToLower(r.Msg)
+	for _, hint := range chooseAlreadyChosenMessages {
+		if strings.Contains(msg, strings.ToLower(hint)) {
+			return true
+		}
+	}
+	return false
+}
+
 // Retryable 报告这次失败是否值得再试。
 //
 // flag=0 是教务的业务拒绝，只有"选课频率过高"值得等一会儿再提交；其它拒绝
 // 都是确定性的，再打一遍也不会变（见 html/_xkBcZyZzxkYzb.html 的错误样本）：
 // 上课时间冲突、一门课只能选一个教学班、不在选课时间、门次限制、非法操作。
+// 其中"一门课只能选一个教学班"其实是"这门课已选"（见 AlreadyChosen），调用方
+// 应该先判 AlreadyChosen 再判 Retryable。
 // 加密串过期也是 flag=0，但 engine.Choose 已经续期并重试过一次，到这里说明
 // 续期没救回来，同样不再重试。
 //

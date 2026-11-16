@@ -10,10 +10,14 @@
 
 - **WebUI「其他工具」新增教务脚本哈希**：用当前会话抓 `config` 里的三份自主选课脚本（`JSzzxkYzb` / `JSzzxkYzbZy` / `JSzzxkYzbChoosedZy`）并算 `sha1` / 大小，卡片放在「当前 Cookie」下面（`GET /api/accounts/:id/tools/jshash`）。正方换掉这些 JS 时本工具的选择器与参数推断就可能失效，报障时给出哈希即可定位版本。本地没有快照时自动存一份到 `html/`，已有快照只比对不覆盖；要更新基准点「存为快照」（`POST /tools/jshash/save`，临时文件 + Rename 原子替换）。静态脚本不需要登录，未登录也返回 200；学校把请求拦到登录页时按单份失败记录（`protocol.WebFetchStatic` 先嗅探内容再判登录态）。
 - **字符验证码设置并入 `server.json`**：验证码模型设置（`enabled` / `modelPath` / `threshold` / `workers`）从 `kaptcha.json` 迁到 `server.json` 的 `kaptcha` 节点，与 SMTP 配置统一由 `web/serverSettingsManager` 落盘。启动时若 `server.json` 没有 `kaptcha` 节点，会只读导入同目录的旧版 `kaptcha.json` 一次，之后旧文件不再读写；上传的模型仍在 `models/`。
+- **自动选课只在值得的时候查已选课程表（板块课不再查）**：已选课程接口比课程列表贵得多，而它只换来"少提交几次已选的课"。现在只有候选**横跨多个课程号**时才查（通识选修课的典型形态：整页几十个课程号，用户可能已选掉若干门）；板块课整个页签只有一种课程号、下面挂着几十个教学班（体育Ⅳ → 足球13 / 瑜伽4 / 舞龙4…），选上一个班这门课就结束了，查一次最贵的接口最多省下**一次**提交，直接不查——`flag=6`（提交的班已选中）和 `flag=0`「一门课程只能选一个教学班」（兄弟班已选中）这两条提交反馈就够判定"整门课收工"（`protocol.ChooseCourseResult.AlreadyChosen()`）。代价是每门已选的课多一次提交，收益是把最贵的请求从每一轮里拿掉。
 - **自动选课找到一个能选的候选就直接提交**：整表扫描（填了教师 / 类型——列表里没有教师字段，只能逐门抓详情）扫到第一个此刻还有名额的候选就先返回、立即进入提交循环，不再等整页几十个课程号的详情抓完再提交。通识选修课整页有几十个课程号、每个课程号一两个教学班，限流下全抓一遍约一分钟；现在第一次提交只要一次详情的时间。提前收手不丢低优先级的课：下一次刷新从还没补详情的课程号接着扫，补过详情的课程号在缓存里带着 `Do_jxb_id`、不会再发请求，队列只会变长。满员的候选仍留在队列里等名额释放，只有“一个有名额的都没有”时才继续扫完整页。
 
 ### 修复
 
+- **自动选课不再反复尝试已选上的教学班**：`RunAuto` 开跑前（候选横跨多个课程号时）与每次刷新都会查一次已选课程（学年/学期取自选课首页参数，新增 `protocol.IndexInfo.Term()`），已选的教学班连同同课程号的其它教学班（教务规定一门课只能选一个教学班）一并从队列剔除；运行中提交撞上"已选"也会记进过滤名单（新事件 `auto.already_chosen`），不再每轮白打一次请求。整页命中的候选都已选上时，任务以 `result.status=all_chosen` 正常结束（前端/邮件显示"愿望命中的课程都已选上"），不再无限空转。
+- **`flag=0`「一门课程只能选一个教学班」不再把任务打死**：这条之前按普通确定性拒绝处理，任务直接以 `rejected` 结束；但它其实说明"这门课已经选了别的教学班"，愿望是满足的。`protocol.ChooseCourseResult.AlreadyChosen()` 把 `flag=6` 和这条文案一起认作"已选"，按已选剔除并继续（不查已选课表的板块课完全依赖这条反馈）。
+- **自动选课的候选刷新改为整页扫描**：通识选修课一页几十个课程号，此前"提前收手"在每次刷新里也生效——手里只要已有一个有名额的候选、后面还有要抓详情的课程号就停，每 30 秒的刷新只前进一个课程号，队列长期停留在最先扫到的几个教学班里反复尝试。现在"扫到第一个能提交的就先返回"只用于首次加载（保住第一发提交的速度），之后的每次刷新把整页扫完（补过详情的课程号不再发请求），通识选修的全部课程和教学班在第一次刷新后都进入队列。同时一轮最多提交 5 个候选（按优先级取最前面），队列扩到整页后不会把选课接口打进"选课频率过高"/5xx。
 - **开启自动重登时，需要登录的功能不再要求先点「登录」**：成绩、已选课程、个人信息、大头照、自动选课在未登录时先跑一次**可见、可取消**的登录任务（与手动登录同一条链路，验证码 / 新密码由任务面板接管），登录成功后再继续本次请求；前端查询按钮也不再在发请求前拦截。关闭 `autoRelogin` 时仍返回 `401 + unauthorized`，由用户手动点「登录」。微信扫码账号不自动登录（没有二维码弹窗就没人扫），提示手动登录。
 - **jwmock 的选课返回值按实测样本对齐**：`zzxkyzbjk_xkBcZyZzxkYzb` 的 `flag` 不再是"成功 1 / 失败 0"两种——满员 / 容量超出 `-1`（`msg` 是 `分志愿,教学班id,已选人数,` 的机器串，样本里第 4 段为空）、重复选同一教学班 `6`、成功 `1`（不再附带「选课成功」文案）；上课时间冲突、一门课只能选一个教学班、窗口关闭、门次上限、非法操作等业务拒绝是 `0` + 实测文案（以 `html/_xkBcZyZzxkYzb.html` 为准，脚本里的 `2` 分支本校园没实测到）。
 - **客户端按这套语义展示选课结果**：`protocol.ChooseCourseResult` 新增 `OK()` / `DisplayMsg()`；`flag=3`（选课成功、免费学分已达上限）也算选上，自动选课不会把它当失败一直重试；`flag=-1` 不再把人数串直接弹给用户，自动选课的失败事件和 `POST /choose` 都显示「该教学班已无余量，不可选！」，WebUI 手动选课也把 `3` 当成功。
@@ -21,7 +25,11 @@
 
 ### 测试
 
-- `protocol/choose_result_test.go`：`OK()` / `DisplayMsg()` 的 flag 语义；新增 `TestChooseCourseResultRetryable`（中英文频率限制可重试；学分 / 门次 / 窗口 / 冲突 / 重复 / 非法操作 / 空文案不可重试；-1 / 6 仍可重试）。
+- `engine/plan_test.go`：新增 `TestRunAutoSkipsAlreadyChosenCandidates`（开跑前剔除已选教学班与兄弟班级）、`TestRunAutoStopsWhenAllCandidatesChosen`（多课程号形态整页都已选时返回 `ErrAllChosen` 且一次都不提交）、`TestRunAutoDropsCourseOnAlreadyChosenFlag`（没有已选名单时靠 `flag=6` 反馈剔除并停止重试）、`TestRunAutoReloadsChosenOnRefresh`（刷新时同步剔除运行期间手动选上的课）、`TestRunAutoCapsAttemptsPerRound`（单轮提交上限）、`TestNeedChosenQuery`（只有多课程号才查已选课表，课程号缺失时保守地查）、`TestRunAutoSkipsChosenQueryForSingleCourseNumber`（板块课形态一次都不请求已选接口，靠一次 `flag=6` 收工）、`TestRunAutoTreatsSiblingRejectAsAlreadyChosen`（`flag=0`「只能选一个教学班」按已选处理，一次反馈就整门课收工）。
+- `engine/candidates_test.go`：新增 `TestCandidateSourceRefreshScansWholePage`（首次快速收手、刷新整页扫完、扫过的课程号不重复请求）。
+- `jwmock/integration_test.go`：`TestDuplicateChoose` 改为断言 `ErrAllChosen` 且只提交一次、出现 `already_chosen`、不出现失败事件；`TestAutoChooseSkipsChosenSiblings` 改为走"不查已选课表"的路径，断言一次反馈即收工；新增 `TestAutoChooseSkipsChosenQueryForBlockCourse`（板块课整轮不请求 `cxZzxkYzbChoosedDisplay`，并校验请求流水确实记到了选课请求）。
+- `web/handlers_auto_test.go`：`TestAutoOutcome` 增加 `all_chosen` 映射（任务状态 done）。
+- `protocol/choose_result_test.go`：`OK()` / `DisplayMsg()` 的 flag 语义；新增 `TestChooseCourseResultRetryable`（中英文频率限制可重试；学分 / 门次 / 窗口 / 冲突 / 重复 / 非法操作 / 空文案不可重试；-1 / 6 仍可重试）与 `TestChooseCourseResultAlreadyChosen`（6 与「只能选一个教学班」算已选，冲突 / 频率限制 / 容量 / 成功不算）。
 - `engine/plan_test.go`：新增 `TestRunAutoStopsOnNonRetryableReject` / `TestRunAutoRetriesRateLimitedChoose`；满员夹具改成 `flag=-1` 并校验失败文案已被翻成人话。
 - `engine/candidates_test.go`：新增 `TestCandidateSourceStopsAtFirstVacancy`（扫到第一个有名额的候选就收手，下一次刷新接着扫、补过详情的课程号不再请求）；`TestCandidateSourceNameFirstFallsBackToFullScan` 改为验证回落扫描同样收手、下一次刷新补扫剩余课程号。
 - `jwmock/integration_test.go`：新增 `TestChooseResultFlags`（`-1` / `6` / `0` / `1` 与 `-1` 的人数字段）和 `TestNonRetryableRejectStops`；`TestRejections` / `TestMaxCourses` / `TestTransientRejectRecovers` 按新语义调整。

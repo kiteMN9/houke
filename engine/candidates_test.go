@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -409,6 +410,72 @@ func TestCandidateSourceStopsAtFirstVacancy(t *testing.T) {
 	}
 	if len(got) != 3 {
 		t.Fatalf("第三次候选 = %+v，期望仍是 3 个", got)
+	}
+}
+
+// 刷新必须把整页扫完：通识选修一页几十个课程号，如果每次刷新只前进一个
+// 课程号（提前收手在刷新里也生效），队列会长期停留在最先扫到的几个教学班里
+// 反复尝试——用户面对的是"那么多课程只加载几个"。
+func TestCandidateSourceRefreshScansWholePage(t *testing.T) {
+	var listBody atomic.Value
+	listBody.Store(`{"tmpList":[` +
+		`{"kch_id":"k1","jxb_id":"j1","kcmc":"艺术一","jxbmc":"艺术一-0001","kzmc":"艺术类","yxzrs":"50"},` +
+		`{"kch_id":"k2","jxb_id":"j2","kcmc":"艺术二","jxbmc":"艺术二-0001","kzmc":"艺术类","yxzrs":"10"},` +
+		`{"kch_id":"k3","jxb_id":"j3","kcmc":"艺术三","jxbmc":"艺术三-0001","kzmc":"艺术类","yxzrs":"10"},` +
+		`{"kch_id":"k4","jxb_id":"j4","kcmc":"艺术四","jxbmc":"艺术四-0001","kzmc":"艺术类","yxzrs":"10"},` +
+		`{"kch_id":"k5","jxb_id":"j5","kcmc":"艺术五","jxbmc":"艺术五-0001","kzmc":"艺术类","yxzrs":"10"},` +
+		`{"kch_id":"k6","jxb_id":"j6","kcmc":"艺术六","jxbmc":"艺术六-0001","kzmc":"艺术类","yxzrs":"10"}]}`)
+	var listHits, detailHits atomic.Int32
+	details := map[string]string{}
+	for i := 1; i <= 6; i++ {
+		id := fmt.Sprintf("k%d", i)
+		if i == 1 {
+			details[id] = `[{"jxb_id":"j1","do_jxb_id":"d1","jxbrl":"50","yxzrs":"50"}]`
+		} else {
+			details[id] = fmt.Sprintf(`[{"jxb_id":"j%d","do_jxb_id":"d%d","jxbrl":"50","yxzrs":"10"}]`, i, i)
+		}
+	}
+	srv := candidateSourceServer(t, &listBody, &listHits, &detailHits, details)
+	e := newCandidateEngine(t, srv, nil)
+	listHits.Store(0)
+	source := e.CandidateSource(protocol.WishList{WantTypeList: []string{"艺术类"}})
+
+	// 第一次：快速首扫——k1 满员继续，扫到 k2 有名额就收手，先把第一发提交
+	// 发出去；k3..k6 的详情留给刷新。
+	got, err := source(context.Background())
+	if err != nil {
+		t.Fatalf("首次 source: %v", err)
+	}
+	if detailHits.Load() != 2 {
+		t.Fatalf("首次详情请求 = %d，期望 2（扫到 k2 就收手）", detailHits.Load())
+	}
+	if len(got) != 2 {
+		t.Fatalf("首次候选 = %d 个，期望 2", len(got))
+	}
+
+	// 第二次（自动选课的周期性刷新）：整页扫完，k3..k6 的详情全部补齐，
+	// 通识选修的全部教学班都进入队列。
+	got, err = source(context.Background())
+	if err != nil {
+		t.Fatalf("第二次 source: %v", err)
+	}
+	if detailHits.Load() != 6 {
+		t.Fatalf("第二次详情请求 = %d，期望 6（整页扫完，不是只前进一个）", detailHits.Load())
+	}
+	if len(got) != 6 {
+		t.Fatalf("第二次候选 = %d 个，期望 6（整页命中都进队列）", len(got))
+	}
+
+	// 第三次：全部已缓存，刷新只剩一次列表请求。
+	got, err = source(context.Background())
+	if err != nil {
+		t.Fatalf("第三次 source: %v", err)
+	}
+	if detailHits.Load() != 6 {
+		t.Fatalf("第三次详情请求 = %d，期望 6（扫过的课程号不重复请求）", detailHits.Load())
+	}
+	if len(got) != 6 {
+		t.Fatalf("第三次候选 = %d 个，期望仍是 6", len(got))
 	}
 }
 

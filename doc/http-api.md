@@ -153,7 +153,8 @@
 错误样本见 `html/_xkBcZyZzxkYzb.html`）：`1` 成功；`3` 成功但免费学分已达上限（同样算落库）；
 `6` 该教学班已选中；`-1` 容量超出——`msg` 是教务的人数机器串，接口返回前已翻成
 「该教学班已无余量，不可选！」；`0` 是业务拒绝（时间冲突、重复选课、窗口关闭、门次上限、
-非法操作、加密串过期），`msg` 是原因。
+非法操作、加密串过期），`msg` 是原因。`0` 里的「一门课程只能选一个教学班」不是普通拒绝，
+而是"这门课已经选了别的教学班"（自动选课按已选处理，见下）。
 
 **无功能权限**：学校对没有开通的模块（公共账号查成绩、查个人信息等）返回的是
 HTTP 200 + 一张“无功能权限”的 HTML 错误页，不是 JSON，也不是登录页。协议层把它
@@ -174,22 +175,37 @@ HTTP 200 + 一张“无功能权限”的 HTML 错误页，不是 JSON，也不�
   选上/超时/取消。最终结果从 `GET /accounts/:id/status` 的 `task` 或
   `GET /accounts/:id/events` 的 SSE 快照读取。
 * **结果在任务快照里**：`task.result` 是
-  `{status,flag,msg,course?,error?}`；`status` 可取 `ok` / `not_chosen` / `rejected` /
+  `{status,flag,msg,course?,error?}`；`status` 可取 `ok` / `all_chosen` / `not_chosen` / `rejected` /
   `cancelled` / `timeout` / `session_changed` / `session_reset` / `no_wanted` /
   `no_candidates` / `not_initialized` / `unauthorized` / `failed`。
   `task.status` 只表示任务生命周期（`running` / `done` / `failed` / `timeout` /
-  `cancelled`），两者不要混用。
+  `cancelled`），两者不要混用。`all_chosen` 表示愿望命中的教学班全部已经选上
+  （已选来源见下面「已选课程不重试」），任务按正常结束收尾。
 * **前置条件**：已登录（未登录且开启自动重登时先跑一次可见登录；关闭时 401）、已初始化（400）；请求里的三项清单先按保存路径的同一套规则清洗（trim、丢空行、去重），清洗后为空时回落到账号里已保存的清单，仍为空则 400。
   空白条目不会被当成"命中所有课程"（`protocol.WishList.Match` 会跳过它们）。
 * **预算**：`endAt` > `durationSeconds` > 默认 24h；非法参数在建任务**之前**就 400。
-* **确定性拒绝立即停止**：提交返回 `flag=0` 且 `msg` 不是"选课频率过高"（中英文两种文案）时，
+* **确定性拒绝立即停止**：提交返回 `flag=0` 且 `msg` 不是“选课频率过高”（中英文两种文案）时，
   说明教务是确定性拒绝（上课时间冲突、重复选课、不在选课时间、门次上限、非法操作……），
   重试不会改变结果：任务立即结束，`result.status=rejected`、`result.error` 是教务文案，
-  不再换轮次白打请求。`flag=-1`（容量）、`6`（已选中）仍按轮次重试；加密串过期在 engine
+  不再换轮次白打请求。`flag=-1`（容量）仍按轮次重试；加密串过期在 engine
   里已经续期并重试过一次，仍失败同样停止。
+* **「已选」不算失败、也不再重试**：两种反馈都认 —
+  `flag=6`（提交的这个教学班已选中）和 `flag=0` 的「一门课程只能选一个教学班」
+  （同课程的**另一个**教学班已选中，说明这门课已经满足）。两者都会把该课程号记进
+  过滤名单、连同其它教学班一起从队列剔除，进度里留一条 `auto.already_chosen`；
+  整页候选都已选上时任务以 `result.status=all_chosen` 正常结束。
+* **已选课程查询按需进行**：已选课表接口比课程列表贵得多，只在候选**横跨多个课程号**
+  时才查（通识选修课的典型形态：整页几十个课程号，用户可能已经选掉其中若干门）。
+  **板块课不查**：整个页签只有一种课程号、下面挂着几十个教学班（体育Ⅳ → 足球13 /
+  瑜伽4 / 舞龙4…），选上一个班这门课就结束了，查一次最贵的接口只省得下**一次**
+  提交，不查的代价也就那一次，靠上面两条反馈即可收工。查到时开跑前与每次刷新各一次，
+  已选的教学班不进队列，用户在别的窗口手动选了课，下一次刷新（默认 30s）后自动剔除。
 * **节奏**：`intervalSeconds` 默认 1.5s（两轮提交之间）；`refreshSeconds` 默认 30s（重拉候选，让新放出的名额进入队列）。
-  整表扫描（填了教师 / 类型）扫到第一个此刻还有名额的候选就先返回、立即进入提交循环，
-  不等整页几十个课程号的详情抓完；剩下的课程号在下次刷新时接着扫，已补过详情的不再重复请求。
+  首次加载仍是“快速首扫”——整表扫描（填了教师 / 类型）扫到第一个此刻还有名额的候选就先返回、
+  立即进入提交循环，不等整页几十个课程号的详情抓完；**之后的每次刷新把整页扫完**
+  （补过详情的课程号不再重复请求），通识选修的全部课程和教学班在第一次刷新后都进入队列，
+  不再只围着最先扫到的几个教学班反复尝试。一轮里最多提交 5 个候选（按优先级取最前面的），
+  队列扩到整页后也不会把选课接口打进限流。
 * **运行期错误不再用 HTTP 状态码表达**：启动校验失败才回 4xx；运行中的
   "没选上"、会话变更、未登录、超时等都写进 `task.result`，由前端按结果提示。
 * **取消是幂等的**：没有在跑的任务时返回 200 + `noop`，调用方要把 `noop` 当成
@@ -348,7 +364,7 @@ data: {"type":"snapshot","id":42,"rev":7,"loggedIn":true,"pending":null,"qr":nul
 | 任务生命周期（web） | `task.begin`、`task.done`、`task.failed`、`task.cancelled`、`task.timeout`、`task.input.captcha`、`task.input.password`、`task.input.submitted` |
 | 登录阶段（protocol 上报） | `login.prepare`、`login.fetch-form`、`login.rtk`、`login.captcha-image`、`login.captcha`、`login.public-key`、`login.submit`、`login.password`、`login.portal`、`login.portal-ticket`、`login.sso`、`login.ticket`、`login.done`；扫码特有 `login.qr`、`login.qr-scanned`、`login.qr-expired`、`login.qr-refused`；门户密码登录特有 `login.password-error`、`login.account-locked`、`login.session-valid`、`login.session-expired`、`login.failed-attempts`、`login.portal-failed` |
 | 初始化阶段（protocol 上报） | `init.index`、`init.index-wait`、`init.index-parse`、`init.list-pre`、`init.list-pre-parse` |
-| web 自有 | `login.begin`、`init.login`、`init.reset`、`init.begin`、`auto.plan`、`auto.collect`、`auto.{begin,pick,failed,success,refresh,refresh_failed}` |
+| web 自有 | `login.begin`、`init.login`、`init.reset`、`init.begin`、`auto.plan`、`auto.collect`、`auto.{begin,pick,failed,success,refresh,refresh_failed,already_chosen}` |
 | 请求反推（`classify.go`） | `init.prepare`、`init.courses`、`init.detail`、`init.selected`、`course.choose`、`course.quit`、`http:<path>`（不写日志，只推进"当前阶段"） |
 
 ---

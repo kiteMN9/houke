@@ -1318,6 +1318,7 @@ function autoTaskText(res) {
             return '已选上：' + name + (cls ? '（' + cls + '）' : '');
         }
         case 'not_chosen':  return '轮次用尽，未选上';
+        case 'all_chosen':  return '愿望命中的课程都已选上，无需再选';
         case 'rejected':    return r.error ? '选课被拒绝，已停止：' + r.error : '选课被拒绝，已停止';
         case 'cancelled':   return '已取消';
         case 'timeout':     return r.error || '自动选课超时';

@@ -256,7 +256,7 @@ func (a *APIClient) GetCourseTabParams(ctx context.Context, cfg *APIConfig, save
 func (a *APIClient) GetCourseList(ctx context.Context, cfg *APIConfig) ([]CourseListDic, error) {
 	// 搜索课程，主页面的查询
 	if !cfg.State.listDump {
-		log.Println("========搜索课程 getCourseList()========")
+		log.Println("========搜索课程 GetCourseList()========")
 		fmt.Println("搜索课程")
 	}
 	var result CourseListResult
@@ -616,8 +616,7 @@ func (a *APIClient) ChooseCourse(ctx context.Context, idx IndexInfo, win Selecti
 			continue
 		}
 		if resp.IsStatusFailure() {
-			log.Println("chooseCourse", resp.Status())
-			log.Println("chooseCourse 状态码:", resp.Status(), resp.String())
+			log.Println("ChooseCourse 状态码:", resp.Status(), resp.String())
 			time.Sleep(1 * time.Second)
 			continue
 		}
@@ -626,8 +625,8 @@ func (a *APIClient) ChooseCourse(ctx context.Context, idx IndexInfo, win Selecti
 			return result, ErrUnauthorized
 		}
 		if err := json.Unmarshal(resp.Bytes(), &result); err != nil {
-			fmt.Println(err, resp.String())
-			log.Println(err, resp.String())
+			fmt.Println("ChooseCourse:", err, resp.String())
+			log.Println("ChooseCourse:", err, resp.String())
 			continue
 		}
 		return result, nil

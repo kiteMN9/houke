@@ -94,6 +94,17 @@ func findEvent(events []engine.Event, kind, substr string) bool {
 	return false
 }
 
+// countEvents 统计某类事件的条数（用于"这类动作只该发生 N 次"的断言）。
+func countEvents(events []engine.Event, kind string) int {
+	n := 0
+	for _, ev := range events {
+		if ev.Kind == kind {
+			n++
+		}
+	}
+	return n
+}
+
 func selectedIDs(t *testing.T, eng *engine.Engine) []string {
 	t.Helper()
 	ctx, cancel := testContext(t)
@@ -404,15 +415,111 @@ func TestDuplicateChoose(t *testing.T) {
 		t.Fatalf("第一次选课失败: flag=%q err=%v", res.Flag, err)
 	}
 
-	res, err, events := runAuto(t, eng, engine.Plan{Wants: want("数据结构"), Once: true})
-	if !errors.Is(err, engine.ErrNotChosen) {
-		t.Fatalf("重复选课 err = %v, want ErrNotChosen", err)
+	// 已经选上的课再次启动自动选课：只有一种课程号的形态不查已选课表
+	// （见 engine.needChosenQuery），靠一次提交的 flag=6 认出"已选"，
+	// 任务以"都已选上"收尾而不是无限重试。
+	res, err, events := runAuto(t, eng, engine.Plan{Wants: want("数据结构"), MaxRounds: 5})
+	if !errors.Is(err, engine.ErrAllChosen) {
+		t.Fatalf("重复选课 err = %v, want ErrAllChosen", err)
 	}
 	if res.Flag == "1" {
 		t.Fatal("重复选课不应成功")
 	}
-	if !findEvent(events, engine.EventFailed, "该教学班已选中") {
-		t.Fatalf("缺少重复选课失败事件: %+v", events)
+	if picks := countEvents(events, engine.EventPick); picks != 1 {
+		t.Fatalf("提交次数 = %d, want 1（一次反馈就收工，不再反复尝试）: %+v", picks, events)
+	}
+	if countEvents(events, engine.EventAlreadyChosen) != 1 {
+		t.Fatalf("缺少已选事件: %+v", events)
+	}
+	for _, ev := range events {
+		if ev.Kind == engine.EventFailed {
+			t.Fatalf("已选不该记成失败: %+v", ev)
+		}
+	}
+}
+
+// 同一门课已经选了一个教学班时，对兄弟教学班提交会收到 flag=0「一门课程只能选
+// 一个教学班」。它不是普通的确定性拒绝，而是"这门课已选"：任务要认作已选并让
+// 整门课收工，不能被打死，也不能每轮重新对着兄弟班级打。
+//
+// 三个教学班同属一个课程号 → 不查已选课表 → 第一次提交就撞上这条反馈。
+func TestAutoChooseSkipsChosenSiblings(t *testing.T) {
+	opts := jwmock.Options{Courses: []jwmock.Seed{
+		{JxbID: "JXB-TS-01", KchID: "KCH-TS", Kcmc: "通识课", Xf: "2", Sksj: "周一第1-2节", Capacity: 10},
+		{JxbID: "JXB-TS-02", KchID: "KCH-TS", Kcmc: "通识课", Xf: "2", Sksj: "周二第1-2节", Capacity: 10},
+		{JxbID: "JXB-TS-03", KchID: "KCH-TS", Kcmc: "通识课", Xf: "2", Sksj: "周三第1-2节", Capacity: 10},
+	}}
+	_, base := startMock(t, opts)
+	eng := newEngine(t, base, jwmock.DefaultUsername, jwmock.DefaultPassword)
+	mustLogin(t, eng)
+
+	// 先手动选上 01（模拟用户在别的窗口已经选过这门课的一个班）。
+	ctx, cancel := testContext(t)
+	defer cancel()
+	candidates, err := eng.CollectCandidates(ctx, want("通识课"))
+	if err != nil || len(candidates) != 3 {
+		t.Fatalf("CollectCandidates = %d, %v, want 3", len(candidates), err)
+	}
+	var first *protocol.CustomCourseDic
+	for i := range candidates {
+		if candidates[i].Jxb_id == "JXB-TS-01" {
+			first = &candidates[i]
+			break
+		}
+	}
+	if first == nil {
+		t.Fatalf("候选里没有 JXB-TS-01: %+v", candidates)
+	}
+	if res, err := eng.Choose(ctx, first); err != nil || res.Flag != "1" {
+		t.Fatalf("手动选课失败: flag=%q err=%v", res.Flag, err)
+	}
+
+	_, err, events := runAuto(t, eng, engine.Plan{Wants: want("通识课"), MaxRounds: 5})
+	if !errors.Is(err, engine.ErrAllChosen) {
+		t.Fatalf("err = %v, want ErrAllChosen（兄弟班级一并剔除）", err)
+	}
+	// flag=6（撞上已选的 01）或 flag=0「只能选一个教学班」（撞上 02/03）
+	// 都只发生一次：反馈一到就整门课收工。
+	if picks := countEvents(events, engine.EventPick); picks != 1 {
+		t.Fatalf("提交次数 = %d, want 1: %+v", picks, events)
+	}
+	if countEvents(events, engine.EventAlreadyChosen) != 1 {
+		t.Fatalf("缺少已选事件: %+v", events)
+	}
+	if findEvent(events, engine.EventFailed, "一门课程只能选一个教学班") {
+		t.Fatalf("「只能选一个教学班」不该记成失败: %+v", events)
+	}
+}
+
+// 板块课（整个页签只有一种课程号、下面几十个教学班）不查已选课程表：已选接口
+// 比课程列表贵得多，而这门课选上一个班就结束了，查它省下的只是一次提交。
+func TestAutoChooseSkipsChosenQueryForBlockCourse(t *testing.T) {
+	opts := jwmock.Options{Courses: []jwmock.Seed{
+		{JxbID: "JXB-BK-01", KchID: "KCH-BK", Kcmc: "体育Ⅳ", Xf: "1", Sksj: "周一第1-2节", Capacity: 10},
+		{JxbID: "JXB-BK-02", KchID: "KCH-BK", Kcmc: "体育Ⅳ", Xf: "1", Sksj: "周二第1-2节", Capacity: 10},
+		{JxbID: "JXB-BK-03", KchID: "KCH-BK", Kcmc: "体育Ⅳ", Xf: "1", Sksj: "周三第1-2节", Capacity: 10},
+	}}
+	srv, base := startMock(t, opts)
+	eng := newEngine(t, base, jwmock.DefaultUsername, jwmock.DefaultPassword)
+	mustLogin(t, eng)
+
+	res, err, _ := runAuto(t, eng, engine.Plan{Wants: want("体育Ⅳ"), MaxRounds: 3})
+	if err != nil || res.Flag != "1" {
+		t.Fatalf("板块课选课失败: flag=%q err=%v", res.Flag, err)
+	}
+
+	var sawChoose bool
+	for _, req := range srv.Snapshot().Requests {
+		if strings.Contains(req.Path, "cxZzxkYzbChoosedDisplay") {
+			t.Fatalf("板块课不该查询已选课程表，却请求了 %s", req.Path)
+		}
+		if strings.Contains(req.Path, "xkBcZyZzxkYzb") {
+			sawChoose = true
+		}
+	}
+	// 不然上面那条断言可能是"流水根本没记"造成的空过。
+	if !sawChoose {
+		t.Fatal("请求流水里没有选课请求，已选查询的断言不成立")
 	}
 }
 

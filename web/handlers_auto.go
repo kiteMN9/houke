@@ -298,6 +298,15 @@ func autoOutcome(ctx context.Context, err error, timeout time.Duration) autoTask
 			detail:     err.Error(),
 			result:     &taskResult{Status: "not_chosen", Error: err.Error()},
 		}
+	case errors.Is(err, engine.ErrAllChosen):
+		// 命中的候选全部已选上：愿望已经满足，按正常结束收尾，
+		// 不要把"无需再选"当失败吓用户。
+		return autoTaskOutcome{
+			taskStatus: taskStatusDone,
+			text:       "愿望命中的课程都已选上，无需再选",
+			detail:     err.Error(),
+			result:     &taskResult{Status: "all_chosen"},
+		}
 	case errors.Is(err, engine.ErrChooseRejected):
 		reason := err.Error()
 		if rej, ok := errors.AsType[*engine.ChooseRejectError](err); ok {
