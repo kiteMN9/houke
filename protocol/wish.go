@@ -6,12 +6,19 @@ import "strings"
 // 三个函数里：CLI 的自动选课、以后 Web 的高级选课都要用同一套"这门课是不是我要的"
 // 判断，规则只留一份。
 //
-// 规则本身是学校侧的历史行为，改之前先看 CourseUtil_test.go 里的用例：
+// 规则本身是学校侧的历史行为，改之前先看 wish_test.go 里的用例：
 //   - 课程名包含愿望课程名即命中；
 //   - 填了课程类型时，类型命中后还要看教师：教师清单为空即命中，否则要求教师也命中；
 //   - 只填教师时，教师命中即命中；
 //   - 空白条目一律跳过（首尾空格忽略）：strings.Contains(x, "") 恒为真，
 //     多打一个空行就会让类型 / 教师条件失效，变成"什么课都要"。
+//
+// 同一份清单要用在两种数据形态完全不同的页签上，所以规则分成两套，由 MatchMode
+// 选择（见下面的 MatchIn）：
+//
+//   - 通识选修课（MatchGeneral）：多课程号，按"教师 + 类型"匹配，课程名用来
+//     快速定位；
+//   - 板块课（MatchBlock）：单个课程号下几十个教学班，按教学班名匹配，类型不参与。
 
 // Clone 复制三个切片，避免调用方与 Session 共享底层数组。
 func (w WishList) Clone() WishList {
@@ -39,7 +46,100 @@ func hasNonBlank(items []string) bool {
 	return false
 }
 
-// Match 判断一门课是否命中愿望清单。
+// MatchMode 是自动选课的课型，决定用哪一套愿望匹配规则。
+//
+// 学校把两类选课放在两个页签里，数据形态差得很远，用同一条规则做两件事只会
+// 两头不讨好：
+//
+//   - 板块课（体育Ⅳ、大学英语…）：整个页签只有一个课程号，下面挂着几十个教学班
+//     （足球13 / 瑜伽4 / 舞龙4…）。用户要的是某个班，愿望填教学班名，偶尔用教师
+//     兜底；课程类型（Kzmc）对这个页签下的所有班都一样，当条件用只会误伤。
+//   - 通识选修课：整页几十个课程号、每个课程号一两个教学班。课程名太碎，用户
+//     通常按"教师 + 类型"挑课，点名的课程当成首轮快速目标。
+type MatchMode int
+
+const (
+	// MatchGeneral 是通识选修课：多课程号，按教师 / 类型匹配，整页探索。
+	MatchGeneral MatchMode = iota
+	// MatchBlock 是板块课：单课程号，按教学班名（或教师）匹配，忽略类型。
+	MatchBlock
+)
+
+// MatchModeOf 由课程集合的形态判断课型：教学班全属于同一个课程号就是板块课
+// （依据见 IsKchIdAllSame）。空集合、或课程号缺失时无从判断，按通识选修处理——
+// 它要求教师 / 类型命中，是条件更严格、更不容易误选的一侧。
+func MatchModeOf(courses []CustomCourseDic) MatchMode {
+	if len(courses) == 0 || courses[0].Kch_id == "" {
+		return MatchGeneral
+	}
+	if same, _ := IsKchIdAllSame(courses); same {
+		return MatchBlock
+	}
+	return MatchGeneral
+}
+
+// MatchIn 按课型判断一门课是否命中愿望清单。
+func (w WishList) MatchIn(mode MatchMode, item CustomCourseDic) bool {
+	if mode == MatchBlock {
+		return w.matchBlock(item)
+	}
+	return w.Match(item)
+}
+
+// matchBlock 是板块课的匹配：教学班名（或教师）命中即可，不看课程类型。
+//
+// 教学班名和课程名都比（MatchesCourseName）：WebUI 的输入框叫"课程名"，用户可能
+// 填整门课的名字（体育Ⅳ）表示"哪个班都行"，也可能填班名（足球13）指定具体教学班。
+// 排序仍按教学班名算优先级（见 engine.rankOf），填班名不会被"整门课都命中"淹没。
+//
+// 类型只在课程名与教师都没填时才拿来兜底：板块课的类型字段对整个页签都一样，
+// 填了它也只说明"要这门课"，不该把教学班挡在外面。
+func (w WishList) matchBlock(item CustomCourseDic) bool {
+	if w.MatchesCourseName(item) {
+		return true
+	}
+	for _, teacher := range w.WantTeacherList {
+		teacher = strings.TrimSpace(teacher)
+		if teacher == "" {
+			continue
+		}
+		if strings.Contains(item.Jsxx, teacher) {
+			return true
+		}
+	}
+	if hasNonBlank(w.WantClassList) || hasNonBlank(w.WantTeacherList) {
+		return false
+	}
+	return w.matchAnyType(item)
+}
+
+// matchAnyType 报告课程的课程性质是否命中愿望类型（不看教师）。
+func (w WishList) matchAnyType(item CustomCourseDic) bool {
+	for _, courseType := range w.WantTypeList {
+		courseType = strings.TrimSpace(courseType)
+		if courseType == "" {
+			continue
+		}
+		if matchesCourseType(item, courseType) {
+			return true
+		}
+	}
+	return false
+}
+
+// CouldMatchIn 是抓详情前的粗筛，按课型选择规则。
+//
+// 板块课直接放行：整个页签只有一个课程号，详情只请求一次，粗筛省不下任何请求，
+// 而教师只在详情里——挡掉它等于把"填了教师"的板块课废掉。
+func (w WishList) CouldMatchIn(mode MatchMode, item CustomCourseDic) bool {
+	if mode == MatchBlock {
+		return true
+	}
+	return w.CouldMatch(item)
+}
+
+// Match 判断一门课是否命中愿望清单（通识选修课的口味，等价于
+// MatchIn(MatchGeneral, item)）。
 //
 // WantClassList 里的每一项同时比对教学班名称（Jxbmc）和课程名称（Kcmc）：
 // CLI 的历史习惯是填教学班名（"定向越野-01班"），WebUI 的输入框却叫"课程名"，
@@ -127,7 +227,8 @@ func typeFieldMatches(field, courseType string) bool {
 	return field != "" && strings.Contains(courseType, field)
 }
 
-// CouldMatch 是抓课程详情之前的粗筛：返回 false 的课一定匹配不上，返回 true
+// CouldMatch 是抓课程详情之前的粗筛（通识选修课的口味，等价于
+// CouldMatchIn(MatchGeneral, item)）：返回 false 的课一定匹配不上，返回 true
 // 的还要等详情回来才能定论。engine 用它决定"要不要为这门课请求 GetCourseDetail"。
 //
 // 需要这个粗筛，是因为课程列表里没有教师：教师（Jsxx）只出现在详情里。愿望里

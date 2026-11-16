@@ -68,7 +68,7 @@ func TestCandidatesByPriority(t *testing.T) {
 		{Jxbmc: "篮球1", Jxbrl: "60", Yxzrs: "0", Do_jxb_id: "other"},
 	}
 
-	got := candidatesByPriority(wants, list)
+	got := candidatesByPriority(protocol.MatchGeneral, wants, list)
 	// 满员的 定向越野15 留在队列最后当捡漏备选；没 Do_jxb_id 的提交不了、篮球1 没命中愿望。
 	wantOrder := []string{"low", "high", "full"}
 	if len(got) != len(wantOrder) {
@@ -90,7 +90,7 @@ func TestCandidatesByPriorityKeepsFullCourse(t *testing.T) {
 		{Jxbmc: "定向越野6", Kcmc: "体育Ⅰ", Jxbrl: "39", Yxzrs: "39", Do_jxb_id: "d1"},
 	}
 
-	got := candidatesByPriority(wants, list)
+	got := candidatesByPriority(protocol.MatchGeneral, wants, list)
 	if len(got) != 1 || got[0].Do_jxb_id != "d1" {
 		t.Fatalf("候选 = %+v，期望保留满员的 定向越野6", got)
 	}
@@ -107,7 +107,7 @@ func TestCandidatesByPriorityTriesAvailableFirst(t *testing.T) {
 		{Jxbmc: "定向越野2", Jxbrl: "39", Yxzrs: "20", Do_jxb_id: "room"},
 	}
 
-	got := candidatesByPriority(wants, list)
+	got := candidatesByPriority(protocol.MatchGeneral, wants, list)
 	if len(got) != 2 || got[0].Do_jxb_id != "room" || got[1].Do_jxb_id != "full" {
 		t.Fatalf("候选 = %v，期望 [room full]", ids(got))
 	}
@@ -123,9 +123,47 @@ func TestCandidatesByPriorityMatchesCourseName(t *testing.T) {
 		{Jxbmc: "高等数学1", Kcmc: "高等数学", Jxbrl: "60", Yxzrs: "1", Do_jxb_id: "math"},
 	}
 
-	got := candidatesByPriority(wants, list)
+	got := candidatesByPriority(protocol.MatchGeneral, wants, list)
 	if want := []string{"cross", "yoga"}; !equalStrings(ids(got), want) {
 		t.Fatalf("候选 = %v，期望 %v（定向越野 是一志愿，体育Ⅰ 是二志愿）", ids(got), want)
+	}
+}
+
+// 通识选修课先看有没有名额：用户按"教师 + 类型"挑课，命中哪门都算达成，
+// 点名的课满员时不能让它挡着有名额的备选。
+func TestCandidatesByPriorityGeneralPrefersVacancy(t *testing.T) {
+	wants := protocol.WishList{
+		WantClassList:   []string{"定向越野"},
+		WantTeacherList: []string{"殷海华"},
+	}
+	list := []protocol.CustomCourseDic{
+		{Kch_id: "k1", Jxbmc: "定向越野1", Kcmc: "定向越野", Jxbrl: "39", Yxzrs: "39", Do_jxb_id: "named-full"},
+		{Kch_id: "k2", Jxbmc: "西方美术鉴赏-0001", Kcmc: "西方美术鉴赏", Jsxx: "440015/殷海华/副教授",
+			Jxbrl: "50", Yxzrs: "10", Do_jxb_id: "fallback"},
+	}
+
+	got := candidatesByPriority(protocol.MatchGeneral, wants, list)
+	if want := []string{"fallback", "named-full"}; !equalStrings(ids(got), want) {
+		t.Fatalf("候选 = %v，期望 %v（有名额的备选先试）", ids(got), want)
+	}
+}
+
+// 板块课相反：志愿里的教学班顺序就是用户真实在意的顺序，哪怕它已经满员，
+// 也要排在备选前面（足球13 满员就等它放名额，而不是先去选瑜伽4）。
+func TestCandidatesByPriorityBlockKeepsRankOrder(t *testing.T) {
+	wants := protocol.WishList{
+		WantClassList:   []string{"足球13"},
+		WantTeacherList: []string{"裴如意"},
+	}
+	list := []protocol.CustomCourseDic{
+		{Kch_id: "k1", Jxbmc: "足球13", Kcmc: "体育Ⅳ", Jxbrl: "39", Yxzrs: "39", Do_jxb_id: "named-full"},
+		{Kch_id: "k1", Jxbmc: "瑜伽4", Kcmc: "体育Ⅳ", Jsxx: "440015/裴如意/副教授",
+			Jxbrl: "50", Yxzrs: "10", Do_jxb_id: "teacher-vacancy"},
+	}
+
+	got := candidatesByPriority(protocol.MatchBlock, wants, list)
+	if want := []string{"named-full", "teacher-vacancy"}; !equalStrings(ids(got), want) {
+		t.Fatalf("候选 = %v，期望 %v（教学班名优先于余额）", ids(got), want)
 	}
 }
 
@@ -171,10 +209,10 @@ func TestRunAutoStopsWhenSessionChangesDuringSource(t *testing.T) {
 	candidates := []protocol.CustomCourseDic{{Jxbmc: "定向越野15", Do_jxb_id: "x"}}
 
 	calls := 0
-	source := func(context.Context) ([]protocol.CustomCourseDic, error) {
+	source := func(context.Context) (Batch, error) {
 		calls++
 		eng.Reset()
-		return candidates, nil
+		return Batch{Courses: candidates}, nil
 	}
 	_, err := eng.RunAuto(context.Background(), Plan{
 		Wants:     wants,
@@ -226,8 +264,8 @@ func TestRunAutoWrapsSessionErrorFromSource(t *testing.T) {
 		Wants:     wants,
 		MaxRounds: 1,
 		Interval:  time.Millisecond,
-	}, func(context.Context) ([]protocol.CustomCourseDic, error) {
-		return nil, ErrSessionReset
+	}, func(context.Context) (Batch, error) {
+		return Batch{}, ErrSessionReset
 	}, nil)
 	if !errors.Is(err, ErrSessionChanged) {
 		t.Fatalf("err = %v，期望 ErrSessionChanged", err)
@@ -248,8 +286,9 @@ func TestChooseAfterResetDoesNotSubmit(t *testing.T) {
 }
 
 // staticSource 返回固定候选，用来在不碰"刷新"的情况下跑 RunAuto。
+// More 留空：这张名单就是全部，RunAuto 不会为了"接着扫"额外要候选。
 func staticSource(list []protocol.CustomCourseDic) Source {
-	return func(context.Context) ([]protocol.CustomCourseDic, error) { return list, nil }
+	return func(context.Context) (Batch, error) { return Batch{Courses: list}, nil }
 }
 
 // 满员时教务返回 flag=-1，msg 是 "分志愿,教学班id,已选人数,本轮已选人数" 的
@@ -422,12 +461,12 @@ func TestRunAutoRefreshesCandidates(t *testing.T) {
 	}
 
 	var calls int
-	source := func(context.Context) ([]protocol.CustomCourseDic, error) {
+	source := func(context.Context) (Batch, error) {
 		calls++
 		if calls == 1 {
-			return fullOnly, nil
+			return Batch{Courses: fullOnly}, nil
 		}
-		return withRoom, nil
+		return Batch{Courses: withRoom}, nil
 	}
 
 	var picks, refreshes int
@@ -464,6 +503,56 @@ func TestRunAutoRefreshesCandidates(t *testing.T) {
 	}
 }
 
+// 候选源说"这一遍还没扫完"（Batch.More）时，这一轮没选上就立刻再要一批，
+// 不必等 Plan.Refresh：通识选修整页几十个课程号，扫到就选、没选上接着扫。
+// 这里把 Refresh 设成 1 小时——能不能接着扫只看 More。
+func TestRunAutoRescansWhenSourceHasMore(t *testing.T) {
+	srv := autoServer(t, detailJSON)
+	e := newCandidateEngine(t, srv, nil)
+
+	wants := protocol.WishList{WantClassList: []string{"定向越野"}}
+	first := []protocol.CustomCourseDic{
+		{Kch_id: "k1", Jxbmc: "定向越野1", Jxbrl: "39", Yxzrs: "39", Do_jxb_id: "d1"},
+	}
+	second := append(append([]protocol.CustomCourseDic{}, first...),
+		protocol.CustomCourseDic{Kch_id: "k2", Jxbmc: "定向越野2", Jxbrl: "50", Yxzrs: "20", Do_jxb_id: "d2"})
+
+	var calls int
+	source := func(context.Context) (Batch, error) {
+		calls++
+		switch calls {
+		case 1:
+			return Batch{Courses: first, More: true}, nil
+		case 2:
+			return Batch{Courses: second, More: true}, nil
+		default:
+			return Batch{Courses: second}, nil
+		}
+	}
+
+	var pickIDs []string
+	_, err := e.RunAuto(context.Background(), Plan{
+		Wants:     wants,
+		MaxRounds: 2,
+		Interval:  time.Millisecond,
+		Refresh:   time.Hour,
+	}, source, func(ev Event) {
+		if ev.Kind == EventPick {
+			pickIDs = append(pickIDs, ev.Course.Do_jxb_id)
+		}
+	})
+	if !errors.Is(err, ErrNotChosen) {
+		t.Fatalf("err = %v，期望 ErrNotChosen", err)
+	}
+	// 开跑要了第一批，第二轮又立刻要了一批：没等刷新周期。
+	if calls != 2 {
+		t.Fatalf("候选源调用 %d 次，期望 2（More 时不等刷新就续扫）", calls)
+	}
+	if len(pickIDs) < 2 || pickIDs[1] != "d2" {
+		t.Fatalf("提交序列 = %v，期望第二轮先试新扫到的 d2", pickIDs)
+	}
+}
+
 // 刷新失败（教务抖动、列表被挡）不能把队列清空：本轮继续用上一次的名单提交。
 func TestRunAutoKeepsQueueWhenRefreshFails(t *testing.T) {
 	srv := autoServer(t, detailJSON)
@@ -474,12 +563,12 @@ func TestRunAutoKeepsQueueWhenRefreshFails(t *testing.T) {
 		{Jxbmc: "定向越野1", Jxbrl: "39", Yxzrs: "39", Do_jxb_id: "full"},
 	}
 	var calls int
-	source := func(context.Context) ([]protocol.CustomCourseDic, error) {
+	source := func(context.Context) (Batch, error) {
 		calls++
 		if calls == 1 {
-			return only, nil
+			return Batch{Courses: only}, nil
 		}
-		return nil, errors.New("列表查询被拒绝")
+		return Batch{}, errors.New("列表查询被拒绝")
 	}
 
 	var picks, failed int
@@ -519,13 +608,13 @@ func TestRunAutoKeepsQueueWhenRefreshHasNoUsableCourse(t *testing.T) {
 		{Jxbmc: "定向越野1", Jxbrl: "39", Yxzrs: "39", Do_jxb_id: "full"},
 	}
 	var calls int
-	source := func(context.Context) ([]protocol.CustomCourseDic, error) {
+	source := func(context.Context) (Batch, error) {
 		calls++
 		if calls == 1 {
-			return only, nil
+			return Batch{Courses: only}, nil
 		}
 		// 详情没拿到 Do_jxb_id 的条目进不了队列。
-		return []protocol.CustomCourseDic{{Jxbmc: "定向越野1"}}, nil
+		return Batch{Courses: []protocol.CustomCourseDic{{Jxbmc: "定向越野1"}}}, nil
 	}
 
 	var picks, failed int

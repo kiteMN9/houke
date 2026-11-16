@@ -187,6 +187,94 @@ func TestWishListCouldMatch(t *testing.T) {
 	}
 }
 
+// 板块课（一个课程号下几十个教学班）按教学班名、或教师匹配，课程类型不参与：
+// 类型字段对整个页签都一样，当条件用只会把用户要的教学班挡在外面。
+func TestWishListMatchBlock(t *testing.T) {
+	football := CustomCourseDic{
+		Jxbmc: "足球13",
+		Kcmc:  "体育Ⅳ",
+		Kzmc:  "体育",
+		Jsxx:  "440015/裴如意/副教授",
+	}
+	tests := []struct {
+		name string
+		wish WishList
+		want bool
+	}{
+		{"教学班名命中", WishList{WantClassList: []string{"足球"}}, true},
+		{"教学班名不命中", WishList{WantClassList: []string{"瑜伽"}}, false},
+		{"课程名命中（整门课都行）", WishList{WantClassList: []string{"体育Ⅳ"}}, true},
+		{"教师命中", WishList{WantTeacherList: []string{"裴如意"}}, true},
+		{"教师不命中", WishList{WantTeacherList: []string{"张三"}}, false},
+		{"类型不参与：填错类型也命中教学班名", WishList{
+			WantClassList: []string{"足球13"},
+			WantTypeList:  []string{"艺术类"},
+		}, true},
+		{"类型不参与：填错类型也命中教师", WishList{
+			WantTeacherList: []string{"裴如意"},
+			WantTypeList:    []string{"艺术类"},
+		}, true},
+		{"只有类型时仍按类型兜底", WishList{WantTypeList: []string{"体育"}}, true},
+		{"只有类型且类型不命中", WishList{WantTypeList: []string{"艺术类"}}, false},
+		{"空清单", WishList{}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.wish.MatchIn(MatchBlock, football); got != tc.want {
+				t.Fatalf("MatchIn(MatchBlock, %+v) = %v, want %v", tc.wish, got, tc.want)
+			}
+		})
+	}
+
+	// 通识选修那边仍是"类型 + 教师"，板块课的宽松规则不能漏过去。
+	if !(WishList{WantClassList: []string{"足球13"}, WantTypeList: []string{"艺术类"}}).MatchIn(MatchGeneral, football) {
+		t.Fatal("通识选修的课程名命中分支应命中")
+	}
+	if (WishList{WantTeacherList: []string{"裴如意"}, WantTypeList: []string{"艺术类"}}).MatchIn(MatchGeneral, football) {
+		t.Fatal("通识选修要求类型命中，板块课的教师优先不该生效")
+	}
+}
+
+// 板块课的粗筛直接放行：整页只有一个课程号，详情只请求一次，省不下请求；
+// 而教师只在详情里，挡掉就把"填了教师"的板块课废了。
+func TestWishListCouldMatchBlock(t *testing.T) {
+	item := CustomCourseDic{Jxbmc: "足球13", Kcmc: "体育Ⅳ", Kzmc: "体育"}
+	wish := WishList{WantTypeList: []string{"艺术类"}}
+	if !wish.CouldMatchIn(MatchBlock, item) {
+		t.Fatal("板块课粗筛应放行")
+	}
+	if wish.CouldMatchIn(MatchGeneral, item) {
+		t.Fatal("通识选修的类型粗筛仍应生效")
+	}
+}
+
+// 课型由课程号的形态判断：教学班全属于同一个课程号是板块课，否则通识选修。
+// 空集合无从判断，按通识选修处理。
+func TestMatchModeOf(t *testing.T) {
+	cases := []struct {
+		name    string
+		courses []CustomCourseDic
+		want    MatchMode
+	}{
+		{"空集合", nil, MatchGeneral},
+		{"单个教学班", []CustomCourseDic{{Kch_id: "k1"}}, MatchBlock},
+		{"板块课：一门课多个教学班", []CustomCourseDic{
+			{Kch_id: "k1"}, {Kch_id: "k1"}, {Kch_id: "k1"},
+		}, MatchBlock},
+		{"通识选修：多个课程号", []CustomCourseDic{
+			{Kch_id: "k1"}, {Kch_id: "k2"},
+		}, MatchGeneral},
+		{"课程号缺失", []CustomCourseDic{{}, {}}, MatchGeneral},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := MatchModeOf(tc.courses); got != tc.want {
+				t.Fatalf("MatchModeOf = %v，期望 %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // Empty 按内容判断：只填空白条目等于没配置，保存路径会清洗掉它们，
 // 但直接传进来的请求体不一定。
 func TestWishListEmpty(t *testing.T) {

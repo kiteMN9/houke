@@ -222,13 +222,13 @@ func TestCandidateSourceRefreshesListEveryTime(t *testing.T) {
 		t.Fatalf("刷新请求列表 %d 次，期望 2", listHits.Load())
 	}
 	hasD2 := false
-	for _, course := range got {
+	for _, course := range got.Courses {
 		if course.Do_jxb_id == "d2" {
 			hasD2 = true
 		}
 	}
 	if !hasD2 {
-		t.Fatalf("刷新后的候选里没有新教学班 d2: %+v", got)
+		t.Fatalf("刷新后的候选里没有新教学班 d2: %+v", got.Courses)
 	}
 }
 
@@ -257,8 +257,8 @@ func candidateSourceServer(t *testing.T, listBody *atomic.Value, listHits, detai
 	return srv
 }
 
-// 名字优先：第一次收集只抓课程名命中的课，命中就立即返回，不把整页详情拖到
-// 提交之前；教师愿望等整表扫描留到刷新时再做。
+// 名字优先：第一批只抓课程名命中的课，命中就立即交出去，不把整页详情拖到
+// 提交之前；下一批接着整页扫（教师愿望只能在详情里命中），续扫不重拉列表。
 func TestCandidateSourceNameFirst(t *testing.T) {
 	var listBody atomic.Value
 	listBody.Store(`{"tmpList":[` +
@@ -286,29 +286,34 @@ func TestCandidateSourceNameFirst(t *testing.T) {
 	if detailHits.Load() != 1 {
 		t.Fatalf("首次详情请求 = %d，期望 1（只抓名字命中的 k1）", detailHits.Load())
 	}
-	if len(got) != 1 || got[0].Kch_id != "k1" {
-		t.Fatalf("首次候选 = %+v，期望只有 k1", got)
+	if len(got.Courses) != 1 || got.Courses[0].Kch_id != "k1" {
+		t.Fatalf("首批候选 = %+v，期望只有 k1", got.Courses)
+	}
+	if !got.More {
+		t.Fatal("首批 More = false，期望 true（整页还没扫完）")
 	}
 
-	// 第二次调用回到整表扫描：k1 已有 Do_jxb_id，只补 k2 的详情。
+	// 第二批接着扫：不重拉列表，只补 k2 的详情（k1 已有 Do_jxb_id）。
 	got, err = source(context.Background())
 	if err != nil {
-		t.Fatalf("第二次 source: %v", err)
+		t.Fatalf("第二批 source: %v", err)
 	}
-	if listHits.Load() != 2 {
-		t.Fatalf("第二次列表请求 = %d，期望 2", listHits.Load())
+	if listHits.Load() != 1 {
+		t.Fatalf("续扫列表请求 = %d，期望仍是 1（一遍扫描只拉一次列表）", listHits.Load())
 	}
 	if detailHits.Load() != 2 {
-		t.Fatalf("第二次详情请求 = %d，期望 2（补 k2）", detailHits.Load())
+		t.Fatalf("第二批详情请求 = %d，期望 2（补 k2）", detailHits.Load())
 	}
-	if len(got) != 2 {
-		t.Fatalf("第二次候选 = %+v，期望 k1 + 教师命中的 k2", got)
+	if len(got.Courses) != 2 {
+		t.Fatalf("第二批候选 = %+v，期望 k1 + 教师命中的 k2", got.Courses)
+	}
+	if got.More {
+		t.Fatal("整页扫完后 More 仍为 true")
 	}
 }
 
-// 名字一门都没命中时不能只返回空：第一次调用在刷新完列表后立刻回落到整表
-// 扫描，教师/类型命中的课仍要能进候选，而且列表只请求一次。整表扫描同样不等
-// 整页抓完——扫到第一个能提交的候选就先返回，剩下的课程号留给下一次刷新。
+// 名字一门都没命中时不能只返回空：同一批里接着整页扫，扫到第一个教师 / 类型
+// 命中的课就交出去，剩下的下一批再扫。
 func TestCandidateSourceNameFirstFallsBackToFullScan(t *testing.T) {
 	var listBody atomic.Value
 	listBody.Store(`{"tmpList":[` +
@@ -333,30 +338,137 @@ func TestCandidateSourceNameFirstFallsBackToFullScan(t *testing.T) {
 	if listHits.Load() != 1 {
 		t.Fatalf("列表请求 = %d，期望 1（回落扫描复用刚刷新的列表）", listHits.Load())
 	}
-	// k1 教师命中且有名额：k2 的详情留到下一次刷新再抓。
+	// 点名课没命中：同一批里整页扫，扫到教师命中的 k1 就先交出去，k2 留到下一批。
 	if detailHits.Load() != 1 {
-		t.Fatalf("详情请求 = %d，期望 1（扫到第一个能提交的候选就收手）", detailHits.Load())
+		t.Fatalf("详情请求 = %d，期望 1（扫到第一个能提交的就先交）", detailHits.Load())
 	}
-	if len(got) != 1 || got[0].Kch_id != "k1" {
-		t.Fatalf("候选 = %+v，期望教师命中的 k1", got)
+	if len(got.Courses) != 1 || got.Courses[0].Kch_id != "k1" {
+		t.Fatalf("候选 = %+v，期望教师命中的 k1", got.Courses)
+	}
+	if !got.More {
+		t.Fatal("More = false，期望 true（k2 还没扫）")
 	}
 
-	// 下一次刷新接着扫剩下的课程号：k2 的教师不命中，不会凑进候选。
+	// 第二批扫完剩下的：k2 的教师不命中，不凑进候选，也不重拉列表。
 	got, err = source(context.Background())
 	if err != nil {
-		t.Fatalf("第二次 source: %v", err)
+		t.Fatalf("第二批 source: %v", err)
+	}
+	if listHits.Load() != 1 {
+		t.Fatalf("续扫列表请求 = %d，期望仍是 1", listHits.Load())
 	}
 	if detailHits.Load() != 2 {
-		t.Fatalf("第二次详情请求 = %d，期望 2（补 k2）", detailHits.Load())
+		t.Fatalf("第二批详情请求 = %d，期望 2（补 k2）", detailHits.Load())
 	}
-	if len(got) != 1 || got[0].Kch_id != "k1" {
-		t.Fatalf("第二次候选 = %+v，期望仍只有 k1", got)
+	if len(got.Courses) != 1 || got.Courses[0].Kch_id != "k1" {
+		t.Fatalf("第二批候选 = %+v，期望仍只有 k1", got.Courses)
+	}
+	if got.More {
+		t.Fatal("整页扫完后 More 仍为 true")
 	}
 }
 
-// 通识选修课整页几十个课程号、每个课程号都要一次详情：自动选课找到第一个
-// 有名额的候选就先返回，不等整页抓完；下一次刷新从停下的地方接着扫，扫过的
-// 课程号不再重复请求详情。
+// 点名的课全满时也要在同一轮整页探索：名字优先只是"快速目标"，不是"只要它"。
+// 通识选修按教师 / 类型挑课，点名课满员就该去试教师命中的其它课程号，而不是
+// 守着几门满员的课空转到下个刷新周期。
+func TestCandidateSourceExploresWhenNamedCoursesFull(t *testing.T) {
+	var listBody atomic.Value
+	listBody.Store(`{"tmpList":[` +
+		`{"kch_id":"k1","jxb_id":"j1","kcmc":"定向越野","jxbmc":"定向越野-0001","yxzrs":"50"},` +
+		`{"kch_id":"k2","jxb_id":"j2","kcmc":"西方美术鉴赏","jxbmc":"西方美术鉴赏-0001","yxzrs":"10"}]}`)
+	var listHits, detailHits atomic.Int32
+	srv := candidateSourceServer(t, &listBody, &listHits, &detailHits, map[string]string{
+		"k1": `[{"jxb_id":"j1","do_jxb_id":"d1","jxbrl":"50","yxzrs":"50","jsxx":"440016/张三/教授"}]`,
+		"k2": `[{"jxb_id":"j2","do_jxb_id":"d2","jxbrl":"50","yxzrs":"10","jsxx":"440015/殷海华/副教授"}]`,
+	})
+	e := newCandidateEngine(t, srv, nil)
+	listHits.Store(0)
+	source := e.CandidateSource(protocol.WishList{
+		WantClassList:   []string{"定向越野"},
+		WantTeacherList: []string{"殷海华"},
+	})
+
+	got, err := source(context.Background())
+	if err != nil {
+		t.Fatalf("source: %v", err)
+	}
+	if listHits.Load() != 1 {
+		t.Fatalf("列表请求 = %d，期望 1", listHits.Load())
+	}
+	if detailHits.Load() != 2 {
+		t.Fatalf("详情请求 = %d，期望 2（点名课满员要接着整页扫）", detailHits.Load())
+	}
+	if len(got.Courses) != 2 {
+		t.Fatalf("候选 = %+v，期望满员的点名课与教师命中的备选都在队列里", got.Courses)
+	}
+	var hasNamed, hasFallback bool
+	for _, course := range got.Courses {
+		switch course.Kch_id {
+		case "k1":
+			hasNamed = true
+		case "k2":
+			hasFallback = true
+		}
+	}
+	if !hasNamed || !hasFallback {
+		t.Fatalf("候选 = %+v，期望 k1（点名，满员）与 k2（教师命中）", got.Courses)
+	}
+}
+
+// 板块课（整个页签只有一个课程号）走另一套逻辑：只看教学班名 / 教师，不看
+// 课程类型；一次详情补齐全部教学班，没有"名字优先"和"提前收手"。
+func TestCandidateSourceBlockCourseMatchesClassNames(t *testing.T) {
+	var listBody atomic.Value
+	listBody.Store(`{"tmpList":[` +
+		`{"kch_id":"k1","jxb_id":"j1","kcmc":"体育Ⅳ","jxbmc":"足球13","kzmc":"体育","yxzrs":"10"},` +
+		`{"kch_id":"k1","jxb_id":"j2","kcmc":"体育Ⅳ","jxbmc":"瑜伽4","kzmc":"体育","yxzrs":"10"},` +
+		`{"kch_id":"k1","jxb_id":"j3","kcmc":"体育Ⅳ","jxbmc":"舞龙4","kzmc":"体育","yxzrs":"10"}]}`)
+	var listHits, detailHits atomic.Int32
+	srv := candidateSourceServer(t, &listBody, &listHits, &detailHits, map[string]string{
+		"k1": `[{"jxb_id":"j1","do_jxb_id":"d1","jxbrl":"50","yxzrs":"10","jsxx":"440015/裴如意/副教授"},` +
+			`{"jxb_id":"j2","do_jxb_id":"d2","jxbrl":"50","yxzrs":"10","jsxx":"440015/裴如意/副教授"},` +
+			`{"jxb_id":"j3","do_jxb_id":"d3","jxbrl":"50","yxzrs":"10","jsxx":"440016/张三/教授"}]`,
+	})
+	e := newCandidateEngine(t, srv, nil)
+	listHits.Store(0)
+
+	// 类型填的是别的类别，也照样命中：板块课的类型没有区分度。
+	source := e.CandidateSource(protocol.WishList{
+		WantClassList: []string{"足球13", "瑜伽4"},
+		WantTypeList:  []string{"艺术类"},
+	})
+	got, err := source(context.Background())
+	if err != nil {
+		t.Fatalf("source: %v", err)
+	}
+	if detailHits.Load() != 1 {
+		t.Fatalf("详情请求 = %d，期望 1（板块课整页只有一个课程号）", detailHits.Load())
+	}
+	if len(got.Courses) != 2 {
+		t.Fatalf("候选 = %+v，期望足球13 与瑜伽4", got.Courses)
+	}
+	for _, course := range got.Courses {
+		if course.Jxbmc == "舞龙4" {
+			t.Fatalf("候选 = %+v，不该收没点名的教学班", got.Courses)
+		}
+	}
+	if got.More {
+		t.Fatal("板块课一遍就扫完，More 应为 false")
+	}
+
+	// 教师愿望在板块课里同样有效（教师只在详情里，粗筛不能挡）。
+	got, err = e.CandidateSource(protocol.WishList{WantTeacherList: []string{"张三"}})(context.Background())
+	if err != nil {
+		t.Fatalf("教师 source: %v", err)
+	}
+	if len(got.Courses) != 1 || got.Courses[0].Do_jxb_id != "d3" {
+		t.Fatalf("候选 = %+v，期望只有张三教的舞龙4", got.Courses)
+	}
+}
+
+// 通识选修课整页几十个课程号、每个课程号都要一次详情：候选源一次只扫到
+// "下一个命中且有名额"的课程号，扫到就交出去，不等整页抓完；下一批从停下的
+// 地方接着扫，扫过的课程号不再重复请求详情，也不重拉列表。
 func TestCandidateSourceStopsAtFirstVacancy(t *testing.T) {
 	var listBody atomic.Value
 	listBody.Store(`{"tmpList":[` +
@@ -373,7 +485,7 @@ func TestCandidateSourceStopsAtFirstVacancy(t *testing.T) {
 	listHits.Store(0)
 	source := e.CandidateSource(protocol.WishList{WantTypeList: []string{"艺术类"}})
 
-	// 第一次：k1 满员继续扫，扫到 k2 有名额就收手，k3 的详情留到下次。
+	// 首批：k1 满员继续扫，扫到 k2 有名额就收手，k3 的详情留到下一批。
 	got, err := source(context.Background())
 	if err != nil {
 		t.Fatalf("首次 source: %v", err)
@@ -381,42 +493,51 @@ func TestCandidateSourceStopsAtFirstVacancy(t *testing.T) {
 	if detailHits.Load() != 2 {
 		t.Fatalf("首次详情请求 = %d，期望 2（扫到 k2 就收手，不抓 k3）", detailHits.Load())
 	}
-	if len(got) != 2 || got[0].Kch_id != "k1" || got[1].Kch_id != "k2" {
-		t.Fatalf("首次候选 = %+v，期望 k1（满员）+ k2（有名额）", got)
+	if len(got.Courses) != 2 || got.Courses[0].Kch_id != "k1" || got.Courses[1].Kch_id != "k2" {
+		t.Fatalf("首批候选 = %+v，期望 k1（满员）+ k2（有名额）", got.Courses)
+	}
+	if !got.More {
+		t.Fatal("首批 More = false，期望 true（k3 还没扫）")
 	}
 
-	// 第二次：刷新列表后从 k3 接着扫；k1、k2 已扫过，不再请求详情。
+	// 第二批：接着扫 k3；k1、k2 已扫过，不再请求详情，也不重拉列表。
 	got, err = source(context.Background())
 	if err != nil {
-		t.Fatalf("第二次 source: %v", err)
+		t.Fatalf("第二批 source: %v", err)
+	}
+	if listHits.Load() != 1 {
+		t.Fatalf("续扫列表请求 = %d，期望仍是 1（一遍扫描只拉一次列表）", listHits.Load())
+	}
+	if detailHits.Load() != 3 {
+		t.Fatalf("第二批详情请求 = %d，期望 3（只补 k3）", detailHits.Load())
+	}
+	if len(got.Courses) != 3 {
+		t.Fatalf("第二批候选 = %+v，期望 k1、k2、k3 都在队列里", got.Courses)
+	}
+	if got.More {
+		t.Fatal("整页扫完后 More 仍为 true")
+	}
+
+	// 新的一遍：重拉列表，详情全都缓存着，不再产生详情请求。
+	got, err = source(context.Background())
+	if err != nil {
+		t.Fatalf("第三批 source: %v", err)
 	}
 	if listHits.Load() != 2 {
-		t.Fatalf("列表请求 = %d，期望 2（每次调用都重拉）", listHits.Load())
+		t.Fatalf("列表请求 = %d，期望 2（扫完一遍才拉新列表）", listHits.Load())
 	}
 	if detailHits.Load() != 3 {
-		t.Fatalf("第二次详情请求 = %d，期望 3（只补 k3）", detailHits.Load())
+		t.Fatalf("第三批详情请求 = %d，期望 3（扫过的课程号不重复请求）", detailHits.Load())
 	}
-	if len(got) != 3 {
-		t.Fatalf("第二次候选 = %+v，期望 k1、k2、k3 都在队列里", got)
-	}
-
-	// 第三次：整页扫完了，刷新只重拉列表，不再有详情请求。
-	got, err = source(context.Background())
-	if err != nil {
-		t.Fatalf("第三次 source: %v", err)
-	}
-	if detailHits.Load() != 3 {
-		t.Fatalf("第三次详情请求 = %d，期望 3（扫过的课程号不重复请求）", detailHits.Load())
-	}
-	if len(got) != 3 {
-		t.Fatalf("第三次候选 = %+v，期望仍是 3 个", got)
+	if len(got.Courses) != 3 {
+		t.Fatalf("第三批候选 = %+v，期望仍是 3 个", got.Courses)
 	}
 }
 
-// 刷新必须把整页扫完：通识选修一页几十个课程号，如果每次刷新只前进一个
-// 课程号（提前收手在刷新里也生效），队列会长期停留在最先扫到的几个教学班里
-// 反复尝试——用户面对的是"那么多课程只加载几个"。
-func TestCandidateSourceRefreshScansWholePage(t *testing.T) {
+// 扫描是"一批批往下走"的：每批只前进到下一个有名额的课程号，提交不成就接着扫，
+// 不必等一个刷新周期；整页扫完（More=false）之后才重拉列表。旧实现"刷新必须
+// 整页扫完"会让第一批提交等到几十个详情抓完——用户要的是命中就选。
+func TestCandidateSourceScansInBatches(t *testing.T) {
 	var listBody atomic.Value
 	listBody.Store(`{"tmpList":[` +
 		`{"kch_id":"k1","jxb_id":"j1","kcmc":"艺术一","jxbmc":"艺术一-0001","kzmc":"艺术类","yxzrs":"50"},` +
@@ -440,42 +561,48 @@ func TestCandidateSourceRefreshScansWholePage(t *testing.T) {
 	listHits.Store(0)
 	source := e.CandidateSource(protocol.WishList{WantTypeList: []string{"艺术类"}})
 
-	// 第一次：快速首扫——k1 满员继续，扫到 k2 有名额就收手，先把第一发提交
-	// 发出去；k3..k6 的详情留给刷新。
+	// 每批只前进一个课程号（k1 满员，所以首批是 k1+k2），直到整页扫完。
+	batches := 0
 	got, err := source(context.Background())
-	if err != nil {
-		t.Fatalf("首次 source: %v", err)
+	for {
+		if err != nil {
+			t.Fatalf("第 %d 批 source: %v", batches+1, err)
+		}
+		batches++
+		if batches > 6 {
+			t.Fatalf("扫了 %d 批还没扫完：%+v", batches, got)
+		}
+		if !got.More {
+			break
+		}
+		got, err = source(context.Background())
 	}
-	if detailHits.Load() != 2 {
-		t.Fatalf("首次详情请求 = %d，期望 2（扫到 k2 就收手）", detailHits.Load())
+	if batches != 5 {
+		t.Fatalf("批次 = %d，期望 5（k2..k6 各一批，扫完即止）", batches)
 	}
-	if len(got) != 2 {
-		t.Fatalf("首次候选 = %d 个，期望 2", len(got))
-	}
-
-	// 第二次（自动选课的周期性刷新）：整页扫完，k3..k6 的详情全部补齐，
-	// 通识选修的全部教学班都进入队列。
-	got, err = source(context.Background())
-	if err != nil {
-		t.Fatalf("第二次 source: %v", err)
-	}
-	if detailHits.Load() != 6 {
-		t.Fatalf("第二次详情请求 = %d，期望 6（整页扫完，不是只前进一个）", detailHits.Load())
-	}
-	if len(got) != 6 {
-		t.Fatalf("第二次候选 = %d 个，期望 6（整页命中都进队列）", len(got))
-	}
-
-	// 第三次：全部已缓存，刷新只剩一次列表请求。
-	got, err = source(context.Background())
-	if err != nil {
-		t.Fatalf("第三次 source: %v", err)
+	if listHits.Load() != 1 {
+		t.Fatalf("列表请求 = %d，期望 1（一遍扫描只拉一次列表）", listHits.Load())
 	}
 	if detailHits.Load() != 6 {
-		t.Fatalf("第三次详情请求 = %d，期望 6（扫过的课程号不重复请求）", detailHits.Load())
+		t.Fatalf("详情请求 = %d，期望 6（整页课程号各一次）", detailHits.Load())
 	}
-	if len(got) != 6 {
-		t.Fatalf("第三次候选 = %d 个，期望仍是 6", len(got))
+	if len(got.Courses) != 6 {
+		t.Fatalf("扫完后的候选 = %d 个，期望 6（整页命中都进队列）", len(got.Courses))
+	}
+
+	// 扫完一遍后再要：重拉列表、不再抓详情，队列覆盖整页。
+	got, err = source(context.Background())
+	if err != nil {
+		t.Fatalf("新一遍 source: %v", err)
+	}
+	if listHits.Load() != 2 {
+		t.Fatalf("列表请求 = %d，期望 2（扫完一遍才拉新列表）", listHits.Load())
+	}
+	if detailHits.Load() != 6 {
+		t.Fatalf("详情请求 = %d，期望 6（缓存已够用）", detailHits.Load())
+	}
+	if len(got.Courses) != 6 || got.More {
+		t.Fatalf("新一遍候选 = %d 个（More=%v），期望 6 个且扫完", len(got.Courses), got.More)
 	}
 }
 
@@ -490,7 +617,7 @@ func TestCourseNumberGroups(t *testing.T) {
 		{Kch_id: "k3", Jxbmc: "篮球-0001", Kcmc: "篮球"},
 	}
 
-	got := courseNumberGroups(wants, list, false)
+	got := courseNumberGroups(wants, list, protocol.MatchGeneral, false)
 	want := []courseNumber{
 		{kchID: "k1", rank: 0, needsDetail: true},
 		{kchID: "k2", rank: 1, needsDetail: false},
@@ -505,7 +632,7 @@ func TestCourseNumberGroups(t *testing.T) {
 	}
 
 	// 名字优先只保留课程名命中的课程号。
-	byName := courseNumberGroups(wants, list, true)
+	byName := courseNumberGroups(wants, list, protocol.MatchGeneral, true)
 	if len(byName) != 2 || byName[0].kchID != "k1" || byName[1].kchID != "k2" {
 		t.Fatalf("名字优先的课程号 = %+v，期望 k1、k2", byName)
 	}

@@ -80,7 +80,7 @@
 | `errors.go` | `ErrUnauthorized`、`StageError{Op,Message,Err}` |
 | `service.go` | 会话探测（`CheckSession*`）、302 判定 |
 | `detectKeepAlive.go` | 会话探测（`Ping` / `SleepWithContext`） |
-| `wish.go` | 愿望清单匹配与打分（纯函数） |
+| `wish.go` | 愿望清单匹配与打分（纯函数）；`MatchMode` 分板块课 / 通识选修两套规则，由 `MatchModeOf` 按课程号形态判断 |
 | `score.go` / `exam.go` / `gpa.go` / `GPA/` / `user_info.go` / `wakeup.go` | 查询与导出：一律返回结构体/CSV 字节，打印交给宿主 |
 
 ### 2.2 `engine` —— 会话语义
@@ -281,7 +281,7 @@
 | `OnRequest` | `internal.ProtocolHook` | `APIClient.SetProtocolHook` | 每次请求发出前（含 cas2 的两个 resty 客户端） |
 | `Kaptcha` | `protocol.KaptchaRecognizer` | `engine.Options.Kaptcha` | 字符验证码自动识别；关闭或识别失败时回退人工输入（见 [kaptcha.md](kaptcha.md)） |
 | `Plan.Sink` | `func(engine.Event)` | `RunAuto(ctx, plan, source, sink)` 的 `sink` 参数 | 自动选课进度事件 |
-| `Plan.Source` | `func(ctx) ([]CustomCourseDic, error)` | `RunAuto` 的 `source` 参数 | 候选来源；`Engine.CandidateSource` 是绑定缓存的实现 |
+| `Plan.Source` | `func(ctx) (engine.Batch, error)` | `RunAuto` 的 `source` 参数 | 候选来源；`Batch.More` 表示"这一遍还没扫完"，`RunAuto` 据此在没选上时立刻再要一批；`Engine.CandidateSource` 是绑定缓存的实现 |
 
 设计口径：**钩子可以缺席**。阶段与登录态由 protocol 自己记账（`loginState` / `loginStage`），
 hook 只补充"请求明细"，因此不挂 hook 的宿主也能显示进度。

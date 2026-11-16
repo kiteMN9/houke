@@ -124,21 +124,33 @@ const (
 // 它会被同步调用，实现里不要做慢操作（Web 侧只往 taskStore 塞一条事件）。
 type Sink func(Event)
 
+// Batch 是一次候选获取的结果。
+//
+// Courses 是这一次能提交的候选，必须带上 Do_jxb_id（提交选课的唯一凭据）。
+// 它可以是整页，也可以只是整页的一角：候选源不必为了凑齐名单，先把几十个课程号
+// 的详情都抓完再交（那是"扫完整页才开始选"，通识选修最难受的就是这一段）。
+//
+// More 表示源里还有没扫完的课程号：马上再要一次会接着往下扫、给出新的候选。
+// RunAuto 用它决定"这一轮没选上时立刻再要一批，而不是干等 Refresh"——扫到就
+// 提交，提交不成接着扫，这才是"检索过程中命中就选"的节奏。
+type Batch struct {
+	Courses []protocol.CustomCourseDic
+	More    bool
+}
+
 // Source 提供"此刻能提交的候选课程"。
 //
-// RunAuto 在开跑前调用一次，之后每过 Plan.Refresh 再调用一次；返回的课程必须
-// 带上 Do_jxb_id（提交选课的唯一凭据），过滤与排序由 RunAuto 负责。
+// RunAuto 在开跑前调用一次，之后每过 Plan.Refresh 再调用一次；上一批还没扫完
+// （Batch.More）而这一轮一个都没选上时，还会立刻再要一次。返回的课程必须带上
+// Do_jxb_id，过滤与排序由 RunAuto 负责。
 //
-// Engine.CandidateSource 是绑定在本引擎课程缓存上的实现（每次都重拉列表），
-// 测试或"冻结一份名单"的场景也可以直接传一个返回固定切片的闭包。
+// Engine.CandidateSource 是绑定在本引擎课程缓存上的实现（每一遍扫描重拉一次
+// 列表）；测试或"冻结一份名单"的场景也可以直接传一个返回固定切片的闭包，
+// More 留空即可——RunAuto 会退回按 Refresh 周期刷新。
 //
-// 不要求一次给出整页名单：只返回此刻就能提交的那部分也可以，RunAuto 会先按
-// 优先级提交，下一次刷新再拿新的名单。CandidateSource 就是这么做的——通识
-// 选修课整页几十个课程号，找到能选的先提交，剩下的课程号下一轮再补。
-//
-// 第一次调用出错是致命的（没有候选就没法开始）；之后的调用出错只算"这次刷新
-// 没拿到名单"，RunAuto 会沿用上一次的队列继续提交。
-type Source func(ctx context.Context) ([]protocol.CustomCourseDic, error)
+// 第一次调用出错是致命的（没有候选就没法开始）；之后的调用出错只算"这次没拿到
+// 名单"，RunAuto 会沿用上一次的队列继续提交。
+type Source func(ctx context.Context) (Batch, error)
 
 // SetWish 设置这个账号的愿望清单。清单跨 Reset/Initialize 保留。
 func (e *Engine) SetWish(w protocol.WishList) {
@@ -173,6 +185,20 @@ func (p Plan) normalized() (Plan, error) {
 // 每过 Plan.Refresh 再取一次，所以"已选人数变了""又放出来几个名额""新开了一个
 // 教学班"都会在接下来的几轮里生效，不必等整个任务结束再重开。
 //
+// 候选不必一次给全：source 说"这一遍还没扫完"（Batch.More）时，这一轮一个都没
+// 选上就立刻再要一批，不等刷新周期。通识选修课整页几十个课程号、详情要一个个
+// 抓，扫到第一个能选的就得先提交出去，剩下的边扫边试——"扫完整页才开始选"会让
+// 用户白等一分钟。
+//
+// 期望按课型有两种口味（见 protocol.MatchMode，由当前页签的课程号形态判断）：
+//
+//   - 板块课（整页一个课程号）：用户在意的是教学班名，愿望顺序就是真实优先级
+//     （足球13 排在瑜伽4 前面），排序先看志愿、再看余额；不查已选课程表——
+//     选上任何一个班这门课就结束了，查一次最贵的接口只省一次提交。
+//   - 通识选修课（整页几十个课程号）：用户按"教师 + 类型"挑课，命中哪门都算
+//     达成，排序先看余额（有名额的就先试），再按志愿顺序；候选横跨多个课程号，
+//     值得查一次已选课程表把整门已选的课剔除。
+//
 // 命中的教学班即使已经满员也会进队列（排在后面重试）：自动选课跑的是"抢名额"，
 // 每轮重新提交一次，有人退课就有机会选上。只有压根没命中愿望清单才返回
 // ErrNoWantedCourse，满员抢不到算 ErrNotChosen。
@@ -187,7 +213,9 @@ func (p Plan) normalized() (Plan, error) {
 // ErrAllChosen。
 //
 // 一轮里真正提交的次数有上限（maxAttemptsPerRound）：队列扩到整页后，逐个
-// 提交整个队列会把选课接口打进限流，每轮只试优先级最高的几个。
+// 提交整个队列会把选课接口打进限流，每轮只试优先级最高的几个。通识选修课在这
+// 几个名额里优先给"这一遍还没试过的"（见 tried）——扫描是一批批交候选的，新
+// 扫到的课不能被刚被抢满的旧候选挡在后面。
 //
 // 刷新失败不是致命错误：教务抖一下、这次列表查询被"加密串"挡回来都很常见，
 // 沿用上一次的队列继续提交，只在进度里留一条 EventRefreshFailed。
@@ -218,7 +246,7 @@ func (e *Engine) RunAuto(ctx context.Context, plan Plan, source Source, sink Sin
 	// Reset / 成功切换页签会递增代次，正常的参数刷新（Renew）不会。
 	gen := e.SessionGeneration()
 
-	candidates, err := source(ctx)
+	batch, err := source(ctx)
 	if e.SessionGeneration() != gen {
 		return zero, asSessionChanged(err)
 	}
@@ -230,6 +258,9 @@ func (e *Engine) RunAuto(ctx context.Context, plan Plan, source Source, sink Sin
 		}
 		return zero, err
 	}
+	candidates := batch.Courses
+	// more 表示候选源这一遍还没扫完（见 Batch.More）：这批没选上就立刻接着扫。
+	more := batch.More
 	if len(candidates) == 0 {
 		return zero, ErrNoCandidates
 	}
@@ -237,7 +268,8 @@ func (e *Engine) RunAuto(ctx context.Context, plan Plan, source Source, sink Sin
 	// 已选过滤：只在值得查的时候查（见 needChosenQuery）。查询失败不致命——
 	// 这条只是辅助信息，拿不到就先不过滤，运行中提交撞上"已选"的反馈照样能把
 	// 已选课程剔除。
-	queue := candidatesByPriority(wants, candidates)
+	mode := e.matchMode()
+	queue := candidatesByPriority(mode, wants, candidates)
 	var chosen chosenFilter
 	if needChosenQuery(queue) {
 		if f, ferr := e.chosenFilterOf(ctx); ferr == nil {
@@ -250,15 +282,15 @@ func (e *Engine) RunAuto(ctx context.Context, plan Plan, source Source, sink Sin
 
 	queue, dropped := dropChosen(queue, &chosen)
 	if len(queue) == 0 && dropped > 0 {
-		// 命中的候选全都已选：首次加载可能是提前收手的局部名单（见
-		// CandidateSource 的快速首扫），立即整页刷新确认一次，不拿半页
-		// 的结论当"都已选上"。
-		next, nextDropped, rerr := e.loadQueue(ctx, source, wants, &chosen)
+		// 命中的候选全都已选：首次加载可能只是"扫到第一批"的局部名单（见
+		// CandidateSource 的"命中即交"），立即再要一批确认，不拿半页的结论
+		// 当"都已选上"。
+		next, nextMore, nextDropped, rerr := e.loadQueue(ctx, source, wants, mode, &chosen, true)
 		if e.SessionGeneration() != gen {
 			return zero, asSessionChanged(rerr)
 		}
 		if rerr == nil {
-			queue, dropped = next, nextDropped
+			queue, dropped, more = next, nextDropped, nextMore
 		}
 	}
 	if len(queue) == 0 {
@@ -272,10 +304,21 @@ func (e *Engine) RunAuto(ctx context.Context, plan Plan, source Source, sink Sin
 
 	emit(sink, Event{
 		Kind:    EventBegin,
-		Message: beginMessage(queue, dropped),
+		Message: beginMessage(mode, queue, dropped, more),
 	})
 
 	loadedAt := time.Now()
+	// tried 记录这一遍已经提交过的教学班（Do_jxb_id）。
+	//
+	// 通识选修课整页几十个课程号、"命中哪门都算达成"：扫描是一批批交候选的，
+	// 队列里既可能有刚扫到、名额还新鲜的教学班，也可能有前几轮刚被抢满的旧
+	// 候选。每轮只有 maxAttemptsPerRound 次机会，得先给没试过的——否则新扫到
+	// 的课永远排在旧候选后面，扫描白扫。
+	//
+	// 板块课不用它：用户押的就是志愿顺序（足球13 排在瑜伽4 前面），每轮重试
+	// 最靠前的几个才有意义，把队列从头到尾轮一遍反而让心仪的班晚被抢。
+	// 定时刷新清空它：人数变了，该重新从头过一遍。
+	tried := make(map[string]struct{}, 8)
 
 	for round := 1; ; round++ {
 		if err := ctx.Err(); err != nil {
@@ -286,14 +329,29 @@ func (e *Engine) RunAuto(ctx context.Context, plan Plan, source Source, sink Sin
 		}
 
 		// 先刷新再提交：这一轮的排序和"已满 x/y"都用刷新后的人数。
-		if time.Since(loadedAt) >= p.Refresh {
-			loadedAt = time.Now()
-			next, nextDropped, rerr := e.loadQueue(ctx, source, wants, &chosen)
+		//
+		// 刷新有两种来由：到点了（Plan.Refresh），或者上一批候选源还没扫完
+		// （more）而这一批已经试完、又没选上——后者就是"扫到就选、没选上接着
+		// 扫"，不必为了下一批候选干等一个刷新周期。队列里还有没试过的候选时
+		// 不续扫：先把它们试掉，扫到新的也挤不进这一轮的名额。第一轮同理，
+		// 开跑时拿到的那批本身就是"命中即交"，先把它试掉。
+		refresh := time.Since(loadedAt) >= p.Refresh
+		rescan := more && round > 1 && !hasUntried(queue, tried)
+		if refresh || rescan {
+			if refresh {
+				loadedAt = time.Now()
+				// 人数变了，本遍的"试过了"记录作废，从头再过一遍。
+				clear(tried)
+			}
+			next, nextMore, nextDropped, rerr := e.loadQueue(ctx, source, wants, mode, &chosen, refresh)
 			if e.SessionGeneration() != gen {
 				return zero, asSessionChanged(rerr)
 			}
 			switch {
 			case rerr != nil:
+				// 这一批没拿到：这一遍就当扫完了，回到 Refresh 周期再要，
+				// 否则会按轮次反复打同一个必失败的请求。
+				more = false
 				if ctxErr := ctx.Err(); ctxErr != nil {
 					return zero, ctxErr
 				}
@@ -305,29 +363,40 @@ func (e *Engine) RunAuto(ctx context.Context, plan Plan, source Source, sink Sin
 				if errors.Is(rerr, protocol.ErrUnauthorized) {
 					return zero, rerr
 				}
-				emit(sink, Event{
-					Round:   round,
-					Kind:    EventRefreshFailed,
-					Message: fmt.Sprintf("刷新候选失败，沿用上一次的名单：%v", rerr),
-				})
+				// 续扫失败只在进度里留一句，真正的动静还是随后的提交。
+				msg := "刷新候选失败，沿用上一次的名单：" + rerr.Error()
+				if !refresh {
+					msg = "继续扫描失败，沿用上一次的名单：" + rerr.Error()
+				}
+				emit(sink, Event{Round: round, Kind: EventRefreshFailed, Message: msg})
 			case len(next) == 0 && nextDropped > 0:
-				// 整页刷新后命中的候选仍然全部已选，任务没有继续的意义。
+				// 命中的候选仍然全部已选，任务没有继续的意义。
 				return zero, ErrAllChosen
 			case len(next) == 0:
-				emit(sink, Event{
-					Round:   round,
-					Kind:    EventRefreshFailed,
-					Message: "刷新后没有可提交的教学班，沿用上一次的名单",
-				})
+				msg := "刷新后没有可提交的教学班，沿用上一次的名单"
+				if !refresh {
+					msg = "这一批没有扫到可提交的教学班，沿用上一次的名单"
+				}
+				emit(sink, Event{Round: round, Kind: EventRefreshFailed, Message: msg})
 			default:
-				queue = next
-				emit(sink, Event{Round: round, Kind: EventRefresh, Message: queueMessage(queue, nextDropped)})
+				queue, more = next, nextMore
+				// 续扫不报"刷新"：候选源一批批往下扫的时候，每轮一条刷新型
+				// 事件只是噪音，真正的动静由随后的 EventPick 说明。
+				if refresh {
+					emit(sink, Event{Round: round, Kind: EventRefresh, Message: queueMessage(queue, nextDropped)})
+				}
 			}
 		}
 
+		// 通识选修先试这一遍还没试过的候选（见 tried）。
+		order := queue
+		if mode == protocol.MatchGeneral {
+			order = untriedFirst(queue, tried)
+		}
+
 		attempts := 0
-		for i := range queue {
-			course := queue[i]
+		for i := range order {
+			course := order[i]
 			// 本轮中发现已选的（提交反馈、刷新后的已选名单）不再提交。
 			if chosen.matches(course) {
 				continue
@@ -337,6 +406,7 @@ func (e *Engine) RunAuto(ctx context.Context, plan Plan, source Source, sink Sin
 				break
 			}
 			attempts++
+			tried[course.Do_jxb_id] = struct{}{}
 			emit(sink, Event{
 				Round:   round,
 				Kind:    EventPick,
@@ -438,18 +508,26 @@ func asSessionChanged(err error) error {
 
 // loadQueue 取一次最新候选：排序、（值得的时候）查询已选课程、剔除已选教学班。
 //
+// mode 是开跑时定下的课型（见 matchMode）：同一轮任务里匹配与排序口味必须
+// 一致，不能因为刷新到的名单覆盖了多少课程号而变来变去。
+//
 // chosen 是运行中累积的过滤器：开跑前查到的名单、提交反馈学到的已选课程都在
 // 里面；无论这次查不查已选课程表，都用它剔除队列。
 //
-// 返回的 dropped 是这次被已选过滤器剔除的数量：队列空且 dropped>0 表示
-// 命中的候选全部已选（区别于"压根没命中"的空队列）。
-func (e *Engine) loadQueue(ctx context.Context, source Source, wants protocol.WishList, chosen *chosenFilter) ([]protocol.CustomCourseDic, int, error) {
-	fresh, err := source(ctx)
+// 返回的 more 是候选源"这一遍还没扫完"（见 Batch.More），原样交给 RunAuto；
+// dropped 是这次被已选过滤器剔除的数量：队列空且 dropped>0 表示命中的候选
+// 全部已选（区别于"压根没命中"的空队列）。
+//
+// withChosen 决定这次要不要重查已选课程表：只有定时刷新才查。续扫是按轮次
+// 进行的（可能一两秒一次），把最贵的接口按这个频率打进去，比省下的几次提交
+// 划算得多；续扫期间靠提交反馈（flag=6 / 兄弟班拒绝）剔除已选的课就够。
+func (e *Engine) loadQueue(ctx context.Context, source Source, wants protocol.WishList, mode protocol.MatchMode, chosen *chosenFilter, withChosen bool) (queue []protocol.CustomCourseDic, more bool, dropped int, err error) {
+	batch, err := source(ctx)
 	if err != nil {
-		return nil, 0, err
+		return nil, false, 0, err
 	}
-	queue := candidatesByPriority(wants, fresh)
-	if needChosenQuery(queue) {
+	queue = candidatesByPriority(mode, wants, batch.Courses)
+	if withChosen && needChosenQuery(queue) {
 		// 已选名单跟着刷新一次：用户可能在别的窗口手动选了课，队列要同步剔除；
 		// 查询失败或没拿到数据就沿用旧的过滤器。结果是并进而不是覆盖——提交
 		// 反馈学到的已选信息不能被一次空查询抹掉。
@@ -457,8 +535,44 @@ func (e *Engine) loadQueue(ctx context.Context, source Source, wants protocol.Wi
 			chosen.merge(f)
 		}
 	}
-	queue, dropped := dropChosen(queue, chosen)
-	return queue, dropped, nil
+	queue, dropped = dropChosen(queue, chosen)
+	return queue, batch.More, dropped, nil
+}
+
+// hasUntried 报告队列里还有没有这一遍没提交过的候选。
+//
+// 有就不必急着扫下一批：每轮只有 maxAttemptsPerRound 次机会，先把手里这些试
+// 完，扫到新的也挤不进这一轮。
+func hasUntried(queue []protocol.CustomCourseDic, tried map[string]struct{}) bool {
+	for i := range queue {
+		if _, ok := tried[queue[i].Do_jxb_id]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
+// untriedFirst 把这一遍还没提交过的候选排到前面，其余保持原顺序。
+//
+// 只在通识选修课里用（见 RunAuto 的 tried）：扫描是分批交候选的，队列里既有
+// 刚扫到的新候选、也有刚被抢满的旧候选，而每轮只有 maxAttemptsPerRound 次机会。
+// 不把没试过的提前，新扫到的课就会一直排在旧候选后面，扫描等于白跑。
+func untriedFirst(queue []protocol.CustomCourseDic, tried map[string]struct{}) []protocol.CustomCourseDic {
+	if len(tried) == 0 {
+		return queue
+	}
+	out := make([]protocol.CustomCourseDic, 0, len(queue))
+	for i := range queue {
+		if _, ok := tried[queue[i].Do_jxb_id]; !ok {
+			out = append(out, queue[i])
+		}
+	}
+	for i := range queue {
+		if _, ok := tried[queue[i].Do_jxb_id]; ok {
+			out = append(out, queue[i])
+		}
+	}
+	return out
 }
 
 // needChosenQuery 报告这批候选值不值得查询已选课程表。
@@ -472,26 +586,22 @@ func (e *Engine) loadQueue(ctx context.Context, source Source, wants protocol.Wi
 // 个教学班（体育Ⅳ → 足球13 / 瑜伽4 / 舞龙4…）。选上其中任何一个，这门课就
 // 结束了，查已选课表的唯一作用是省掉**一次**提交；而不查的代价也就那一次：
 //
-//   - 选的是同一个教学班 → flag=6，直接认"已选"；
+//   - 选的是同一个教学班 → flag=1，直接认"已选"；
 //   - 选的是兄弟教学班 → flag=0「一门课程只能选一个教学班」，同样认"已选"
 //     （见 protocol.ChooseCourseResult.AlreadyChosen）。
 //
-// 两条都在一次提交内闭环，比把最贵的请求打进每一轮划算得多。课程号缺失时
+// 两条都在一次提交内闭环，比把最贵的请求打进每一轮划算得多。课型判断就是
+// protocol.IsKchIdAllSame：候选全在同一个课程号下就是板块课形态。课程号缺失时
 // 无法判断形态，按老办法查——查了顶多多花一次请求，不查则可能反复白提交。
 func needChosenQuery(queue []protocol.CustomCourseDic) bool {
 	if len(queue) < 2 {
 		return false
 	}
-	first := queue[0].Kch_id
-	if first == "" {
+	if queue[0].Kch_id == "" {
 		return true
 	}
-	for i := 1; i < len(queue); i++ {
-		if queue[i].Kch_id != first {
-			return true
-		}
-	}
-	return false
+	same, _ := protocol.IsKchIdAllSame(queue)
+	return !same
 }
 
 // chosenFilter 记录"已经选上"的教学班（jxb_id）与课程号（kch_id）。
@@ -589,16 +699,6 @@ func (e *Engine) chosenFilterOf(ctx context.Context) (chosenFilter, error) {
 	return f, nil
 }
 
-// beginMessage 是开跑时的进度文案，带上被剔除的已选课程数，
-// 让用户知道队列里没有已选的课是"主动剔除了"而不是"没扫到"。
-func beginMessage(queue []protocol.CustomCourseDic, dropped int) string {
-	msg := fmt.Sprintf("候选 %d 个教学班，开始自动选课", len(queue))
-	if dropped > 0 {
-		msg += fmt.Sprintf("（已剔除选上的 %d 个）", dropped)
-	}
-	return msg
-}
-
 // alreadyChosenMessage 是撞上"已选"之后的进度文案。
 //
 // 两种来源要分开说：flag=6 是这个教学班本身已选上；flag=0 的"只能选一个教学班"
@@ -634,29 +734,43 @@ func queueMessage(queue []protocol.CustomCourseDic, dropped int) string {
 
 // candidatesByPriority 过滤出"命中愿望 + 能提交"的课程，并按优先级排序。
 //
-// 排序规则：愿望清单里靠前的班级优先；同一优先级下还有余额的排在满员前面，
-// 余额相同时已选人数少的优先，让每次尝试都落在最可能有名额的教学班上。
+// 排序规则分课型（见 protocol.MatchMode）：
+//
+//   - 板块课：先按愿望清单里的教学班顺序（用户在意的是"足球13 优先于瑜伽4"），
+//     同一志愿下还有余额的排前面，再按已选人数少的优先。
+//   - 通识选修课：先按有没有余额——用户按"教师 + 类型"挑课，命中哪门都算达成，
+//     死守志愿顺序只会让有名额的备选排在一堆满员的点名课后面，白耗每轮的
+//     提交次数；余额相同时再按志愿顺序，最后按已选人数。
 //
 // 满员的教学班只是排到最后，不会被丢掉：自动选课是抢名额，队列里留着它，等
 // 某一轮有人退课就有机会选上。反过来若在这里把它们全过滤掉，明明命中了愿望
 // 也会返回空队列，再报"愿望清单没有命中可选的课程"，排查起来根本看不出是
 // 满员还是压根没这门课（真实数据见 html/ 下的抓包：定向越野6 就是 39/39 满员）。
-func candidatesByPriority(wants protocol.WishList, list []protocol.CustomCourseDic) []protocol.CustomCourseDic {
+func candidatesByPriority(mode protocol.MatchMode, wants protocol.WishList, list []protocol.CustomCourseDic) []protocol.CustomCourseDic {
 	out := make([]protocol.CustomCourseDic, 0, len(list))
 	for i := range list {
 		course := list[i]
-		if course.Do_jxb_id == "" || !wants.Match(course) {
+		if course.Do_jxb_id == "" || !wants.MatchIn(mode, course) {
 			continue
 		}
 		out = append(out, course)
 	}
 
 	sort.SliceStable(out, func(i, j int) bool {
+		fi, fj := isFull(out[i]), isFull(out[j])
 		ri, rj := rankOf(wants, out[i]), rankOf(wants, out[j])
+		if mode == protocol.MatchGeneral {
+			if fi != fj {
+				return !fi
+			}
+			if ri != rj {
+				return ri < rj
+			}
+			return selected(out[i]) < selected(out[j])
+		}
 		if ri != rj {
 			return ri < rj
 		}
-		fi, fj := isFull(out[i]), isFull(out[j])
 		if fi != fj {
 			return !fi
 		}
@@ -666,14 +780,37 @@ func candidatesByPriority(wants protocol.WishList, list []protocol.CustomCourseD
 }
 
 // rankOf 返回课程在愿望清单里的优先级：教学班名与课程名各算一次，取更靠前的。
-// WishList.Match 两种写法都认（CLI 填教学班名，WebUI 填课程名），排序也要一致，
-// 否则按课程名写的愿望会全部落到默认优先级，顺序只能是随机的。
+// WishList.MatchIn 两种写法都认（板块课填教学班名，通识选修课填课程名），排序
+// 也要一致，否则按课程名写的愿望会全部落到默认优先级，顺序只能是随机的。
 func rankOf(wants protocol.WishList, course protocol.CustomCourseDic) int {
 	rank := wants.Rank(course.Jxbmc)
 	if byName := wants.Rank(course.Kcmc); byName < rank {
 		rank = byName
 	}
 	return rank
+}
+
+// beginMessage 是开跑时的进度文案：写明这一轮按哪套规则挑课、队列规模，以及
+// 剔除了多少已选课程——用户看到"通识选修课（按教师 / 类型匹配）"，才知道
+// 课程类型确实生效了，而"板块课（按教学班名匹配）"能解释为什么类型没起作用。
+func beginMessage(mode protocol.MatchMode, queue []protocol.CustomCourseDic, dropped int, more bool) string {
+	msg := fmt.Sprintf("%s：候选 %d 个教学班，开始自动选课", modeText(mode), len(queue))
+	if dropped > 0 {
+		msg += fmt.Sprintf("（已剔除选上的 %d 个）", dropped)
+	}
+	if more {
+		// 通识选修课整页几十个课程号：先交能选的那几个，剩下的边选边扫。
+		msg += "，其余课程继续扫描"
+	}
+	return msg
+}
+
+// modeText 是课型的中文说法，用于进度与结果文案。
+func modeText(mode protocol.MatchMode) string {
+	if mode == protocol.MatchBlock {
+		return "板块课（按教学班名匹配）"
+	}
+	return "通识选修课（按教师 / 类型匹配）"
 }
 
 // pickMessage 是"准备提交哪个教学班"的进度文案。

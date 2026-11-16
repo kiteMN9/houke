@@ -219,8 +219,9 @@ func (s *Server) runAutoChoose(
 ) {
 	defer cancel()
 
-	// 候选交给 engine 的 Source：RunAuto 开跑前取一次，之后按 plan.Refresh 周期
-	// 重拉课程列表，已选人数和新开的教学班都能在运行中生效。
+	// 候选交给 engine 的 Source：RunAuto 开跑前取一批就提交，候选源说"还没扫完"
+	// 时这一批没选上就立刻再要一批；整页扫完才按 plan.Refresh 周期重拉列表
+	// （已选人数、新开的教学班都在运行中生效）。
 	var chosen protocol.CustomCourseDic
 	result, err := rt.engine.RunAuto(ctx, plan, rt.engine.CandidateSource(wants), func(ev engine.Event) {
 		s.tasks.emit(id, taskEvent{
