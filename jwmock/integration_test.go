@@ -388,9 +388,11 @@ func TestChooseResultFlags(t *testing.T) {
 	if res := choose("重复课程"); res.Flag != "1" || res.Msg != "" {
 		t.Fatalf("成功 flag = %q msg = %q", res.Flag, res.Msg)
 	}
-	// 重复选同一教学班：6。
-	if res := choose("重复课程"); res.Flag != "6" {
-		t.Fatalf("重复选课 flag = %q，期望 6", res.Flag)
+	// 重复选同一教学班：实测仍是 1（教务对重复提交不区分，同样回 {"flag":"1"}）。
+	// 页面脚本里那条 6「该教学班已选中」的分支本校走不到，客户端不能拿它当
+	// "已选"的唯一凭据。
+	if res := choose("重复课程"); res.Flag != "1" || res.Msg != "" {
+		t.Fatalf("重复选课 flag = %q msg = %q，期望仍是 1（实测行为）", res.Flag, res.Msg)
 	}
 
 	// 时间冲突：选上 A 后再选同时间的 B，实测走 0 + 文案。
@@ -415,25 +417,25 @@ func TestDuplicateChoose(t *testing.T) {
 		t.Fatalf("第一次选课失败: flag=%q err=%v", res.Flag, err)
 	}
 
-	// 已经选上的课再次启动自动选课：只有一种课程号的形态不查已选课表
-	// （见 engine.needChosenQuery），靠一次提交的 flag=6 认出"已选"，
-	// 任务以"都已选上"收尾而不是无限重试。
+	// 已经选上的课再次启动自动选课：教务对重复提交回的是 flag=1（实测与第一次
+	// 选上同形），所以这一遍会**以成功收尾**，而不是靠 flag=6 认"已选"。关键是
+	// 只提交一次就停——不能反复对着同一个班打请求。
 	res, err, events := runAuto(t, eng, engine.Plan{Wants: want("数据结构"), MaxRounds: 5})
-	if !errors.Is(err, engine.ErrAllChosen) {
-		t.Fatalf("重复选课 err = %v, want ErrAllChosen", err)
+	if err != nil {
+		t.Fatalf("重复选课 err = %v, want nil（重复提交即成功）", err)
 	}
-	if res.Flag == "1" {
-		t.Fatal("重复选课不应成功")
+	if res.Flag != "1" {
+		t.Fatalf("重复选课 flag = %q, want 1", res.Flag)
 	}
 	if picks := countEvents(events, engine.EventPick); picks != 1 {
-		t.Fatalf("提交次数 = %d, want 1（一次反馈就收工，不再反复尝试）: %+v", picks, events)
+		t.Fatalf("提交次数 = %d, want 1（一次成功就收工，不再反复尝试）: %+v", picks, events)
 	}
-	if countEvents(events, engine.EventAlreadyChosen) != 1 {
-		t.Fatalf("缺少已选事件: %+v", events)
+	if countEvents(events, engine.EventSuccess) != 1 {
+		t.Fatalf("缺少成功事件: %+v", events)
 	}
 	for _, ev := range events {
-		if ev.Kind == engine.EventFailed {
-			t.Fatalf("已选不该记成失败: %+v", ev)
+		if ev.Kind == engine.EventFailed || ev.Kind == engine.EventAlreadyChosen {
+			t.Fatalf("重复提交不该记成失败/已选: %+v", ev)
 		}
 	}
 }

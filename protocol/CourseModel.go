@@ -331,22 +331,26 @@ type ChooseCourseResult struct {
 
 // 选课接口（zzxkyzbjk_xkBcZyZzxkYzb）的 flag 取值。
 //
-// 语义以实测错误样本 html/_xkBcZyZzxkYzb.html 为准（与正方页面脚本
+// 语义以实测样本 html/_xkBcZyZzxkYzb.html 为准（与正方页面脚本
 // html/zzxkYzbChoosedZy.js 的分支一致；脚本里的 2 分支本校园没有实测到）：
 //
-//	"1"  选课成功
+//	"1"  选课成功——**已经选上的教学班再提交也是这个响应**（实测：重复提交
+//	     同样回 {"flag":"1"}，不带文案，与第一次成功无法区分）
 //	"3"  选课成功，免费学分已达上限
-//	"6"  该教学班已选中（刷新页面可见）
+//	"6"  该教学班已选中（刷新页面可见）：页面脚本里有这条分支，本校实测走不到，
+//	     保留识别是为了兼容别的版本/校区
 //	"-1" 容量超出：msg 是 "分志愿,教学班id,已选人数,本轮已选人数" 的机器串
 //	      （样本里第 4 段为空）
 //	"0"  业务拒绝，msg 是原因：上课时间冲突、一门课只能选一个教学班、
 //	     不在选课时间、门次限制、非法操作、加密串过期都走 0
 const (
-	// ChooseFlagOK 选课成功。
+	// ChooseFlagOK 选课成功。已经选上的教学班再提交也会回到这个 flag（实测），
+	// 所以它同时是"这门课已经在你名下"的信号，按成功处理即可。
 	ChooseFlagOK = "1"
 	// ChooseFlagOKFreeCreditLimit 选课成功，免费学分已达上限。
 	ChooseFlagOKFreeCreditLimit = "3"
-	// ChooseFlagAlreadyChosen 该教学班已选中（刷新页面可见）。
+	// ChooseFlagAlreadyChosen 该教学班已选中（刷新页面可见）。页面脚本里的分支，
+	// 本校实测重复提交走 flag=1，保留它是为了兼容别的版本/校区。
 	ChooseFlagAlreadyChosen = "6"
 	// ChooseFlagRejected 教务的业务拒绝，msg 是原因。
 	ChooseFlagRejected = "0"
@@ -355,6 +359,9 @@ const (
 )
 
 // OK 报告这次提交是否已经选上。
+//
+// flag=1 既可能是"这次新选上"，也可能是"本来就已经选上"（实测重复提交回同一
+// 个响应）：两种都算这门课在用户名下，调用方按成功收尾即可，不需要区分。
 func (r ChooseCourseResult) OK() bool {
 	return r.Flag == ChooseFlagOK || r.Flag == ChooseFlagOKFreeCreditLimit
 }
@@ -396,13 +403,17 @@ var chooseAlreadyChosenMessages = []string{
 // AlreadyChosen 报告这次提交是不是"这门课已经选上了"。
 //
 // 两种形态都算：
-//   - flag=6：提交的这个教学班本身已选中；
+//   - flag=6：提交的这个教学班本身已选中（页面脚本的分支，本校实测走不到）；
 //   - flag=0 且文案是"一门课程只能选一个教学班"：同课程的另一个教学班已选中。
+//
+// 注意**提交同一教学班重复选课不算在内**：实测教务对重复提交回的是 flag=1，
+// 与第一次选上完全同形，OK() 已经当成功处理（课确实在用户名下），不需要在这里
+// 再区分"新选上"还是"本来就有"。
 //
 // 自动选课拿它当"这门课不用再试了"的信号，而不是普通的确定性拒绝：重试确实
 // 改变不了结果，但任务也不该失败——愿望已经满足，只是选上的是别的班。这条反馈
 // 还让自动选课可以**不查已选课程表**就跳过已选的课（见 engine.needChosenQuery），
-// 代价只是每门已选的课白提交一次。
+// 代价只是每门已选的课白提交一次（重复提交本身也会以成功收尾）。
 func (r ChooseCourseResult) AlreadyChosen() bool {
 	if r.Flag == ChooseFlagAlreadyChosen {
 		return true

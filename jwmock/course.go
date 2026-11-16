@@ -241,11 +241,13 @@ func (s *Server) handleChoose(c *gin.Context) {
 
 // chooseLocked 判定一次选课提交，返回真实接口的 (flag, msg)。
 //
-// flag 与文案照 html/_xkBcZyZzxkYzb.html 的实测错误样本：
+// flag 与文案照 html/_xkBcZyZzxkYzb.html 的实测样本：
 //
-//	"1"  选课成功（{"flag":"1"}，不带文案）
+//	"1"  选课成功（{"flag":"1"}，不带文案）；**已经选上的教学班再提交也是这个
+//	     响应**——实测过，教务对重复提交同样回 {"flag":"1"}，与第一次成功无法
+//	     区分（页面脚本里另有 6「该教学班已选中」的分支，本校实测没走到）
 //	"3"  选课成功、免费学分已达上限（mock 不模拟）
-//	"6"  该教学班已选中（刷新页面可见）
+//	"6"  该教学班已选中（刷新页面可见）：保留给页面脚本那条分支，mock 不再返回
 //	"-1" 容量超出：msg 是 "分志愿,教学班id,已选人数,本轮已选人数" 的机器串，
 //	     页面拿它更新列表人数，不是给人看的文案（样本里第 4 段为空）
 //	"0"  业务拒绝，msg 就是原因：时间冲突、一门课只能选一个教学班、不在选课
@@ -268,7 +270,10 @@ func (s *Server) chooseLocked(user, jxbIDs, kchID string) (string, string) {
 
 	set := s.userChosenLocked(user)
 	if set[seed.JxbID] {
-		return "6", "该教学班已选中，刷新页面可见！"
+		// 实测：已选上的教学班再提交，教务仍然回 {"flag":"1"}（不带文案），
+		// 和第一次选上完全同形。所以这里不能返回 6——那会让"重复选课"在
+		// mock 里表现得比真实教务更友善，测出来的路径线上根本走不到。
+		return "1", ""
 	}
 	if s.sameCourseLocked(user, seed) {
 		return "0", "一门课程只能选一个教学班，不可再选！"

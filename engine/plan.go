@@ -114,9 +114,13 @@ const (
 	// EventRefreshFailed 表示这次刷新没拿到可用名单（查询失败、没有命中的
 	// 教学班），本轮沿用上一次的队列继续提交。
 	EventRefreshFailed = "refresh_failed"
-	// EventAlreadyChosen 表示提交后发现这门课此前已经选上：flag=6 是提交的
-	// 教学班已选中，flag=0 的「一门课程只能选一个教学班」是同课程的另一个教学班
-	// 已选中。本次运行把它连同同课程号的其它教学班从队列剔除，不再重试。
+	// EventAlreadyChosen 表示提交后发现这门课此前已经选上（选上的是别的教学班）：
+	// flag=6 是提交的教学班已选中（页面脚本分支，实测走不到），flag=0 的
+	// 「一门课程只能选一个教学班」是同课程的另一个教学班已选中。本次运行把它连同
+	// 同课程号的其它教学班从队列剔除，不再重试。
+	//
+	// 提交的**正是**已选的那个班时不会走到这里：实测教务对重复提交回 flag=1，
+	// 与第一次选上同形，RunAuto 直接按成功收尾（见 protocol.ChooseCourseResult.OK）。
 	EventAlreadyChosen = "already_chosen"
 )
 
@@ -207,8 +211,9 @@ func (p Plan) normalized() (Plan, error) {
 // （见 needChosenQuery）：通识选修课整页几十个课程号，值得查一次已选课表把
 // 已选的整门课剔除；板块课整个页签只有一种课程号、下面挂着几十个教学班，
 // 选上一个就是这门课结束，查一次最贵的接口换不来任何收益，不查——提交反馈
-// 会把"这门课已经选上"告诉 RunAuto：flag=6 是提交的班已选中，flag=0 的
-// "一门课程只能选一个教学班"是同课程的另一个班已选中（见
+// 就够收工：选上的正是这个班时教务回 flag=1（实测重复提交同形），按成功处理；
+// 选上的是同课程的别的班时回 flag=0「一门课程只能选一个教学班」，flag=6
+// 的"该教学班已选中"作为兼容分支一并认（见
 // protocol.ChooseCourseResult.AlreadyChosen）。整页命中的候选都已选上时返回
 // ErrAllChosen。
 //
@@ -477,9 +482,9 @@ func (e *Engine) RunAuto(ctx context.Context, plan Plan, source Source, sink Sin
 			emit(sink, Event{Round: round, Kind: EventFailed, Course: course, Message: result.DisplayMsg()})
 		}
 
-		// 剔除本轮通过 flag=6 发现已选的候选。队列空了说明剩下的全已选：
-		// 不空转等下个刷新周期，立即把 loadedAt 归零触发一次整页刷新确认，
-		// 仍然全部已选就在刷新分支里返回 ErrAllChosen。
+		// 剔除本轮提交反馈里发现已选的候选（兄弟班拒绝、flag=6）。队列空了说明
+		// 剩下的全已选：不空转等下个刷新周期，立即把 loadedAt 归零触发一次整页
+		// 刷新确认，仍然全部已选就在刷新分支里返回 ErrAllChosen。
 		queue, _ = dropChosen(queue, &chosen)
 		if len(queue) == 0 {
 			loadedAt = time.Time{}
@@ -520,7 +525,8 @@ func asSessionChanged(err error) error {
 //
 // withChosen 决定这次要不要重查已选课程表：只有定时刷新才查。续扫是按轮次
 // 进行的（可能一两秒一次），把最贵的接口按这个频率打进去，比省下的几次提交
-// 划算得多；续扫期间靠提交反馈（flag=6 / 兄弟班拒绝）剔除已选的课就够。
+// 划算得多；续扫期间靠提交反馈（重复提交回成功 / 兄弟班拒绝 / flag=6）剔除
+// 已选的课就够。
 func (e *Engine) loadQueue(ctx context.Context, source Source, wants protocol.WishList, mode protocol.MatchMode, chosen *chosenFilter, withChosen bool) (queue []protocol.CustomCourseDic, more bool, dropped int, err error) {
 	batch, err := source(ctx)
 	if err != nil {
@@ -647,10 +653,10 @@ func (f *chosenFilter) add(jxbID, kchID string) {
 	}
 }
 
-// merge 把另一次已选查询的结果并进来。只用并集不用覆盖：运行中靠 flag=6
-// 学到的已选信息，不能被一次"成功但为空"的查询抹掉（否则又会开始对已选的
-// 课程反复提交）。代价是"用户退课后想靠正在跑的任务重新抢回这门课"做不到——
-// 那种场景重新启动一次任务即可，开跑前的查询是全新名单。
+// merge 把另一次已选查询的结果并进来。只用并集不用覆盖：运行中靠提交反馈
+// （兄弟班拒绝、flag=6）学到的已选信息，不能被一次"成功但为空"的查询抹掉
+// （否则又会开始对已选的课程反复提交）。代价是"用户退课后想靠正在跑的任务
+// 重新抢回这门课"做不到——那种场景重新启动一次任务即可，开跑前的查询是全新名单。
 func (f *chosenFilter) merge(other chosenFilter) {
 	for k := range other.jxb {
 		f.add(k, "")
@@ -701,9 +707,10 @@ func (e *Engine) chosenFilterOf(ctx context.Context) (chosenFilter, error) {
 
 // alreadyChosenMessage 是撞上"已选"之后的进度文案。
 //
-// 两种来源要分开说：flag=6 是这个教学班本身已选上；flag=0 的"只能选一个教学班"
-// 是这门课的**另一个**教学班已选上（用户手动选的、或上一次运行选的），用户看到
-// 文案才知道选上的是别的班，不用再去翻已选课表。
+// 两种来源要分开说：flag=6 是这个教学班本身已选上（页面脚本分支，实测走不到，
+// 保留兜底）；flag=0 的"只能选一个教学班"是这门课的**另一个**教学班已选上
+// （用户手动选的、或上一次运行选的），用户看到文案才知道选上的是别的班，不用
+// 再去翻已选课表。提交的正是已选那个班时走不到这里——教务回 flag=1，按成功收尾。
 func alreadyChosenMessage(course protocol.CustomCourseDic, result protocol.ChooseCourseResult) string {
 	if result.Flag == protocol.ChooseFlagAlreadyChosen {
 		return fmt.Sprintf("《%s》%s 已选上，不再重复尝试", course.Kcmc, course.Jxbmc)
