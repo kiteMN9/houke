@@ -483,8 +483,12 @@ func TestAutoChooseSkipsChosenSiblings(t *testing.T) {
 	if first == nil {
 		t.Fatalf("候选里没有 JXB-TS-01: %+v", candidates)
 	}
-	if res, err := eng.Choose(ctx, first); err != nil || res.Flag != "1" {
-		t.Fatalf("手动选课失败: flag=%q err=%v", res.Flag, err)
+	res, err := eng.Choose(ctx, first)
+	if err != nil {
+		t.Fatalf("手动选课失败: %v", err)
+	}
+	if res.Flag != "1" {
+		t.Fatalf("手动选课失败: flag=%q", res.Flag)
 	}
 
 	_, err, events := runAuto(t, eng, engine.Plan{Wants: want("通识课"), MaxRounds: 5})

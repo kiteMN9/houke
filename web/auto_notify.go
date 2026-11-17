@@ -84,6 +84,10 @@ func autoNotificationStatus(ctx context.Context, err error, course *protocol.Cus
 	switch {
 	case ctx != nil && errors.Is(ctx.Err(), context.DeadlineExceeded):
 		return "超时", "本次运行时间用尽，尚未选上。"
+	// 先单独收口 err == nil：后面的分支会调 err.Error()，nilness 分析需要看到
+	// nil 在进入这些分支之前已经被处理掉，否则会把"传 nil 进来"报成潜在解引用。
+	case err == nil:
+		return "已结束", "任务已结束。"
 	case errors.Is(err, engine.ErrNotChosen):
 		return "未选上", "重试用尽仍未选上。"
 	case errors.Is(err, engine.ErrAllChosen):
@@ -97,10 +101,8 @@ func autoNotificationStatus(ctx context.Context, err error, course *protocol.Cus
 		return "失败", "没有可用的候选课程。"
 	case errors.Is(err, protocol.ErrUnauthorized):
 		return "中断", "登录已失效，任务已中断。"
-	case err != nil:
-		return "失败", err.Error()
 	default:
-		return "已结束", "任务已结束。"
+		return "失败", err.Error()
 	}
 }
 

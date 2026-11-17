@@ -141,7 +141,7 @@ func (s *Server) runWechatFlow(f *wechatFlow) {
 	// 扫码成功，身份此刻才出现：ticket 里写着是谁。这是整个流程的关键一步——
 	// 登录先于账号发生，账号是这次登录的产物。
 	id := f.rt.engine.Identity()
-	if id.Empty() {
+	if id == nil || id.Empty() {
 		f.finish(nil, false, errors.New("扫码成功，但 ticket 里没有身份标识"))
 		return
 	}

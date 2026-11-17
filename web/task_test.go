@@ -11,6 +11,18 @@ import (
 	"school_sdk/protocol"
 )
 
+// mustSnapshot 取任务快照；测试里调用前都 start 过任务，取不到说明状态机坏了，
+// 这里直接失败，免得每个调用点都重复写 nil 判断。
+func mustSnapshot(t *testing.T, ts *taskStore, id string) *taskView {
+	t.Helper()
+	snap := ts.snapshot(id)
+	if snap == nil {
+		t.Fatalf("snapshot(%q) = nil", id)
+		return nil
+	}
+	return snap
+}
+
 func TestTaskStoreLifecycle(t *testing.T) {
 	ts := newTaskStore()
 	const id = "acc1"
@@ -85,7 +97,7 @@ func TestTaskStoreCollapsesRepeats(t *testing.T) {
 	for range 20 {
 		ts.emit("a", taskEvent{Kind: "init.index", Stage: "init.index", Text: "正在打开选课页"})
 	}
-	snap := ts.snapshot("a")
+	snap := mustSnapshot(t, ts, "a")
 	if len(snap.Events) != 2 { // task.begin + 折叠后的 init.index
 		t.Fatalf("事件数 = %d, want 2: %+v", len(snap.Events), snap.Events)
 	}
@@ -110,7 +122,7 @@ func TestTaskStoreDoesNotCollapseAlternating(t *testing.T) {
 		ts.emit("a", taskEvent{Kind: "k", Stage: "k", Text: "A"})
 		ts.emit("a", taskEvent{Kind: "k", Stage: "k", Text: "B"})
 	}
-	snap := ts.snapshot("a")
+	snap := mustSnapshot(t, ts, "a")
 	// task.begin + A B A B A B
 	if len(snap.Events) != 7 {
 		t.Fatalf("事件数 = %d, want 7: %+v", len(snap.Events), snap.Events)
@@ -129,7 +141,7 @@ func TestTouchStageUpdatesStageWithoutLog(t *testing.T) {
 	for range 10 {
 		ts.touchStage("a", "http:/poll.html", "正在请求 /poll.html")
 	}
-	snap := ts.snapshot("a")
+	snap := mustSnapshot(t, ts, "a")
 	if len(snap.Events) != 1 {
 		t.Fatalf("事件数 = %d, want 1（只有 task.begin）", len(snap.Events))
 	}
@@ -157,7 +169,7 @@ func TestNoRequestEventsAfterFinish(t *testing.T) {
 	ts.emitRequest(id, taskEvent{Kind: "login.pubkey", Stage: "login.pubkey", Text: "正在获取加密公钥"})
 	ts.touchStage(id, "http:/late.html", "正在请求 /late.html")
 
-	snap := ts.snapshot(id)
+	snap := mustSnapshot(t, ts, id)
 	last := snap.Events[len(snap.Events)-1]
 	if last.Text != "登录已取消" {
 		t.Errorf("最后一条事件 = %q, want 登录已取消", last.Text)
@@ -174,11 +186,11 @@ func TestNoRequestCountAfterFinish(t *testing.T) {
 	ts := newTaskStore()
 	ts.start("a", taskKindInit)
 	ts.emitRequest("a", taskEvent{Kind: "k", Stage: "k", Text: "x"})
-	before := ts.snapshot("a").Requests
+	before := mustSnapshot(t, ts, "a").Requests
 	ts.finish("a", taskKindInit, taskStatusDone, "初始化完成", "")
 	ts.emitRequest("a", taskEvent{Kind: "k", Stage: "k", Text: "y"})
 	ts.touchStage("a", "http:/z", "正在请求 /z")
-	if got := ts.snapshot("a").Requests; got != before {
+	if got := mustSnapshot(t, ts, "a").Requests; got != before {
 		t.Errorf("Requests = %d, want 保持 %d", got, before)
 	}
 }
@@ -203,7 +215,7 @@ func TestTaskStoreTakeCancel(t *testing.T) {
 		t.Error("重复 takeCancel 应当返回 false")
 	}
 	// 收尾事件必须留下，方便前端展示"为什么停了"
-	snap := ts.snapshot("a")
+	snap := mustSnapshot(t, ts, "a")
 	last := snap.Events[len(snap.Events)-1]
 	if !strings.Contains(last.Text, "已取消") {
 		t.Errorf("最后一条事件 = %q, want 含「已取消」", last.Text)
@@ -308,7 +320,7 @@ func TestHookRequestDoesNotOverrideLoginStage(t *testing.T) {
 	ts.emitRequest(id, taskEvent{Kind: "login.pubkey", Stage: "login.pubkey", Text: "正在获取加密公钥"})
 	ts.touchStage(id, "login.menu", "正在进入主菜单")
 
-	snap := ts.snapshot(id)
+	snap := mustSnapshot(t, ts, id)
 	if snap.Stage != string(protocol.LoginPhaseSubmit) || snap.StageText != "正在提交账号密码" {
 		t.Fatalf("阶段被 hook 覆盖: stage=%q text=%q", snap.Stage, snap.StageText)
 	}
@@ -328,7 +340,7 @@ func TestHookRequestDoesNotOverrideLoginStage(t *testing.T) {
 
 	// 收尾事件仍然可以覆盖阶段（任务结束的结论优先）
 	ts.finish(id, taskKindLogin, taskStatusDone, "登录成功", "")
-	if got := ts.snapshot(id); got.StageText != "登录成功" {
+	if got := mustSnapshot(t, ts, id); got.StageText != "登录成功" {
 		t.Errorf("收尾后 StageText = %q, want 登录成功", got.StageText)
 	}
 }
@@ -341,7 +353,7 @@ func TestLoginStageIgnoresNonLoginTask(t *testing.T) {
 	ts.emit(id, taskEvent{Kind: "course.choose", Stage: "course.choose", Text: "正在选课"})
 
 	ts.setLoginStage(id, string(protocol.LoginPhaseSubmit), "正在提交账号密码")
-	snap := ts.snapshot(id)
+	snap := mustSnapshot(t, ts, id)
 	if snap.StageText != "正在选课" {
 		t.Fatalf("非登录任务的阶段被改写: %q", snap.StageText)
 	}
@@ -360,7 +372,7 @@ func TestLoginStageFollowsInitTask(t *testing.T) {
 	ts.start(id, taskKindInit)
 
 	ts.setLoginStage(id, string(protocol.LoginPhaseSubmit), "正在提交账号密码")
-	snap := ts.snapshot(id)
+	snap := mustSnapshot(t, ts, id)
 	if snap.StageText != "正在提交账号密码" {
 		t.Fatalf("初始化任务的登录阶段 = %q", snap.StageText)
 	}
@@ -378,7 +390,7 @@ func TestLoginStageSkipsDuplicateLifecycleEvents(t *testing.T) {
 	ts.setLoginStage(id, string(protocol.LoginPhasePrepare), "正在准备登录")
 	ts.setLoginStage(id, string(protocol.LoginPhaseDone), "登录成功")
 
-	snap := ts.snapshot(id)
+	snap := mustSnapshot(t, ts, id)
 	if len(snap.Events) != 1 {
 		t.Fatalf("事件数 = %d, want 1（只有 begin）: %+v", len(snap.Events), snap.Events)
 	}
@@ -394,7 +406,7 @@ func TestInitStageUpdatesInitTask(t *testing.T) {
 	ts.start(id, taskKindInit)
 
 	ts.setInitStage(id, string(protocol.InitPhaseIndex), "正在获取选课首页参数")
-	snap := ts.snapshot(id)
+	snap := mustSnapshot(t, ts, id)
 	if snap.Stage != string(protocol.InitPhaseIndex) || snap.StageText != "正在获取选课首页参数" {
 		t.Fatalf("阶段 = %q/%q, want init.index", snap.Stage, snap.StageText)
 	}
@@ -410,7 +422,7 @@ func TestInitStageIgnoredWithoutInitTask(t *testing.T) {
 	ts.start(id, taskKindLogin)
 
 	ts.setInitStage(id, string(protocol.InitPhaseTabParams), "正在获取课程列表参数")
-	snap := ts.snapshot(id)
+	snap := mustSnapshot(t, ts, id)
 	if snap.StageText != "登录已开始" {
 		t.Fatalf("登录任务的阶段被初始化阶段改写: %q", snap.StageText)
 	}
@@ -428,7 +440,7 @@ func TestInitStageAppendsToAutoTimeline(t *testing.T) {
 	ts.emit(id, taskEvent{Kind: "auto.pick", Stage: "auto.pick", Text: "第 1 轮：尝试《定向越野》"})
 
 	ts.setInitStage(id, string(protocol.InitPhaseIndex), "正在获取选课首页参数")
-	snap := ts.snapshot(id)
+	snap := mustSnapshot(t, ts, id)
 	if snap.Stage != "auto.pick" || snap.StageText != "第 1 轮：尝试《定向越野》" {
 		t.Fatalf("自动选课的阶段被初始化阶段改写: %q/%q", snap.Stage, snap.StageText)
 	}
@@ -445,7 +457,7 @@ func TestInitTaskDropsHookEndpointEvents(t *testing.T) {
 	ts.setInitStage(id, string(protocol.InitPhaseIndex), "正在获取选课首页参数")
 
 	ts.emitRequest(id, taskEvent{Kind: "init.index", Stage: "init.index", Text: "正在打开选课页"})
-	snap := ts.snapshot(id)
+	snap := mustSnapshot(t, ts, id)
 	if snap.Requests != 1 {
 		t.Errorf("请求计数 = %d, want 1", snap.Requests)
 	}
