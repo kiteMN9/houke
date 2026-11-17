@@ -20,7 +20,7 @@ func (a *APIClient) WebGetScore(ctx context.Context, xnm, xqm string) ([]Score, 
 	}
 
 	var score ScoreRaw
-	for range 5 {
+	for range 2 {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
