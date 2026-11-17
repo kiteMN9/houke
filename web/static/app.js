@@ -241,7 +241,21 @@ function markApplied(t) {
         appliedRev = t.rev;
         return;
     }
-    appliedRev = t.rev;
+    // 高水位只升不降：旧快照（/status 晚到的响应）不能把它改小，
+    // 否则已经被丢弃的旧帧又能通过 staleFrame 重新落到界面上。
+    if (id === appliedTaskId && t.rev > appliedRev) appliedRev = t.rev;
+}
+
+// olderThanPrev 判断一帧是否比"已经渲染的上一帧"更旧。
+// staleFrame 用的是全局高水位（appliedRev），只对推送帧生效；/status 与
+// SSE 是两条独立的请求，响应可能乱序返回，所以落界面前还要和 Task.last
+// 比一次：任务序号只会递增，同一任务内 rev 只会递增。
+function olderThanPrev(next, prev) {
+    if (!next || !prev) return false;
+    if (typeof next.rev !== 'number' || typeof prev.rev !== 'number') return false;
+    const nid = next.id || 0;
+    const pid = prev.id || 0;
+    return nid < pid || (nid === pid && next.rev < prev.rev);
 }
 
 const dialogState = { mode: 'create', id: null };
@@ -327,6 +341,19 @@ Task.apply = function (snap, opts) {
     const prev = Task.last;
     const prevId = prev ? prev.id : 0;
     const next = snap || null;
+
+    // 旧帧不落：/status 的快照可能比 SSE 帧晚到，回退会让日志先变短、
+    // 等下一帧推送再补回来（看起来就是"日志闪一下"）。
+    if (olderThanPrev(next, prev)) return;
+
+    // progress 帧按契约剥掉了事件流（events=null，见 web/stream.go）：
+    // 它只负责走秒/更新阶段，不能拿空事件覆盖上一帧，否则任务运行期间每
+    // 5 秒一次的进度推送都会把执行日志清空，直到下一条真实事件到达才重画。
+    if (next && !Array.isArray(next.events)) {
+        // 换了任务却没有事件流的帧不可用；等真正的 snapshot。
+        if (!prev || (next.id && prev.id && next.id !== prev.id)) return;
+        next.events = prev.events || [];
+    }
     const switched = next && prevId && next.id !== prevId;
 
     if (switched) {
@@ -554,14 +581,41 @@ Task.renderBar = function () {
     cancelBtn.disabled = false;
 };
 
+// taskLogKey 给一帧事件流算"内容指纹"，用于判断日志是否需要重建 DOM。
+//
+// 服务端只下发最近 100 条：条数到达上限后不再变化，但窗口内容每来一条
+// 新事件都会整体前移。所以除条数外还要带上首尾事件的时间戳/文案/重复次数。
+function taskLogKey(snap) {
+    const evs = snap.events || [];
+    const first = evs.length ? evs[0] : null;
+    const last = evs.length ? evs[evs.length - 1] : null;
+    return JSON.stringify([
+        snap.id || 0,
+        evs.length,
+        first ? first.atMs : null,
+        first ? first.kind : null,
+        last ? last.atMs : null,
+        last ? last.timestamp : null,
+        last ? (last.repeat || 0) : null,
+        last ? last.kind : null,
+        last ? (last.detail || '') : null,
+        last ? last.text : null,
+        last ? !!last.local : null,
+    ]);
+}
+
 Task.renderLog = function (replace) {
     const ol = $('#task-events');
     const snap = Task.last;
     if (!ol || !snap) return;
     const evs = snap.events || [];
 
-    // 事件条数没变就不动 DOM，避免每次轮询都打断用户的滚动/复制
-    if (!replace && ol.childElementCount === evs.length && ol.dataset.taskId === String(snap.id)) {
+    // 事件内容没变就不动 DOM，避免每次轮询都打断用户的滚动/复制。
+    // 不能只看条数：服务端下发最近 100 条，超限后条数恒为 100，
+    // 只看 childElementCount 会让日志永远停在旧内容上；滚动窗口下
+    // 首尾事件也变了，所以按首尾内容做指纹。
+    const key = taskLogKey(snap);
+    if (!replace && ol.dataset.logKey === key) {
         Task.markCurrent();
         return;
     }
@@ -581,7 +635,7 @@ Task.renderLog = function (replace) {
             (e.detail ? ` <span class="ev-detail">${esc(e.detail)}</span>` : '') +
             `</span></li>`;
     }).join('');
-    ol.dataset.taskId = String(snap.id);
+    ol.dataset.logKey = key;
 
     $('#task-log-summary').textContent =
         `执行日志（${evs.length} 条${snap.running ? '，进行中' : ''}）`;
@@ -1511,8 +1565,11 @@ function applyTaskFrame(frame) {
 async function applyStatusPayload(st) {
     state.status = st;
     const t = st.task || null;
-    markApplied(t);
-    Task.apply(t, { fromStream: true });
+    // /status 的响应可能晚于 SSE 帧到达：旧快照不覆盖新的任务状态。
+    if (!olderThanPrev(t, Task.last)) {
+        markApplied(t);
+        Task.apply(t, { fromStream: true });
+    }
     maybePromptPending(st.pending);
     maybeShowQR(st.qr);
     renderStatus();
