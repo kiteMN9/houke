@@ -42,8 +42,8 @@ func ModeNameOf(cfg *APIConfig) string {
 
 // WindowInfo 是选课时间窗的只读视图。
 //
-// SelectionWindow 的字段全是小写（协议内部状态），engine/web 不能直接读；
-// 字段名保持协议原始拼写，方便和抓包、日志里的 hidden input 对照。
+// SelectionWindow 的字段（包括内嵌的 TabParams）都是协议内部状态，engine/web
+// 不能直接读；字段名保持协议原始拼写，方便和抓包、日志里的 hidden input 对照。
 type WindowInfo struct {
 	Xkkssj string `json:"xkkssj"` // 选课开始时间
 	Xkjssj string `json:"xkjssj"` // 选课结束时间
@@ -110,4 +110,36 @@ func WithTab(cfg *APIConfig, tab TabInfo) *APIConfig {
 		c.Index.zyh_id = tab.ZyhId
 	}
 	return &c
+}
+
+// TabParamsOf 返回配置里页签参数块的快照。
+//
+// engine 按页签缓存这一块（缓存键由页签字段组成）：同一组页签参数只在换轮次 /
+// 重抓首页后失效，切回访问过的页签时可以直接用它覆盖新快照，不再重抓参数页。
+func TabParamsOf(cfg *APIConfig) TabParams {
+	if cfg == nil {
+		return TabParams{}
+	}
+	return cfg.Window.TabParams
+}
+
+// WithTabParams 返回一份把页签参数块替换成 p 的配置副本。
+//
+// 只换 TabParams，选课首页解析出来的学分统计不动：后者跟随首页刷新，
+// 不能被某个页签的旧缓存带回去。
+func WithTabParams(cfg *APIConfig, p TabParams) *APIConfig {
+	if cfg == nil {
+		cfg = &APIConfig{}
+	}
+	c := *cfg
+	c.Window.TabParams = p
+	return &c
+}
+
+// Valid 报告这组页签参数是否来自一次成功解析。
+//
+// 参数页把关键字段（bklx_id / rwlx / xkly / syxs）全给空时按解析失败处理：
+// 这种结果不能进缓存，否则一次坏响应会让这个页签一直用空参数，重试也没用。
+func (p TabParams) Valid() bool {
+	return p.bklx_id != "" || p.rwlx != "" || p.xkly != "" || p.syxs != ""
 }

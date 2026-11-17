@@ -1637,11 +1637,13 @@ function renderTabs() {
     $$('.tab-chip', c).forEach(btn => {
         btn.onclick = async () => {
             const idx = +btn.dataset.tabIndex;
+            // 点的是当前页签：后端按"刷新参数"处理（绕过页签参数缓存）。
+            const refreshing = btn.classList.contains('active');
             const all = $$('.tab-chip', c);
             all.forEach(b => b.disabled = true);
             try {
                 await API.selectTab(state.currentId, idx);
-                toast('页签已切换', 'ok');
+                toast(refreshing ? '页签参数已刷新' : '页签已切换', 'ok');
                 state.courses = [];
                 state.loadingKch.clear();
                 renderCourses();

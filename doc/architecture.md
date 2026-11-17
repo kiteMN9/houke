@@ -245,6 +245,10 @@
   再做一次同样的重抓 + 重试；
 * `Renew` 保留当前页签、不清课程缓存，并有 **10s 冷静期**（`engine/session.go:31`）：
   服务端持续报错时不要每个请求都去抓首页。
+* 页签参数按页签缓存在 `engine.session.tabParams`：切回访问过的页签不再请求参数页，
+  只有第一次进入才抓；再点当前页签 = 强制重抓（绕过缓存）。`Reset`（登出 / force
+  初始化）和 `Renew`（换新 `xkkz_id`）会让缓存整体失效；参数被教务轮换时，由
+  protocol 的 `paramRefresh` 信号兜底触发 `Renew`。
 
 ---
 
@@ -256,7 +260,7 @@
 | `protocol.APIClient` | `loginStage.mu` / `initStage.mu` | 阶段快照 | 否（observer 在锁外调用） |
 | `protocol.TransportPool` | `mu`（Mutex） | `transportProfile → *http.Transport` | 否（首次建 transport 不发起连接） |
 | `engine.session` | `initMu` | 初始化 / Renew | 是（设计上就是要持锁做 IO） |
-| `engine.session` | `mu`（RW） | 已发布的 `APIConfig` | 否 |
+| `engine.session` | `mu`（RW） | 已发布的 `APIConfig` + 页签参数缓存（`tabParams`） | 否 |
 | `engine.session` | `cacheMu`（RW） | 课程缓存 | 否 |
 | `web.AccountStore` | `mu`（RW） | accounts map + order + runtimes | 否（`saveLocked` 在写锁内落盘） |
 | `web.taskStore` | `mu` | 全部账号任务状态 | 否 |

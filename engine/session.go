@@ -59,13 +59,19 @@ type session struct {
 	// lastRenew 是上一次重抓参数的时间，只由 initMu 保护（见 Renew 的冷静期）。
 	lastRenew time.Time
 
-	// mu 只保护下面已发布的快照；持锁路径不允许做网络 IO。
+	// mu 只保护下面已发布的快照和页签参数缓存；持锁路径不允许做网络 IO。
 	mu  sync.RWMutex
 	cfg *protocol.APIConfig
 	// generation 是会话代次：Reset 和成功切换页签都会递增。
 	// 它有两个用途：丢弃"变更之前发起"的初始化/刷新结果，以及给自动选课
 	// 提供租约——启动时记下代次，运行中一旦不一致就停止。
 	generation uint64
+
+	// tabParams 按页签缓存参数页（parseTabParamsHtml）的解析结果。
+	// 同一代会话里页签参数不会变，切回访问过的页签直接换参数发布，不再打教务；
+	// Reset（登出 / force 初始化）和 Renew（换新 xkkz_id）会让它整体失效。
+	// 由 mu 保护：和 cfg 在同一个临界区里读写，Reset 之后不会回填旧会话的缓存。
+	tabParams map[string]protocol.TabParams
 
 	// wish 是高级选课的愿望清单：由上层（Web 配置 / Plan）设置，
 	// 跨 Reset 保留，并随每次 snapshot 覆盖到 cfg 副本上。
@@ -87,6 +93,7 @@ func newSession(c *protocol.APIClient) *session {
 	return &session{
 		client:      c,
 		cfg:         &protocol.APIConfig{},
+		tabParams:   make(map[string]protocol.TabParams),
 		courseCache: make([]protocol.CustomCourseDic, 0),
 	}
 }
@@ -207,6 +214,10 @@ func (s *session) Initialize(ctx context.Context) error {
 	}
 	s.cfg = cfg
 	s.inited.Store(true)
+	// 初始化抓的就是默认页签的参数，顺手进缓存：切走再切回来不用重抓。
+	if tab, ok := protocol.CurrentTabOf(cfg); ok {
+		s.storeTabParamsLocked(tab, cfg)
+	}
 	return nil
 }
 
@@ -220,6 +231,7 @@ func (s *session) Reset() {
 	s.generation++
 	s.cfg = &protocol.APIConfig{}
 	s.inited.Store(false)
+	s.clearTabParamsLocked()
 	s.mu.Unlock()
 
 	s.ClearCourseCache()
@@ -283,8 +295,13 @@ func (s *session) Renew(ctx context.Context) error {
 		// 抓参数期间发生过 Reset（登出 / force 刷新），这次结果已经过期。
 		return ErrSessionReset
 	}
+	// 首页参数刷新会换新 xkkz_id：旧页签参数全部作废，只留这次重抓的当前页签。
+	s.clearTabParamsLocked()
 	s.cfg = &next
 	s.inited.Store(true)
+	if tab, ok := protocol.CurrentTabOf(&next); ok {
+		s.storeTabParamsLocked(tab, &next)
+	}
 	return nil
 }
 
@@ -301,6 +318,35 @@ func findTab(tabs []protocol.TabInfo, want protocol.TabInfo) (protocol.TabInfo, 
 		}
 	}
 	return protocol.TabInfo{}, false
+}
+
+// tabParamsKey 是页签参数缓存的键。
+//
+// 参数页按 xkkz_id / xkkz_xh 定位页签，kklxdm 兜底（两者都为空时至少还能按
+// 课程类型区分）。键里带 xkkz_id：Renew 换新值后旧条目再也不会命中，所以 Renew
+// 直接清空缓存，而不是留一堆用不上的条目。
+func tabParamsKey(tab protocol.TabInfo) string {
+	return tab.Kklxdm + "|" + tab.XkkzId + "|" + tab.XkkzXh
+}
+
+// storeTabParamsLocked 记下 cfg 里的页签参数（调用方必须持有 mu 写锁）。
+//
+// 解析失败的结果不缓存：参数页回一张缺关键字段的坏页面时，缓存它会让这个页签
+// 一直用空参数，用户再点一次页签也救不回来。
+func (s *session) storeTabParamsLocked(tab protocol.TabInfo, cfg *protocol.APIConfig) {
+	p := protocol.TabParamsOf(cfg)
+	if !p.Valid() {
+		return
+	}
+	if s.tabParams == nil {
+		s.tabParams = make(map[string]protocol.TabParams)
+	}
+	s.tabParams[tabParamsKey(tab)] = p
+}
+
+// clearTabParamsLocked 丢掉全部页签参数缓存（调用方必须持有 mu 写锁）。
+func (s *session) clearTabParamsLocked() {
+	s.tabParams = make(map[string]protocol.TabParams)
 }
 
 // ModeName 返回当前页签名（主要用于调试/展示）。
@@ -327,7 +373,14 @@ func (s *session) Window() protocol.WindowInfo {
 	return protocol.WindowOf(cfg)
 }
 
-// SelectTab 切换到指定页签，并重新拉取该页签下的选课参数。
+// SelectTab 切换到指定页签。
+//
+// 页签参数只在第一次访问该页签时抓取：同一代会话里参数不会变（见 tabParams
+// 缓存），切回访问过的页签直接把缓存换进快照，不再打教务。Reset / Renew 会让
+// 缓存整体失效，参数被轮换时 protocol 的 paramRefresh 信号也会触发 Renew 重抓。
+//
+// 点的是当前页签时按"刷新"处理：绕过缓存重新抓一次（这既是加缓存之前的旧行为，
+// 也是 WebUI 上唯一能手动刷新当前页签参数的操作）。
 //
 // 和 Initialize 一样，参数抓取在私有副本上完成，成功后才发布；
 // 抓取期间其他请求继续用旧快照，不会看到写了一半的配置。
@@ -342,12 +395,27 @@ func (s *session) SelectTab(ctx context.Context, idx int) error {
 	if idx < 0 || idx >= len(tabs) {
 		return errBadTab
 	}
-	next := protocol.WithTab(cfg, tabs[idx])
+	tab := tabs[idx]
+	next := protocol.WithTab(cfg, tab)
+
+	// 再点当前页签 = 刷新：跳过缓存重抓一次参数，旧参数仍由已发布的快照提供，
+	// 抓取失败时不会把当前会话改成半成品。
+	current, ok := protocol.CurrentTabOf(cfg)
+	refresh := ok && current.Index == idx
 
 	s.ClearCourseCache() // 页签变了，课程集合必然不同
 
-	// 拉取该页签下的参数
-	if err := s.client.GetCourseTabParams(ctx, next, false); err != nil {
+	var cached protocol.TabParams
+	hit := false
+	if !refresh {
+		s.mu.RLock()
+		cached, hit = s.tabParams[tabParamsKey(tab)]
+		s.mu.RUnlock()
+	}
+
+	if hit {
+		next = protocol.WithTabParams(next, cached)
+	} else if err := s.client.GetCourseTabParams(ctx, next, false); err != nil {
 		return err
 	}
 	if err := ctx.Err(); err != nil {
@@ -358,6 +426,9 @@ func (s *session) SelectTab(ctx context.Context, idx int) error {
 	defer s.mu.Unlock()
 	if s.generation != gen {
 		return ErrSessionReset
+	}
+	if !hit {
+		s.storeTabParamsLocked(tab, next)
 	}
 	s.cfg = next
 	s.generation++

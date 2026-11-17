@@ -105,6 +105,17 @@ func countEvents(events []engine.Event, kind string) int {
 	return n
 }
 
+// countTabParamsRequests 统计 mock 请求流水里参数页（SelectTab 前置）的请求次数。
+func countTabParamsRequests(srv *jwmock.Server) int {
+	n := 0
+	for _, req := range srv.Snapshot().Requests {
+		if strings.Contains(req.Path, "cxZzxkYzbDisplay") {
+			n++
+		}
+	}
+	return n
+}
+
 func selectedIDs(t *testing.T, eng *engine.Engine) []string {
 	t.Helper()
 	ctx, cancel := testContext(t)
@@ -905,6 +916,26 @@ func TestTabSwitching(t *testing.T) {
 	}
 	if len(list) != 1 || list[0].Kcmc != "特殊课程C" {
 		t.Fatalf("特殊页签课程: %+v", list)
+	}
+
+	// 切回访问过的页签：参数页不再请求，直接用第一次解析出来的那份参数。
+	if err := eng.SelectTab(ctx, 1); err != nil {
+		t.Fatalf("再次 SelectTab(1): %v", err)
+	}
+	if w := eng.Window(); w.Xkkssj != "2025-09-11 08:00:00" || w.Xkjssj != "2025-09-20 23:59:59" {
+		t.Fatalf("缓存命中的页签时间窗: %+v", w)
+	}
+	// 初始化抓默认页签 + 第一次进入页签 1/2 各一次 = 3；缓存命中不该再出现。
+	if got := countTabParamsRequests(srv); got != 3 {
+		t.Fatalf("参数页请求 %d 次，期望 3（缓存命中不重抓）", got)
+	}
+
+	// 再点当前页签 = 刷新：绕过缓存重抓一次参数页。
+	if err := eng.SelectTab(ctx, 1); err != nil {
+		t.Fatalf("刷新当前页签: %v", err)
+	}
+	if got := countTabParamsRequests(srv); got != 4 {
+		t.Fatalf("再点当前页签应重抓参数，参数页请求 %d 次，期望 4", got)
 	}
 
 	if ids := selectedIDs(t, eng); len(ids) != 1 || ids[0] != "JXB-GEN-01" {

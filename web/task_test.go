@@ -403,7 +403,7 @@ func TestInitStageUpdatesInitTask(t *testing.T) {
 	}
 }
 
-// 没有初始化任务时（初始化结束后 SelectTab 仍会抓课程列表参数）直接丢弃。
+// 没有初始化任务时（初始化结束后 SelectTab 首次进入页签仍会抓课程列表参数）直接丢弃。
 func TestInitStageIgnoredWithoutInitTask(t *testing.T) {
 	ts := newTaskStore()
 	const id = "acc1"

@@ -12,7 +12,7 @@ import (
 // 下层函数：
 //
 //	Index  —— 选课首页解析出来的学生信息与查询参数（Initialize/SelectTab 重建）
-//	Window —— 选课时间窗与学分统计（只读展示）
+//	Window —— 选课时间窗、页签参数与学分统计（Initialize/SelectTab/Renew 重建）
 //	Tabs   —— 页签列表与当前模式（SelectTab 维护）
 //	Wish   —— 愿望清单（由 CLI 从 Excel 读入）
 //	State  —— 请求过程中的开关：needInit 标记需要重新抓首页，listDump/detailDump
@@ -167,10 +167,32 @@ func (c IndexInfo) Term() (string, string) {
 	return c.xkxnm, c.xkxqm
 }
 
-// SelectionWindow 选课页签
+// SelectionWindow 是选课时间窗、页签参数与学分统计。
 //
-// 是选课时间窗与学分统计，用于展示与"距离结束还有多久"。
+// 它由两块来源不同、刷新时机也不同的数据组成：
+//   - TabParams：选课参数页（ChooseCourseTabParams）解析出来的限制参数，
+//     每个页签一份、各自抓取；
+//   - 学分统计：选课首页（parseYzbIndexHtml）解析出来的，跟随首页刷新，
+//     不随页签变化。
+//
+// 拆成两块是为了让 engine 按页签缓存 TabParams（见 TabParamsOf / WithTabParams）：
+// 切回访问过的页签时整块换掉，不会把首页统计也覆盖成旧值。
 type SelectionWindow struct {
+	TabParams
+
+	// 学分统计来自选课首页，不随页签变化。
+	minCredit      string    // 本学期选课要求总学分最低
+	maxCredit      string    // 总学分最高
+	selectedCredit string    // 本学期已选学分
+	zxfs           string    // 已修分数？
+	startTimeStamp time.Time // 开始选课时间戳
+}
+
+// TabParams 是页签参数页解析出来的那部分选课限制参数。
+//
+// 一组 TabParams 只对应一个页签，同一代会话里不会因为切页签而变化；
+// 换轮次 / 重抓首页（Renew）后失效，所以 engine 可以按页签缓存。
+type TabParams struct {
 	bklx_id string
 	rwlx    string
 	xkly    string // 选课来源
@@ -201,16 +223,10 @@ type SelectionWindow struct {
 	sfkxk string // 是否可选课
 	sfkxq string // 是否开学前
 
-	minCredit      string // 本学期选课要求总学分最低
-	maxCredit      string // 总学分最高
-	selectedCredit string // 本学期已选学分
-	syxs           string // 距选课结束的小时数
-	syts           string // 距选课结束的天数
-	zxfs           string // 已修分数？
-	xkkssj         string // 例: 2026-09-09 12:30:00
-	xkjssj         string // 选课结束时间 2026-09-10 11:00:0
-
-	startTimeStamp time.Time // 开始选课时间戳
+	syxs   string // 距选课结束的小时数
+	syts   string // 距选课结束的天数
+	xkkssj string // 例: 2026-09-09 12:30:00
+	xkjssj string // 选课结束时间 2026-09-10 11:00:0
 
 	//<input type="hidden" name="rwlx" id="rwlx" value="2"/>
 	//<input type="hidden" name="kczxskg" id="kczxskg" value="0"/>

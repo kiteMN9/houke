@@ -186,7 +186,7 @@ func parseTabParamsHtml(cfg *APIConfig, docNode *html.Node) {
 	cfg.Window.syxs = getXpathValue(docNode, "syxs")     // 距选课结束还剩{0}小时
 	cfg.Window.xkkssj = getXpathValue(docNode, "xkkssj") // 选课开始时间
 	cfg.Window.xkjssj = getXpathValue(docNode, "xkjssj") // 选课结束时间
-	if cfg.Window.bklx_id == "" && cfg.Window.rwlx == "" && cfg.Window.xkly == "" && cfg.Window.syxs == "" {
+	if !cfg.Window.TabParams.Valid() {
 		fmt.Println("❌ Step 2 tab params failed")
 		return
 	}

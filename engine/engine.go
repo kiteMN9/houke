@@ -215,8 +215,11 @@ func (e *Engine) Window() protocol.WindowInfo {
 	return e.session.Window()
 }
 
-// SelectTab 切换页签并重新拉取该页签的参数。
-// 和课程查询一样：会话失效时按开关重登一次再重试一次。
+// SelectTab 切换页签。
+//
+// 页签参数按页签缓存在会话里（见 session.tabParams）：切回访问过的页签直接复用，
+// 只有第一次访问才重新拉取；再点当前页签按"刷新"处理（绕过缓存重抓）。
+// 和课程查询一样，会话失效时按开关重登一次再重试一次。
 func (e *Engine) SelectTab(ctx context.Context, idx int) error {
 	_, err := retryOnUnauthorized(ctx, e, func() (struct{}, error) {
 		return struct{}{}, e.session.SelectTab(ctx, idx)

@@ -105,6 +105,8 @@
 
 `window` 来自选课列表前置页的 hidden input（`xkkssj` 选课开始、`xkjssj` 选课结束）；
 未初始化时两项均为空串，初始化完成、切换页签或重新初始化后随 `/status` 刷新。
+切页签时优先复用该页签已解析的参数（见 §4 `POST /accounts/:id/tabs/:index`），缓存命中时时间窗立即更新；
+再点一次当前页签 = 强制重抓该页签参数（WebUI 手动刷新的入口）。
 
 ### 3.1 无账号扫码登录（`/wechat`）
 
@@ -139,7 +141,7 @@
 | POST | `/accounts/:id/init` | `?force=1` 强制重抓 | `{"status":"ok","modeName":"…"}` / `{"status":"cancelled"}` / 401 `code=unauthorized`（初始化时发现会话失效且未开启自动重登）/ 409 `code=busy` 或 `session_reset` / 504 `code=timeout` / 500 | **长任务**；抓 `GetIndexParams` + `GetCourseListPre`。未登录时是否先自动登录、初始化中失效是否重登一次，都看账号的 `autoRelogin` |
 | POST | `/accounts/:id/init/cancel` | — | `{"status":"ok"\|"noop"}` | |
 | GET | `/accounts/:id/tabs` | — | `[]protocol.TabInfo` | 未初始化时为空 |
-| POST | `/accounts/:id/tabs/:index` | — | `{"status":"ok","modeName":"…"}` | 切换页签 → 重抓该页签参数 + 清课程缓存 |
+| POST | `/accounts/:id/tabs/:index` | — | `{"status":"ok","modeName":"…"}` | 切换页签 → 复用该页签已解析的参数（首次访问才重抓；点当前页签 = 强制重抓）+ 清课程缓存 |
 | GET | `/accounts/:id/courses` | `?force=1` 先清缓存 | `[]protocol.CustomCourseDic` | 需已初始化；**会访问学校接口** |
 | GET | `/accounts/:id/courses/cache` | — | 同上（可能为 `[]`） | 只读内存，不访问网络 |
 | GET | `/accounts/:id/courses/:kchId` | — | 完整课程列表（该课程号已补详情） | 补详情是串行请求，慢 |

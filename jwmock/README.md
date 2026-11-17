@@ -89,8 +89,9 @@ srv, err := jwmock.New(jwmock.Options{
 
 - 首页按真实参数顺序渲染所有页签的 `queryCourse(this,'kklxdm','xkkz_id','njdm_id','zyh_id'[,'xkkz_xh'])`，
   `Initialize` 后可通过 `engine.Tabs()` 读到。
-- `SelectTab(idx)` 会带当前页签的 `xkkz_id` / `xkkz_xh` 重新 POST `ChooseCourseTabParams`，
-  mock 返回该页签自己的 `xklc/xklcmc/xkkssj/xkjssj`，`engine.Window()` 随页签变化。
+- `SelectTab(idx)` 第一次进入某个页签时会带当前页签的 `xkkz_id` / `xkkz_xh` 重新 POST
+  `ChooseCourseTabParams`，mock 返回该页签自己的 `xklc/xklcmc/xkkssj/xkjssj`，`engine.Window()`
+  随页签变化；切回访问过的页签走 engine 的页签参数缓存，不再请求。
 - 课程列表优先返回页签自己的 `Courses`；页签没配 `Courses` 时才回退到 `Options.Courses`
   （单页签不过滤，多页签按 `kklxdm` 过滤，用于兼容旧配置）。
 - 页签课程和 `Options.Courses` 共享 JxbID 命名空间，重复会在 `New` 时直接报错。
