@@ -3,7 +3,7 @@ module school_sdk
 go 1.27.3
 
 require (
-	github.com/PuerkitoBio/goquery v1.13.0
+	github.com/PuerkitoBio/goquery v1.14.0
 	github.com/andybalholm/brotli v1.3.0
 	github.com/antchfx/htmlquery v1.3.7
 	github.com/beevik/ntp v1.6.0
