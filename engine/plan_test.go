@@ -991,7 +991,7 @@ func TestRunAutoCapsAttemptsPerRound(t *testing.T) {
 	wants := protocol.WishList{WantClassList: []string{"定向越野"}}
 
 	candidates := make([]protocol.CustomCourseDic, 0, 8)
-	for i := 0; i < 8; i++ {
+	for i := range 8 {
 		candidates = append(candidates, protocol.CustomCourseDic{
 			Kch_id:    fmt.Sprintf("k%d", i),
 			Jxb_id:    fmt.Sprintf("j%d", i),
