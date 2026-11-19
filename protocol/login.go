@@ -120,7 +120,7 @@ func (a *APIClient) doLogin(ctx context.Context) bool {
 			continue
 		}
 		if a.hasSliderCaptcha() {
-			if a.getCaptchaLogin(LoginExtend, csrfToken, reqTime, ctx) {
+			if a.getCaptchaLogin(ctx, LoginExtend, csrfToken, reqTime) {
 				return true
 			}
 			if !a.loginCtxOK(ctx) {
@@ -138,7 +138,7 @@ func (a *APIClient) doLogin(ctx context.Context) bool {
 		wg.Wait()
 
 		a.reportLoginStage(LoginPhaseSubmit, i+1, "")
-		stat_, err := a.postLogin(csrfToken, reqTime, encryptedResult, "")
+		stat_, err := a.postLogin(ctx, csrfToken, reqTime, encryptedResult, "")
 		if errors.Is(err, ExistVerify) {
 			a.reportLoginStage(LoginPhaseCaptcha, i+1, CaptchaDetailNeedSlider)
 			a.setSliderCaptcha(true)
@@ -158,7 +158,7 @@ func (a *APIClient) doLogin(ctx context.Context) bool {
 	return false
 }
 
-func (a *APIClient) getCaptchaLogin(LoginExtend []byte, csrfToken, reqTime string, ctxl context.Context) bool {
+func (a *APIClient) getCaptchaLogin(ctxl context.Context, LoginExtend []byte, csrfToken, reqTime string) bool {
 	// 控制整个滑块验证码登录
 	var rtk string
 	var encryptedResult string
@@ -182,7 +182,7 @@ func (a *APIClient) getCaptchaLogin(LoginExtend []byte, csrfToken, reqTime strin
 		wg.Wait()
 		a.reportLoginStage(LoginPhaseSubmit, 0, "")
 
-		stat, err := a.postLogin(csrfToken, reqTime, encryptedResult, "")
+		stat, err := a.postLogin(ctx, csrfToken, reqTime, encryptedResult, "")
 		if errors.Is(err, LoginFailSetCookie) {
 			rtk = a.getRTK(ctxl)
 		}
@@ -280,7 +280,7 @@ func (a *APIClient) kaptchaLogin(ctx context.Context, csrfToken, reqTime string,
 		a.reportLoginStage(LoginPhasePublicKey, 0, "")
 		wg.Wait()
 		a.reportLoginStage(LoginPhaseSubmit, 0, "")
-		stat, err := a.postLogin(csrfToken, reqTime, encryptedResult, yzm)
+		stat, err := a.postLogin(ctx, csrfToken, reqTime, encryptedResult, yzm)
 		if errors.Is(err, InputYzmErr) {
 			// 只有自动识别的结果才计入失败次数：用户手输错了不该连累自动识别。
 			if auto {
@@ -982,9 +982,7 @@ func (a *APIClient) captchaVerify(ctx context.Context, rtk string, LoginExtend [
 	return false
 }
 
-func (a *APIClient) postLogin(csrf, t, mm, yzm string) (bool, error) {
-	// fmt.Println("postLogin sleep 300")
-	// time.Sleep(300 * time.Second)
+func (a *APIClient) postLogin(ctx context.Context, csrf, t, mm, yzm string) (bool, error) {
 	if csrf == "nil" || mm == "" {
 		return false, CsrfNotExist
 	}
@@ -998,6 +996,7 @@ func (a *APIClient) postLogin(csrf, t, mm, yzm string) (bool, error) {
 			formData["yzm"] = yzm
 		}
 		resp, err := a.Http.R().
+			SetContext(ctx).
 			SetQueryParam("time", t).
 			SetFormData(formData).
 			Post(config.LoginIndex)
@@ -1059,7 +1058,7 @@ func (a *APIClient) cas2LoginCtl(ctx context.Context) bool {
 	if location == "" {
 		return false
 	}
-	return a.ssoTicketLogin(location, ctx)
+	return a.ssoTicketLogin(ctx, location)
 }
 
 func (a *APIClient) ssoLogin(ctx context.Context) string {
@@ -1131,7 +1130,7 @@ func (a *APIClient) ssoLogin(ctx context.Context) string {
 	return ""
 }
 
-func (a *APIClient) ssoTicketLogin(location string, ctx context.Context) bool {
+func (a *APIClient) ssoTicketLogin(ctx context.Context, location string) bool {
 	a.reportLoginStage(LoginPhaseTicket, 0, "")
 	if location == "" {
 		log.Println("GetJwCookie2 location:", location)
