@@ -936,6 +936,7 @@ func (a *APIClient) captchaVerify(ctx context.Context, rtk string, LoginExtend [
 			"extend":     base64.StdEncoding.EncodeToString(LoginExtend),
 		}
 		resp, err := a.Http.R().
+			SetRetryCount(0).
 			SetContext(ctx).
 			//SetResult(&result).
 			SetFormData(formData). // 这里不支持json
@@ -965,7 +966,6 @@ func (a *APIClient) captchaVerify(ctx context.Context, rtk string, LoginExtend [
 		if resp.StatusCode() != 200 {
 			log.Println("captcha_verify HTTP 错误: 状态码 ", resp.Status())
 		}
-		// fmt.Println(resp)
 		// {"msg":"","vs":"verified","status":"success"}
 		if err := json.Unmarshal(resp.Bytes(), &result); err != nil {
 			fmt.Println(err)
@@ -986,7 +986,7 @@ func (a *APIClient) postLogin(ctx context.Context, csrf, t, mm, yzm string) (boo
 	if csrf == "nil" || mm == "" {
 		return false, CsrfNotExist
 	}
-	for range 6 {
+	for range 2 {
 		formData := map[string]string{
 			"csrftoken": csrf, // 某些系统csrf就是空的
 			"yhm":       a.cfg.Account,
@@ -996,18 +996,20 @@ func (a *APIClient) postLogin(ctx context.Context, csrf, t, mm, yzm string) (boo
 			formData["yzm"] = yzm
 		}
 		resp, err := a.Http.R().
+			SetRetryCount(0).
 			SetContext(ctx).
 			SetQueryParam("time", t).
 			SetFormData(formData).
 			Post(config.LoginIndex)
 		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return false, err
+			}
 			if errors.Is(err, context.DeadlineExceeded) {
 				fmt.Println("postLogin 超时", resp.Duration())
-			} else {
-				fmt.Println("postLogin http error")
 			}
-			log.Println("postLogin 请求失败:", err)
-			fmt.Println(err)
+			fmt.Println("postLogin http error:", err)
+			log.Println("postLogin error:", err)
 			time.Sleep(170 * time.Millisecond)
 			continue
 		}
