@@ -554,31 +554,33 @@ func (a *APIClient) ChooseCourse(ctx context.Context, idx IndexInfo, win Selecti
 		sxbj = "1"
 	}
 	var result = ChooseCourseResult{Flag: "-5"}
-	for range 2 {
+	// 3 次外层尝试是选课路径的容错上限：能扛住连续两次瞬时 5xx，又不至于对着教务猛打。
+	for range 3 {
 		formData := map[string]string{
 			// "bklx_id": idx.bklx_id,  // 英语进阶，这一个能顶掉很多个
 			// 选课第一阶段 不允许跨年级跨专业选课 选课第二阶段 允许跨年级跨专业选课 不带下面的参数也可以
 			"jxb_ids": co.Do_jxb_id,
 			"kch_id":  co.Kch_id,
 			// "kcmc":    co.kcmc,
-			"rwlx":   win.rwlx,
-			"rlkz":   win.rlkz,
-			"cdrlkz": win.cdrlkz,
-			"rlzlkz": win.rlzlkz,
-			"sxbj":   sxbj,
-			"xxkbj":  co.Xxkbj,
-			"qz":     "0",
-			"cxbj":   co.Cxbj,
-			//"xkkz_id":    idx.xkkz_id,
+			"rwlx":    win.rwlx,
+			"rlkz":    win.rlkz,
+			"cdrlkz":  win.cdrlkz,
+			"rlzlkz":  win.rlzlkz,
+			"sxbj":    sxbj,
+			"xxkbj":   co.Xxkbj,
+			"qz":      "0",
+			"cxbj":    co.Cxbj,
 			"njdm_id": idx.njdm_id,
-			//"njdm_id_xs": idx.njdm_id,
-			"zyh_id": idx.zyh_id,
-			//"zyh_id_xs":  idx.zyh_id,
-			"kklxdm": idx.kklxdm, // 校选10 专选01 英语06
-			"xklc":   win.xklc,   // 选课轮次
-			"xkxnm":  idx.xkxnm,
-			"xkxqm":  idx.xkxqm,
+			"zyh_id":  idx.zyh_id,
+			"kklxdm":  idx.kklxdm, // 校选10 专选01 英语06
+			"xklc":    win.xklc,   // 选课轮次
+			"xkxnm":   idx.xkxnm,
+			"xkxqm":   idx.xkxqm,
 			//"jcxx_id":    "[]jcxx_arr",
+		}
+		if idx.zyh_id_xs != "" {
+			formData["zyh_id_xs"] = idx.zyh_id_xs
+			formData["njdm_id_xs"] = idx.njdm_id_xs
 		}
 		if idx.xkkz_id != "" {
 			formData["xkkz_id"] = idx.xkkz_id
