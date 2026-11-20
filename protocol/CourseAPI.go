@@ -554,7 +554,7 @@ func (a *APIClient) ChooseCourse(ctx context.Context, idx IndexInfo, win Selecti
 		sxbj = "1"
 	}
 	var result = ChooseCourseResult{Flag: "-5"}
-	for range 5 {
+	for range 2 {
 		formData := map[string]string{
 			// "bklx_id": idx.bklx_id,  // 英语进阶，这一个能顶掉很多个
 			// 选课第一阶段 不允许跨年级跨专业选课 选课第二阶段 允许跨年级跨专业选课 不带下面的参数也可以
@@ -592,10 +592,11 @@ func (a *APIClient) ChooseCourse(ctx context.Context, idx IndexInfo, win Selecti
 			return result, ctx.Err()
 		}
 		resp, err := a.hedgeC.R().
+			SetContext(ctx).SetRetryCount(0).
 			SetQueryParams(map[string]string{
 				"gnmkdm": baseCfg.GndmmkXsxk,
 				//"su":     a.cfg.Account,
-			}).SetContext(ctx).
+			}).
 			SetFormData(formData).
 			//SetResult(&result).
 			Post(baseCfg.ChooseCourse)
