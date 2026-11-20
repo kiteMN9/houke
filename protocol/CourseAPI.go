@@ -546,6 +546,12 @@ func (a *APIClient) GetCourseDetail(ctx context.Context, cfg *APIConfig, kch_id 
 	}
 }
 
+// chooseAttempts 是单次提交对同一教学班的尝试上限。
+//
+// 选课是非幂等 POST，重试节奏必须由这里掌握，所以请求上关掉了 resty 的库内
+// 重试（SetRetryCount(0)）：3 次能扛住连续两次瞬时 5xx，又不会对着教务猛打。
+const chooseAttempts = 3
+
 func (a *APIClient) ChooseCourse(ctx context.Context, idx IndexInfo, win SelectionWindow, co *CustomCourseDic) (ChooseCourseResult, error) {
 	// 	选课
 	// 	若flag==1则表示选课成功
@@ -554,8 +560,10 @@ func (a *APIClient) ChooseCourse(ctx context.Context, idx IndexInfo, win Selecti
 		sxbj = "1"
 	}
 	var result = ChooseCourseResult{Flag: "-5"}
-	// 3 次外层尝试是选课路径的容错上限：能扛住连续两次瞬时 5xx，又不至于对着教务猛打。
-	for range 3 {
+	// lastErr 是最后一次失败的原因。尝试用尽时必须把它带出去：以前这里返回
+	// (flag=-5, nil)，engine 把它当成"没选上"，失败事件里的文案还是空的。
+	var lastErr error
+	for range chooseAttempts {
 		formData := map[string]string{
 			// "bklx_id": idx.bklx_id,  // 英语进阶，这一个能顶掉很多个
 			// 选课第一阶段 不允许跨年级跨专业选课 选课第二阶段 允许跨年级跨专业选课 不带下面的参数也可以
@@ -616,10 +624,12 @@ func (a *APIClient) ChooseCourse(ctx context.Context, idx IndexInfo, win Selecti
 				fmt.Println("选课请求发生错误", err)
 				time.Sleep(100 * time.Millisecond)
 			}
+			lastErr = err
 			continue
 		}
 		if resp.IsStatusFailure() {
 			log.Println("ChooseCourse 状态码:", resp.Status(), resp.String())
+			lastErr = fmt.Errorf("选课请求返回 %s", resp.Status())
 			time.Sleep(1 * time.Second)
 			continue
 		}
@@ -627,23 +637,42 @@ func (a *APIClient) ChooseCourse(ctx context.Context, idx IndexInfo, win Selecti
 		} else {
 			return result, ErrUnauthorized
 		}
-		if err := json.Unmarshal(resp.Bytes(), &result); err != nil {
+		// 解析到临时变量：Unmarshal 出错时可能已经写了部分字段，直接落到 result
+		// 会让一个残缺的响应带着 flag=1 被当成"选上了"。
+		var parsed ChooseCourseResult
+		if err := json.Unmarshal(resp.Bytes(), &parsed); err != nil {
 			fmt.Println("ChooseCourse:", err, resp.String())
 			log.Println("ChooseCourse:", err, resp.String())
+			lastErr = fmt.Errorf("解析选课响应: %w", err)
 			continue
 		}
+		result = parsed
 		return result, nil
 	}
-	return result, nil
+	// 尝试用尽：明确报错，调用方（engine）据此发失败事件并换下一门课，
+	// 而不是把"请求没拿到任何结果"伪装成"教务说他没选上"。
+	return ChooseCourseResult{Flag: "-5"}, &StageError{
+		Op:      "choose",
+		Message: fmt.Sprintf("选课请求连续 %d 次失败", chooseAttempts),
+		Err:     lastErr,
+	}
 }
+
+// selectedAttempts 是查询已选课程的重试上限。
+//
+// 查询是幂等的，而且自动选课会按刷新间隔反复调用（见 engine 的 defaultRefresh），
+// 所以只留 2 次：一次正常尝试、一次兜掉偶发失败，别让刷新节奏被重试拖慢。
+const selectedAttempts = 2
 
 func (a *APIClient) GetSelected(ctx context.Context, xkxnm, xkxqm string) ([]ChosenDic, error) {
 	// 查询已选课程
 	fmt.Println("查询已选课程")
 	var result []ChosenDic
-	for range 2 {
+	// lastErr 记住最后一次失败原因，尝试用尽时连同错误一起返回。
+	var lastErr error
+	for range selectedAttempts {
 		resp, err := a.hedgeC.R().
-			SetContext(ctx).
+			SetContext(ctx).SetRetryCount(0).
 			SetTimeout(time.Second*23).
 			SetQueryParam("gnmkdm", baseCfg.GndmmkXsxk).
 			//SetQueryParam("su", a.cfg.Account).
@@ -666,12 +695,14 @@ func (a *APIClient) GetSelected(ctx context.Context, xkxnm, xkxqm string) ([]Cho
 
 			fmt.Println("已选课程请求错误:", err)
 			log.Println("已选课程请求错误:", err)
+			lastErr = err
 			time.Sleep(150 * time.Millisecond)
 			continue
 		}
 		if resp.IsStatusFailure() {
 			log.Println("Choosed:", resp.Status())
 			log.Println("getHaveChoosedList 状态码:", resp.Status())
+			lastErr = fmt.Errorf("已选课程请求返回 %s", resp.Status())
 			continue
 		}
 		// 权限拒绝的页面不带当前账号，LoginCheck 可能误判成“掉线”，
@@ -687,15 +718,30 @@ func (a *APIClient) GetSelected(ctx context.Context, xkxnm, xkxqm string) ([]Cho
 			return result, ErrUnauthorized
 		}
 
-		if err := json.Unmarshal(resp.Bytes(), &result); err != nil {
+		// 一门都没选上时教务可能回空串：这是"没有已选课程"，不是解析失败。
+		// 当成错误上报会让自动选课丢掉已选过滤器（见 engine.chosenFilterOf）。
+		if len(bytes.TrimSpace(resp.Bytes())) == 0 {
+			return result, nil
+		}
+		// 先解析到临时变量：Unmarshal 出错时可能已经写了部分元素，
+		// 一份残缺的名单流到上层会把"已选"算错。
+		var parsed []ChosenDic
+		if err := json.Unmarshal(resp.Bytes(), &parsed); err != nil {
 			fmt.Println(err, resp.String())
 			log.Println(err, resp.String())
+			lastErr = fmt.Errorf("解析已选课程响应: %w", err)
 			continue
 		}
+		result = parsed
 		log.Printf("已选课程查询: \n%s", resp.String())
 		return result, nil
 	}
-	return result, nil
+	// 尝试用尽：明确报错，而不是把"没拿到名单"伪装成"一门都没选"。
+	return nil, &StageError{
+		Op:      "selected",
+		Message: fmt.Sprintf("已选课程请求连续 %d 次失败", selectedAttempts),
+		Err:     lastErr,
+	}
 }
 
 func (a *APIClient) QuitCourse(ctx context.Context, idx IndexInfo, jxb_ids, kch_id string) (bool, string, error) {
