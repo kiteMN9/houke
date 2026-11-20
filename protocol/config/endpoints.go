@@ -7,7 +7,7 @@ const (
 	KAPTCHA    = "/kaptcha"                      // 登录图形验证码
 	PublicKey  = "/xtgl/login_getPublicKey.html" // 登录公钥获取
 	LOGOUT     = "/logout"                       // 登出
-	//LOGOUT2     = "/xtgl/login_logoutAccount.html" // 正方9.0登录会有
+	//KICKOUT     = "/xtgl/login_logoutAccount.html" // 正方9.0登录会有
 	Language    = "/xtgl/init_changeLocal.html" // body里language=en_US zh_CN
 	LoginStatus = "/xtgl/index_cxGxDlztxx.html"
 )
@@ -19,7 +19,7 @@ const (
 	StudentPhoto = "/xtgl/photo_cxXszp.html" // null,4学生大头照; 2 null, 3无上传照片权限
 
 	InfoHtm  = "/xsxxxggl/xsgrxxwh_cxXsgrxx.html" // 个人信息获取 HTML
-	InfoJson = "/xsxxxggl/xsxxwh_cxCkDgxsxx.html"
+	InfoJson = "/xsxxxggl/xsxxwh_cxCkDgxsxx.html" // 个人信息 Json
 	//ExtraInfoURL = "/xszbbgl/xszbbgl_cxXszbbsqIndex.html?doType=details&gnmkdm=N106005" // GET学生证补办，post
 	PersonalInfo = "/cjcx/cjcx_cxXsgrcj.html"      // 可以查分，查个人信息，不带参数是挂科json
 	SCORE        = "/cjcx/cjcx_cxDgXscj.html"      // 查询成绩 or 不带参数是挂科json
@@ -51,7 +51,7 @@ const (
 	ChooseCourseIndex        = "/xsxk/zzxkyzb_cxZzxkYzbIndex.html"          // 选课基础页面
 	ChooseCourseTabParams    = "/xsxk/zzxkyzb_cxZzxkYzbDisplay.html"        // 课程页签参数
 	ChooseCourseCourseList   = "/xsxk/zzxkyzb_cxZzxkYzbPartDisplay.html"    // 搜索课程接口
-	ChooseCourseCourseDetail = "/xsxk/zzxkyzbjk_cxJxbWithKchZzxkYzb.html"   // jk 查询课程号对应的详细信息
+	ChooseCourseCourseDetail = "/xsxk/zzxkyzbjk_cxJxbWithKchZzxkYzb.html"   // 查询课程号对应的详细信息 jk的有无并不影响
 	ChooseCourse             = "/xsxk/zzxkyzbjk_xkBcZyZzxkYzb.html"         // 发送选课
 	CourseSelectedList       = "/xsxk/zzxkyzb_cxZzxkYzbChoosedDisplay.html" // 查询已选课程接口
 
@@ -60,10 +60,7 @@ const (
 	CourseRegistered  = "/xsxk/zzxkyzb_xkJcInXksjZzxkYzb.html" // 课程选课检查
 	ChooseSimpleDoJxb = "/xsxk/zzxkyzb_cxZkcZzxkYzb.html"      // 查询实践课 jxb_id[] -> do_jxb_id
 
-	//ChooseCourseCourseDetail2 = "/xsxk/zzxkyzbjk_cxJxbWithKchZzxkYzb.html" // 查询课程号对应的详细信息
-	//ChooseCourse2             = "/xsxk/zzxkyzbjk_xkBcZyZzxkYzb.html"       // 发送选课
-
-	// xsxk/zzxkyzb_xkZzxkyzbQuickly.html" // chooseCoursesQuickly
+	// xsxk/zzxkyzb_xkZzxkyzbQuickly.html" // chooseCoursesQuickly 一键选课（只传 xkkz_id）
 
 	// xsxk/zzxkyzb_tuikBcXkyix.html // 退报课程
 	//ZY                             = "/xsxk/zzxkyzb_xkBcZypxZzxkYzb.html" // 提交志愿订单
